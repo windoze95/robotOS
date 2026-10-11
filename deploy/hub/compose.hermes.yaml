@@ -1,0 +1,32 @@
+# Add with: docker compose -f compose.yaml -f compose.hermes.yaml up -d --build
+services:
+  hermes:
+    image: ${ROBOTOS_HERMES_IMAGE:-robotos-hermes:local}
+    build:
+      context: ../..
+      dockerfile: deploy/hermes/Dockerfile
+    restart: unless-stopped
+    init: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 512
+    mem_limit: 4g
+    stop_grace_period: 90s
+    ports:
+      - '127.0.0.1:${HERMES_LOCAL_PORT:-8642}:8642'
+    environment:
+      ROBOTOS_HUB_URL: ${ROBOTOS_PUBLIC_ORIGIN:?Set the exact HTTPS console origin}
+      ROBOTOS_HUB_MCP_TOKEN_FILE: /run/secrets/mcp-token
+      API_SERVER_KEY_FILE: /run/secrets/hermes-token
+    # Initialize your model/provider in this persistent volume; see DEPLOYMENT.md.
+    volumes:
+      - hermes-data:/opt/data
+    secrets: [mcp-token, hermes-token]
+    healthcheck:
+      test: [CMD, /opt/hermes/.venv/bin/python, -c, 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8642/health", timeout=3).read()']
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
+volumes:
+  hermes-data:

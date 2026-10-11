@@ -3,6 +3,8 @@ import copy
 import json
 import math
 import os
+from pathlib import Path
+import stat
 import time
 import urllib.error
 import urllib.parse
@@ -203,6 +205,23 @@ def from_env(device_tools):
     url = os.environ.get("ROBOTOS_HUB_URL", "")
     if not url:
         return None
-    return Hub(url, os.environ.get("ROBOTOS_HUB_MCP_TOKEN", ""), device_tools,
+    token = os.environ.get("ROBOTOS_HUB_MCP_TOKEN", "")
+    token_path = os.environ.get("ROBOTOS_HUB_MCP_TOKEN_FILE", "")
+    if token_path:
+        if token:
+            raise ValueError("Set only one of ROBOTOS_HUB_MCP_TOKEN and ROBOTOS_HUB_MCP_TOKEN_FILE")
+        try:
+            # Explicit projected Secret paths may be symlinks; no path is supplied by an API caller.
+            fd = os.open(Path(token_path), os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+            with os.fdopen(fd) as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o022:
+                    raise ValueError("ROBOTOS_HUB_MCP_TOKEN_FILE must be regular and not group/world writable")
+                token = stream.read(4097).rstrip("\r\n")
+        except (OSError, UnicodeError):
+            raise ValueError("Could not read ROBOTOS_HUB_MCP_TOKEN_FILE") from None
+        if len(token) > 4096 or any(c.isspace() for c in token):
+            raise ValueError("ROBOTOS_HUB_MCP_TOKEN_FILE must contain a single token")
+    return Hub(url, token, device_tools,
                os.environ.get("ROBOTOS_DEFAULT_DEVICE", ""),
                receipt_wait_seconds=float(os.environ.get("ROBOTOS_HUB_RECEIPT_WAIT_SECONDS", "5")))

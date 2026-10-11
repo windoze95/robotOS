@@ -20,6 +20,7 @@ class ConfigReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != ACTION) return
         val app = context.applicationContext as App
+        if (app.workspace.blocked) { resultData = "error: Device access is restricted"; return }
         val cfg = try {
             val b64 = requireNotNull(intent.getStringExtra("json_b64")) { "missing json_b64 extra" }
             app.store.import(String(Base64.decode(b64, Base64.DEFAULT), Charsets.UTF_8))

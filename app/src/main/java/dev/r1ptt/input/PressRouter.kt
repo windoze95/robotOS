@@ -4,6 +4,9 @@ package dev.r1ptt.input
 internal class PressRouter(private val select: () -> ((Boolean) -> Unit)) {
     private var captured: ((Boolean) -> Unit)? = null
 
+    /** Security/navigation cancellation must not synthesize UP and submit the old capture. */
+    fun cancel() { captured = null }
+
     fun edge(down: Boolean) {
         if (down) {
             if (captured != null) return

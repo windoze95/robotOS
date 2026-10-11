@@ -35,7 +35,7 @@ def main(argv=None):
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     server.workers.start()
-    print('robotOS hub listening on loopback port ' + str(config.port), flush=True)
+    print('robotOS hub listening on ' + config.bind + ':' + str(config.port), flush=True)
     try:
         server.serve_forever()
     finally:

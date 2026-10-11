@@ -97,6 +97,7 @@ class UpdateManager(private val app: App) {
     }
 
     fun check() {
+        if (!app.workspace.networkAllowed) return
         if (!foreground || installing || app.turns.busy) return message("Finish your conversation before checking for updates.")
         cancelWork()
         discardDownload()
@@ -128,6 +129,7 @@ class UpdateManager(private val app: App) {
     }
 
     fun download() {
+        if (!app.workspace.networkAllowed) return
         val release = _state.value.release ?: return
         if (!foreground || installing || app.turns.busy) return message("Finish your conversation before downloading.")
         cancelWork()
@@ -167,6 +169,7 @@ class UpdateManager(private val app: App) {
     }
 
     fun install() {
+        if (!app.workspace.networkAllowed) return
         val bytes = signedMetadata ?: return
         val file = ready ?: return
         if (!app.packageManager.canRequestPackageInstalls()) return message("Allow update requests in Android settings first.")
@@ -185,7 +188,7 @@ class UpdateManager(private val app: App) {
             try {
                 // No new voice turn can start once the main-thread gate above has been acquired.
                 withContext(Dispatchers.IO) { verifyApk(file, release) }
-                if (id != generation || !foreground || !installing) throw UpdateException("Update cancelled before installation.")
+                if (!app.workspace.networkAllowed || id != generation || !foreground || !installing) throw UpdateException("Update cancelled before installation.")
                 val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
                     setAppPackageName(ReleaseManifest.PACKAGE)
                     setSize(release.apkSize)
@@ -204,7 +207,7 @@ class UpdateManager(private val app: App) {
                         }
                     }
                 }
-                if (id != generation || !foreground || !installing || app.turns.busy || app.smsBusy)
+                if (!app.workspace.networkAllowed || id != generation || !foreground || !installing || app.turns.busy || app.smsBusy)
                     throw UpdateException("Update cancelled before installation.")
                 val callback = PendingIntent.getBroadcast(app, stagedId,
                     Intent(app, UpdateInstallReceiver::class.java).setAction(RESULT_ACTION),
@@ -240,13 +243,19 @@ class UpdateManager(private val app: App) {
     }
 
     fun confirmation(): Intent? {
-        if (!foreground || !installing) return null
+        if (!app.workspace.networkAllowed || !foreground || !installing) return null
         return approval?.also { externalInstaller = true }
     }
 
     fun confirmationReturned(cancelled: Boolean) {
         externalInstaller = false
         if (cancelled && installing) cancelInstall("Update request cancelled. Check the installed version before retrying.")
+    }
+
+    fun restrict() {
+        if (installing) cancelInstall("Device access restricted; update cancelled.")
+        else cancelWork("Device access restricted; update paused.")
+        approval = null
     }
 
     fun cancel() {

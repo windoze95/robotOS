@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: robotos
+resources:
+  - namespace.yaml
+  - hub.yaml
+  - network-policy.yaml
+  - ingress.yaml
+configMapGenerator:
+  - name: robotos-config
+    literals:
+      - ROBOTOS_HUB_PUBLIC_ORIGIN=https://workspace.example.net
+      - ROBOTOS_HUB_HERMES_URL=https://hermes.example.net
+      - ROBOTOS_HUB_SPEECH_URL=
+      - ROBOTOS_HUB_SPEECH_MODEL=gpt-4o-mini-transcribe
+# Set an immutable image tag or digest built from this repository before applying.
+images:
+  - name: robotos-hub
+    newName: robotos-hub
+    newTag: local

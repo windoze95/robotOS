@@ -35,18 +35,62 @@ class HubManagement(private val app: App, private val hub: WorkspaceClient) {
     private fun management() = permissions.allowed("remote_management")
     private fun locationAllowed() = permissions.allowed("location_reporting") && app.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED &&
         app.checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION) == PackageManager.PERMISSION_GRANTED
-    private fun secureLock() = app.getSystemService(KeyguardManager::class.java).isDeviceSecure && policies.isAdminActive(admin)
+    private fun secureLock() = app.getSystemService(KeyguardManager::class.java).isDeviceSecure && policies.isAdminActive(admin) && policies.hasGrantedPolicy(admin, DeviceAdminInfo.USES_POLICY_FORCE_LOCK)
     fun capabilities(): JSONObject = JSONObject().apply {
         put("ring", management()); put("stop_ring", management()); put("show_message", management())
         put("lock", management() && permissions.allowed("secure_lock") && secureLock())
         put("locate", management() && locationAllowed())
         put("clear_workspace", management() && permissions.allowed("allow_clear_workspace"))
         put("factory_reset", management() && permissions.allowed("allow_factory_reset") && policies.isDeviceOwnerApp(app.packageName) && policies.hasGrantedPolicy(admin, DeviceAdminInfo.USES_POLICY_WIPE_DATA))
-        put("update_app", management() && permissions.allowed("allow_updates"))
-        put("reboot", management() && permissions.allowed("allow_reboot") && policies.isDeviceOwnerApp(app.packageName))
-        put("device_tool", app.store.value.hermes.deviceApi && !hub.blocked)
+        put("update_app", !hub.quarantined && management() && permissions.allowed("allow_updates"))
+        put("reboot", !hub.quarantined && management() && permissions.allowed("allow_reboot") && policies.isDeviceOwnerApp(app.packageName))
+        put("device_tool", app.store.value.hermes.deviceApi && !hub.quarantined)
     }
+    fun security(): JSONObject = JSONObject()
+        .put("app_restriction_available", true)
+        .put("secure_lock_configured", app.getSystemService(KeyguardManager::class.java).isDeviceSecure)
+        .put("device_admin_active", policies.isAdminActive(admin))
+        .put("device_owner", policies.isDeviceOwnerApp(app.packageName))
+        .put("secure_lock_available", management() && permissions.allowed("secure_lock") && secureLock())
+        .put("secure_lock_applied", hub.identity.value.optBoolean("secure_lock_applied"))
+        .put("workspace_restricted", hub.quarantined)
+
+    /** Existing consent automatically becomes effective when Android's security setup improves. */
+    fun refreshProtection() {
+        val state = hub.identity.value
+        val restricted = state.optBoolean("lost") || state.optBoolean("revoked")
+        val available = management() && permissions.allowed("secure_lock") && secureLock()
+        if (!restricted || !available) {
+            if (state.optBoolean("secure_lock_applied")) hub.identity.update { it.put("secure_lock_applied", false) }
+        } else if (!state.optBoolean("secure_lock_applied")) {
+            // Persist evidence only after Android accepts the request. Never invent a credential.
+            if (runCatching { policies.lockNow() }.isSuccess)
+                hub.identity.update { it.put("secure_lock_applied", true) }
+        }
+        dev.r1ptt.ui.DeviceActivity.refreshRecovery(app)
+    }
+
+    /** Applied durably before command delivery, including a newer policy returned with a receipt. */
+    private suspend fun applyPolicy(response: JSONObject, ticket: Long) {
+        require(response.opt("lost") is Boolean && response.opt("revoked") is Boolean) { "Invalid recovery policy" }
+        val revision = response.optLong("policy_revision", 0)
+        require(revision >= 0 && revision >= hub.identity.value.optLong("policy_revision")) { "Stale recovery policy" }
+        // A healthy response admitted before a wake, reconnect or authorization denial cannot
+        // restore access. A newly observed restrictive response is always applied immediately.
+        if (ticket != hub.recoveryTicket() && !response.getBoolean("lost") && !response.getBoolean("revoked")) return
+        hub.identity.update {
+            it.put("lost", response.getBoolean("lost")).put("revoked", response.getBoolean("revoked"))
+                .put("lost_message", response.optString("lost_message")).put("policy_revision", revision)
+            if (response.has("name")) it.put("name", response.getString("name"))
+        }
+        // Cancellation of an active chat must not interrupt application of its lost-device policy.
+        withContext(NonCancellable + Dispatchers.Main) { refreshProtection() }
+        hub.identity.update { it.put("applied_policy_revision", revision) }
+        if (hub.quarantined) hub.recoverNow()
+    }
+
     suspend fun checkIn() {
+        val ticket = hub.recoveryTicket()
         val battery = app.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         val level = battery?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
         val scale = battery?.getIntExtra(BatteryManager.EXTRA_SCALE, 100) ?: 100
@@ -56,16 +100,18 @@ class HubManagement(private val app: App, private val hub: WorkspaceClient) {
             .put("charging", (battery?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0)
             .put("capabilities", capabilities()).put("settings_revision", state.optLong("settings_revision"))
             .put("settings", appliedSettings()).put("lost_applied", state.optBoolean("lost"))
+            .put("applied_policy_revision", state.optLong("applied_policy_revision")).put("security", security())
         if (locationAllowed()) lastLocation()?.let { packet.put("location", it) }
         val response = hub.api("POST", "/devices/self/check-in", packet, recovery = true)
         check(response.getString("device_id") == state.getString("device_id")) { "Recovery response belongs to another device" }
-        hub.identity.update { it.put("lost", response.optBoolean("lost")).put("revoked", response.optBoolean("revoked"))
-            .put("lost_message", response.optString("lost_message"))
-            if (response.has("name")) it.put("name", response.getString("name")) }
-        if (hub.blocked) withContext(Dispatchers.Main) { app.turns.cancelTurn(); WorkspaceActivity.quarantineActive(); app.deviceApi.stop() }
-        else withContext(Dispatchers.Main) { app.deviceApi.apply(app.store.value.hermes) }
+        applyPolicy(response, ticket)
+        hub.recoveryConfirmed(ticket)
+        withContext(NonCancellable + Dispatchers.Main) {
+            dev.r1ptt.ui.DeviceActivity.refreshRecovery(app)
+            if (hub.networkAllowed) { app.deviceApi.apply(app.store.value.hermes); app.resumeHermesTexts() }
+        }
         val revision = response.optLong("settings_revision")
-        if (revision > state.optLong("settings_revision") && management()) {
+        if (revision > state.optLong("settings_revision") && management() && hub.networkAllowed) {
             applySettings(response.optJSONObject("settings") ?: JSONObject())
             if (settingsMatch(response.optJSONObject("settings") ?: JSONObject()))
                 hub.identity.update { it.put("settings_revision", revision) }
@@ -95,16 +141,19 @@ class HubManagement(private val app: App, private val hub: WorkspaceClient) {
         }
         ackPending()
     }
-    private fun ackPending(): Set<String> {
+    private suspend fun ackPending(): Set<String> {
         val accepted = mutableSetOf<String>()
         hub.store.items("receipts").filter { it.optBoolean("ack_pending") && it.optString("status") != "executing" && it.optString("device_id") == hub.identity.value.optString("device_id") }.forEach { receipt ->
             val id = receipt.getString("id")
+            val ticket = hub.recoveryTicket()
             try {
-                hub.api("POST", "/devices/self/commands/$id/ack", JSONObject()
+                val response = hub.api("POST", "/devices/self/commands/$id/ack", JSONObject()
                     .put("status", receipt.getString("status")).put("result", receipt.optJSONObject("result") ?: JSONObject().put("message", receipt.optString("result"))), recovery = true)
+                if (response.has("policy_revision")) applyPolicy(response, ticket)
                 hub.store.put("receipts", receipt.put("ack_pending", false)); accepted.add(id)
             } catch (error: HubException) {
-                if (error.status !in setOf(400, 404, 409)) throw error
+                error.response?.takeIf { it.has("policy_revision") }?.let { applyPolicy(it, ticket) }
+                if (error.status !in setOf(400, 403, 404, 409)) throw error
                 // Preserve the disagreement for review without poisoning every later check-in.
                 // A new command whose received receipt was rejected must never execute.
                 hub.store.put("receipts", receipt.put("ack_pending", false).put("ack_error", error.code.ifBlank { "Host rejected receipt (${error.status})" }))
@@ -116,6 +165,8 @@ class HubManagement(private val app: App, private val hub: WorkspaceClient) {
         val id = command.getString("id"); val type = command.getString("type")
         fun finish(status: String, text: String) = hub.store.commandState(id, status, text)
         if (command.optLong("expires_at") <= System.currentTimeMillis()) { finish("failed", "Command expired before execution"); return }
+        if (hub.quarantined && type !in RECOVERY_COMMANDS) { finish("failed", "Device access is restricted; this action is disabled"); return }
+        if (hub.recoveryPending && type !in RECOVERY_COMMANDS) { finish("failed", "Recovery must be verified after waking or reconnecting"); return }
         if (!capabilities().optBoolean(type)) { finish("failed", "This capability is disabled or unsupported on this R1"); return }
         val payload = command.optJSONObject("payload") ?: JSONObject()
         when (type) {
@@ -134,7 +185,7 @@ class HubManagement(private val app: App, private val hub: WorkspaceClient) {
                 finish("applied", "Return information saved for display")
             }
             "lock" -> withContext(Dispatchers.Main) {
-                check(secureLock()); policies.lockNow()
+                check(secureLock()); policies.lockNow(); hub.identity.update { it.put("secure_lock_applied", true) }
                 finish("applied", "Android secure lock requested")
             }
             "locate" -> {
@@ -173,7 +224,7 @@ class HubManagement(private val app: App, private val hub: WorkspaceClient) {
         }
     }
     private fun deviceTool(command: JSONObject) {
-        check(!hub.blocked)
+        check(hub.networkAllowed)
         val payload = command.getJSONObject("payload"); val name = payload.getString("tool")
         val args = payload.optJSONObject("arguments")?.copyJson() ?: JSONObject()
         val route = when (name.removePrefix("robotos_")) {
@@ -248,6 +299,15 @@ class HubManagement(private val app: App, private val hub: WorkspaceClient) {
             }
         } ?: lastLocation()
     }
+    fun scheduleImmediateRecovery() {
+        if (!hub.identity.paired) return
+        val job = android.app.job.JobInfo.Builder(78, ComponentName(app, HubRecoveryService::class.java))
+            .setRequiredNetworkType(android.app.job.JobInfo.NETWORK_TYPE_ANY).setMinimumLatency(0).build()
+        app.getSystemService(android.app.job.JobScheduler::class.java).schedule(job)
+    }
+    companion object {
+        internal val RECOVERY_COMMANDS = setOf("ring", "stop_ring", "show_message", "lock", "locate", "clear_workspace", "factory_reset")
+    }
     fun scheduleRecovery() {
         val scheduler = app.getSystemService(android.app.job.JobScheduler::class.java)
         if (hub.identity.paired && permissions.allowed("recovery_checkins")) {
@@ -265,11 +325,11 @@ class HubRecoveryService : android.app.job.JobService() {
     private var work: Job? = null
     override fun onStartJob(parameters: android.app.job.JobParameters): Boolean {
         val app = application as App
-        if (!app.workspace.identity.allowed("recovery_checkins")) return false
+        if (!app.workspace.identity.paired || (parameters.jobId == 77 && !app.workspace.identity.allowed("recovery_checkins"))) return false
         work = CoroutineScope(Dispatchers.IO).launch {
             try {
                 app.radio.hold("workspace-recovery", true)
-                withTimeoutOrNull(90_000) { if (app.radio.awaitOnline(10_000)) app.workspace.sync() }
+                withTimeoutOrNull(90_000) { if (app.radio.awaitOnline(10_000)) app.workspace.recoveryOnly() }
             } catch (_: Exception) { /* Journaled outcomes remain recoverable; no credentials are logged. */ }
             finally { app.radio.hold("workspace-recovery", false); jobFinished(parameters, false) }
         }
@@ -277,6 +337,6 @@ class HubRecoveryService : android.app.job.JobService() {
     }
     override fun onStopJob(parameters: android.app.job.JobParameters): Boolean {
         work?.cancel(); (application as App).radio.hold("workspace-recovery", false)
-        return (application as App).workspace.identity.allowed("recovery_checkins")
+        return parameters.jobId == 78 || (application as App).workspace.identity.allowed("recovery_checkins")
     }
 }

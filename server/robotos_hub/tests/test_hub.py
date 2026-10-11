@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -192,7 +193,9 @@ class HubTest(HubFixture):
         self.store.create_command(actor, self.a['device_id'], dict(id='clear', type='clear_workspace', payload={}, expires_at=now()+60000, confirmation=self.a['device_id']))
         self.assertError('device_quarantined', self.store.authenticate_token, self.a['device_token'])
         self.assertTrue(self.checkin()['revoked'])
-        self.assertEqual('clear', self.checkin()['commands'][0]['id'])
+        policy = self.checkin()
+        self.assertEqual([], policy['commands'])
+        self.assertEqual('clear', self.checkin(applied_policy_revision=policy['policy_revision'], security={'workspace_restricted': True})['commands'][0]['id'])
 
     def test_run_preview_matches_visible_text_including_whitespace(self):
         self.store.create_prompt(self.owner, dict(id='prompt', title='Exact preview', instruction='  Instruction\n',
@@ -297,6 +300,136 @@ class HubTest(HubFixture):
         self.workers.tick()
         self.assertEqual([], self.fake.submissions)
         self.assertEqual('cancelled', self.store.runs(self.owner, run['id'])['status'])
+
+    def test_offline_lost_policy_survives_restart_and_precedes_recovery_commands(self):
+        self.checkin()
+        self.store.create_command(self.owner, self.a['device_id'], dict(id='ring-offline', type='ring', payload={}, expires_at=now() + 60000))
+        policy = self.store.patch_device(self.owner, self.a['device_id'], dict(base_revision=1, lost=True, lost_message='Return to owner'))
+        self.store = Store(self.config)
+        first = self.checkin(lost_applied=True)  # A legacy/stale bool is not a current policy acknowledgement.
+        self.assertEqual(policy['policy_revision'], first['policy_revision'])
+        self.assertTrue(first['lost'])
+        self.assertEqual([], first['commands'])
+        self.assertEqual(0, self.store.devices(self.owner, self.a['device_id'])['applied_policy_revision'])
+        self.assertError('policy_not_applied', self.store.ack, self.a['recovery'], 'ring-offline', {'status': 'received'})
+        self.assertError('policy_not_applied', self.checkin, applied_policy_revision=policy['policy_revision'])
+        next_check = self.checkin(applied_policy_revision=policy['policy_revision'], security={'workspace_restricted': True})
+        self.assertEqual(['ring-offline'], [command['id'] for command in next_check['commands']])
+        receipt = self.store.ack(self.a['recovery'], 'ring-offline', {'status': 'received'})
+        self.assertTrue(receipt['lost'])
+        self.assertEqual(policy['policy_revision'], receipt['policy_revision'])
+        self.assertIsNotNone(self.store.devices(self.owner, self.a['device_id'])['policy_applied_at'])
+
+    def test_policy_acknowledgement_fences_later_loss_message_and_found_state(self):
+        policy = self.store.patch_device(self.owner, self.a['device_id'], dict(base_revision=1, lost=True))
+        revision = policy['policy_revision']
+        self.checkin(applied_policy_revision=revision, security={'workspace_restricted': True})
+        renamed = self.store.patch_device(self.owner, self.a['device_id'], dict(base_revision=policy['revision'], name='Renamed'))
+        self.assertEqual(revision, renamed['policy_revision'])
+        changed = self.store.patch_device(self.owner, self.a['device_id'], dict(base_revision=renamed['revision'], lost_message='New return details'))
+        self.assertEqual(revision + 1, changed['policy_revision'])
+        stale = self.checkin(applied_policy_revision=revision, lost_applied=True, security={'workspace_restricted': True})
+        self.assertNotEqual(stale['policy_revision'], stale['applied_policy_revision'])
+        found = self.store.patch_device(self.owner, self.a['device_id'], dict(base_revision=changed['revision'], lost=False))
+        self.assertFalse(found['lost'])
+        self.assertNotEqual(found['policy_revision'], found['applied_policy_revision'])
+        self.checkin(applied_policy_revision=found['policy_revision'], security={'workspace_restricted': False})
+        # A check-in sent before finding the R1 cannot restore the old restriction report.
+        self.checkin(applied_policy_revision=revision, security={'workspace_restricted': True})
+        latest = self.store.devices(self.owner, self.a['device_id'])
+        self.assertEqual(found['policy_revision'], latest['applied_policy_revision'])
+        self.assertFalse(latest['security']['workspace_restricted'])
+
+    def test_quarantine_fences_received_action_admission_without_claiming_cancellation(self):
+        self.checkin()
+        action = dict(id='inflight', device_id=self.a['device_id'], tool='set_volume', arguments={'request_id': 'inflight', 'level': 20}, expires_at=now() + 60000)
+        self.store.device_action(self.mcp, action)
+        self.store.ack(self.a['recovery'], 'inflight', {'status': 'received'})
+        self.store.patch_device(self.owner, self.a['device_id'], dict(base_revision=1, revoked=True))
+        self.assertEqual('unknown', self.store.device_action(self.mcp, action_id='inflight')['status'])
+        denied = self.assertError('device_quarantined', self.store.ack, self.a['recovery'], 'inflight', {'status': 'received'})
+        self.assertTrue(denied.details['revoked'])
+        self.assertEqual([], self.checkin()['commands'])
+        # A final receipt from an action already admitted before revocation remains evidence.
+        self.store.ack(self.a['recovery'], 'inflight', {'status': 'applied', 'result': {'volume': 20}})
+        self.assertEqual('applied', self.store.device_action(self.mcp, action_id='inflight')['status'])
+
+    def test_quarantine_blocks_maintenance_and_preserves_permitted_recovery(self):
+        self.checkin(settings={'remote_management': True, 'allow_updates': True, 'allow_reboot': True})
+        session, _ = self.store.login(self.config.owner_password)
+        recent = self.store.session(session)
+        for kind in ('update_app', 'reboot'):
+            self.store.create_command(recent, self.a['device_id'], dict(id=kind, type=kind,
+                payload={'version_code': 5000} if kind == 'update_app' else {}, expires_at=now() + 60000, confirmation=self.a['device_id']))
+        self.store.patch_device(self.owner, self.a['device_id'], dict(base_revision=1, lost=True))
+        self.assertEqual({'cancelled'}, {item['status'] for item in self.store.commands(self.owner, self.a['device_id'])['items']})
+        self.assertError('device_quarantined', self.store.create_command, recent, self.a['device_id'],
+                         dict(id='restart-lost', type='reboot', payload={}, expires_at=now() + 60000, confirmation=self.a['device_id']))
+        self.assertEqual('queued', self.store.create_command(self.owner, self.a['device_id'],
+                         dict(id='find', type='ring', payload={}, expires_at=now() + 60000))['status'])
+
+    def test_only_owner_recovery_commands_survive_quarantine(self):
+        self.checkin()
+        for command_id, actor in [('owner-ring', self.owner), ('mcp-ring', self.mcp), ('mcp-received', self.mcp), ('legacy-ring', self.owner)]:
+            self.store.create_command(actor, self.a['device_id'], dict(id=command_id, type='ring', payload={}, expires_at=now() + 60000))
+        self.store.ack(self.a['recovery'], 'mcp-received', {'status': 'received'})
+        with self.store.transaction() as db:
+            db.execute("UPDATE commands SET issuer_role='' WHERE id='legacy-ring'")
+        policy = self.store.patch_device(self.owner, self.a['device_id'], dict(base_revision=1, lost=True))
+        receipts = {item['id']: item['status'] for item in self.store.commands(self.owner, self.a['device_id'])['items']}
+        self.assertEqual({'owner-ring': 'queued', 'mcp-ring': 'cancelled', 'mcp-received': 'unknown', 'legacy-ring': 'cancelled'}, receipts)
+        self.assertError('device_quarantined', self.store.create_command, self.mcp, self.a['device_id'],
+                         dict(id='mcp-new', type='ring', payload={}, expires_at=now() + 60000))
+        commands = self.checkin(applied_policy_revision=policy['policy_revision'], security={'workspace_restricted': True})['commands']
+        self.assertEqual(['owner-ring'], [command['id'] for command in commands])
+        self.assertError('device_quarantined', self.store.ack, self.a['recovery'], 'mcp-received', {'status': 'received'})
+
+    def test_security_posture_refresh_does_not_grant_local_permissions(self):
+        self.checkin(applied_policy_revision=1, security={'app_restriction_available': True, 'secure_lock_configured': False},
+                     capabilities={'lock': False}, settings={'remote_management': False})
+        self.checkin(applied_policy_revision=1, security={'app_restriction_available': True, 'secure_lock_configured': True,
+                     'device_admin_active': True, 'secure_lock_available': False}, capabilities={'lock': False}, settings={'remote_management': False})
+        device = self.store.devices(self.owner, self.a['device_id'])
+        self.assertTrue(device['security']['secure_lock_configured'])
+        self.assertFalse(device['security']['secure_lock_available'])
+        self.assertFalse(device['applied_settings']['remote_management'])
+        self.assertError('invalid_security', self.checkin, security={'secure_lock_configured': 'true'})
+        self.assertError('invalid_security', self.checkin, security={'password': True})
+        self.assertError('policy_revision_conflict', self.checkin, applied_policy_revision=100)
+
+    def test_ordinary_settings_are_disabled_until_owner_restores_access(self):
+        policy = self.store.patch_device(self.owner, self.a['device_id'], dict(base_revision=1, lost=True))
+        self.assertError('device_quarantined', self.store.patch_device, self.owner, self.a['device_id'],
+                         dict(base_revision=policy['revision'], settings={'brightness': 150}))
+        renamed = self.store.patch_device(self.owner, self.a['device_id'], dict(base_revision=policy['revision'], name='Lost R1'))
+        restored = self.store.patch_device(self.owner, self.a['device_id'],
+                                          dict(base_revision=renamed['revision'], lost=False, settings={'brightness': 150}))
+        self.assertEqual({'brightness': 150}, restored['desired_settings'])
+
+    def test_command_handoff_rechecks_expiration_and_local_capability(self):
+        self.checkin()
+        self.store.create_command(self.owner, self.a['device_id'], dict(id='ring-race', type='ring', payload={}, expires_at=now() + 60000))
+        self.checkin(capabilities={'ring': False})
+        self.assertError('unsupported_capability', self.store.ack, self.a['recovery'], 'ring-race', {'status': 'received'})
+        self.checkin()
+        with self.store.transaction() as db:
+            db.execute('UPDATE commands SET expires_at=0 WHERE id=?', ('ring-race',))
+        self.assertError('command_expired', self.store.ack, self.a['recovery'], 'ring-race', {'status': 'received'})
+
+    def test_v1_database_migration_preserves_offline_lost_devices(self):
+        self.store.patch_device(self.owner, self.a['device_id'], dict(base_revision=1, lost=True, lost_message='Keep this policy'))
+        with self.store.connection() as db:
+            for column in ('policy_revision', 'applied_policy_revision', 'policy_applied_at', 'security'):
+                db.execute('ALTER TABLE devices DROP COLUMN ' + column)
+            db.execute('PRAGMA user_version=1')
+            db.execute('ALTER TABLE commands DROP COLUMN issuer_role')
+        self.store = Store(self.config)
+        device = self.store.devices(self.owner, self.a['device_id'])
+        self.assertTrue(device['lost'])
+        self.assertEqual('Keep this policy', device['lost_message'])
+        self.assertEqual(1, device['policy_revision'])
+        self.assertEqual(0, device['applied_policy_revision'])
+        self.assertError('device_quarantined', self.store.authenticate_token, self.a['device_token'])
 
     def test_commands_require_capability_local_permission_recent_auth_exact_target(self):
         command = dict(id='clear', type='clear_workspace', payload={}, expires_at=now() + 60000, confirmation=self.a['device_id'])
@@ -415,6 +548,18 @@ class HttpTest(HubFixture):
         status, response_headers = result.status, dict(result.getheaders())
         connection.close()
         return status, json.loads(data), response_headers
+
+    def test_readiness_requires_database_and_running_worker_but_liveness_remains(self):
+        self.assertEqual(503, self.request('GET', 'ready')[0])
+        self.workers.start()
+        try:
+            self.assertEqual((200, {'status': 'ok'}), self.request('GET', 'ready')[:2])
+            with patch.object(self.store, 'connection', side_effect=sqlite3.OperationalError('private database error')):
+                self.assertEqual((503, {'status': 'not_ready'}), self.request('GET', 'ready')[:2])
+                self.assertEqual(200, self.request('GET', 'health')[0])
+        finally:
+            self.workers.stop()
+        self.assertEqual(503, self.request('GET', 'ready')[0])
 
     def test_cookie_csrf_origin_and_no_secret_session_body(self):
         status, body, headers = self.request('POST', 'session', {'password': self.config.owner_password})

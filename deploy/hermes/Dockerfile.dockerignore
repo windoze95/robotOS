@@ -1,0 +1,13 @@
+**
+!server
+!server/robotos_mcp
+!server/robotos_mcp/**
+!server/hermes
+!server/hermes/skills
+!server/hermes/skills/robotos
+!server/hermes/skills/robotos/SKILL.md
+!deploy
+!deploy/hermes
+!deploy/hermes/bootstrap.py
+**/__pycache__
+**/tests

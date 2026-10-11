@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {previewPrompt, missingTranscripts, reconcileDraft, reconcileSavedDraft, recoveryAfterSave, operationIsCurrent, transcriptTargetUnchanged, captureAdmission, commandSupport, isRunActive, locationDescription, describeSync, escapeHTML} from '../model.mjs';
+import {previewPrompt, missingTranscripts, reconcileDraft, reconcileSavedDraft, recoveryAfterSave, operationIsCurrent, transcriptTargetUnchanged, captureAdmission, commandSupport, isRunActive, locationDescription, describeSync, escapeHTML, recoveryPolicy, securityPosture} from '../model.mjs';
 
 test('preview preserves user text and omits empty blocks; audio requires a transcript', () => {
   const prompt = {instruction:'Plan this.',blocks:[{kind:'text',text:'First thought\nnext line'},{kind:'text',text:' '},{kind:'audio',text:''},{kind:'audio',text:'Second thought'}]};
@@ -27,6 +27,31 @@ test('management requires explicit reported capability and secure lock is respec
   assert.equal(commandSupport({capabilities:{lock:true},applied_settings:{remote_management:true,secure_lock:false}},'lock').enabled,false);
   assert.equal(commandSupport({capabilities:{ring:true}},'ring').enabled,false);
   assert.equal(commandSupport({capabilities:{ring:true},applied_settings:{remote_management:true}},'ring').enabled,true);
+});
+test('lost policy confirmation requires the exact policy and local restriction evidence', () => {
+  const lost={lost:true,lost_applied:true,policy_revision:3,applied_policy_revision:2,security:{workspace_restricted:true}};
+  assert.equal(recoveryPolicy(lost).confirmed,false);
+  assert.match(recoveryPolicy(lost).detail,/no expiry/);
+  assert.equal(recoveryPolicy({...lost,applied_policy_revision:3}).confirmed,true);
+  assert.equal(recoveryPolicy({...lost,applied_policy_revision:3,security:{}}).confirmed,false);
+  assert.equal(recoveryPolicy({lost:true,lost_applied:true}).confirmed,false);
+  assert.equal(recoveryPolicy({...lost,lost:false,revoked:true}).restricted,true);
+});
+test('security reporting distinguishes app restrictions from Android lock and local consent', () => {
+  assert.equal(securityPosture({}).title,'Protection not yet reported');
+  const device={security:{app_restriction_available:true,secure_lock_configured:false}};
+  assert.equal(securityPosture(device).title,'App restrictions available');
+  device.security.secure_lock_configured=true;
+  assert.equal(securityPosture(device).remoteLock,'Unavailable');
+  device.security.secure_lock_available=true;
+  assert.equal(securityPosture(device).title,'App restrictions and secure Android lock');
+  assert.equal(securityPosture(device).appliedLock,'No lock action confirmed');
+});
+test('quarantined devices cannot be updated or restarted but recovery stays available', () => {
+  const device={lost:true,capabilities:{reboot:true,update_app:true,ring:true},applied_settings:{remote_management:true,allow_updates:true,allow_reboot:true}};
+  assert.equal(commandSupport(device,'reboot').enabled,false);
+  assert.equal(commandSupport(device,'update_app').enabled,false);
+  assert.equal(commandSupport(device,'ring').enabled,true);
 });
 test('missing device evidence never becomes a location or applied settings claim', () => {
   assert.equal(locationDescription(null),null);

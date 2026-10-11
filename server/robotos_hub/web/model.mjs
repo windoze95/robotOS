@@ -28,12 +28,36 @@ export const commandLabel = type => ({ring:'Ring device',stop_ring:'Stop ringing
 export function commandSupport(device, type) {
   const caps = device.capabilities || {};
   const settings = device.applied_settings || {};
+  if ((device.lost || device.revoked) && ['update_app','reboot'].includes(type)) return {enabled:false, reason:'Unavailable while device access is restricted.'};
   if (caps[type] !== true) return {enabled:false, reason:'Enable this capability on the R1 first.'};
   if (settings.remote_management !== true) return {enabled:false, reason:'Enable remote management on the R1 first.'};
   if (type === 'lock' && settings.secure_lock !== true) return {enabled:false, reason:'Set a secure Android lock on the R1 first.'};
   const permission = {locate:'location_reporting',clear_workspace:'allow_clear_workspace',factory_reset:'allow_factory_reset',update_app:'allow_updates',reboot:'allow_reboot'}[type];
   if (permission && settings[permission] !== true) return {enabled:false, reason:'Allow this action in the R1 device permissions first.'};
   return {enabled:true, reason:''};
+}
+export function recoveryPolicy(device) {
+  const restricted = Boolean(device.lost || device.revoked);
+  const confirmed = Number.isInteger(device.policy_revision) && device.policy_revision > 0 &&
+    device.applied_policy_revision === device.policy_revision && (!restricted || device.security?.workspace_restricted === true);
+  return {restricted, confirmed,
+    title: restricted ? (confirmed ? 'Restrictions confirmed by device' : 'Waiting for device confirmation') :
+      (confirmed ? 'Access policy confirmed by device' : 'Waiting for device confirmation'),
+    detail: restricted ? (confirmed ? 'robotOS access is restricted on the R1. Only permitted recovery actions remain available.' :
+      'Host access is blocked now. The saved policy has no expiry and is applied when the R1 next connects. Updated R1s wait for verification before reopening cached content after waking or reconnecting.') :
+      (confirmed ? 'The R1 has acknowledged the current access policy.' : 'The R1 has not acknowledged the current policy. A previously restricted device stays restricted until it receives the change.')};
+}
+export function securityPosture(device) {
+  const security = device.security || {};
+  if (security.app_restriction_available !== true) return {title:'Protection not yet reported',
+    detail:'Update and connect the R1 to report its current protection. Host access controls remain available.',
+    lock:'Not reported', remoteLock:'Not reported', appliedLock:'Not reported'};
+  return {title:security.secure_lock_available === true ? 'App restrictions and secure Android lock' : 'App restrictions available',
+    detail:security.secure_lock_available === true ? 'The R1 can add an Android lock when restricted. Availability is refreshed automatically as local security settings change.' :
+      'robotOS can restrict its own screens and actions. A configured Android credential, active device admin and local management permission are required for secure device locking.',
+    lock:security.secure_lock_configured === true ? 'Secure credential configured' : 'No secure credential reported',
+    remoteLock:security.secure_lock_available === true ? 'Available with local permission' : 'Unavailable',
+    appliedLock:security.secure_lock_applied === true ? 'Lock action reported by device' : 'No lock action confirmed'};
 }
 export function locationDescription(location) {
   if (!location || !Number.isFinite(location.latitude) || !Number.isFinite(location.longitude)) return null;

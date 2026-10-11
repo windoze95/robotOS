@@ -32,6 +32,13 @@ open class DeviceActivity : Activity() {
     private var toastView: TextView? = null
     private var volumeHud: VolumeHud? = null
     private val dismissToast = Runnable { hideToast() }
+    private var recoveryOverlay: View? = null
+    private var recoveryLabel = ""
+    private val deviceDialogs = mutableListOf<AlertDialog>()
+    private val recoveryApp get() = application as? dev.r1ptt.App
+    private fun recoveryBlocksScreen() = recoveryApp?.workspace?.let { hub ->
+        hub.blocked && !(this is dev.r1ptt.workspace.HubSettingsActivity && hub.canReenroll)
+    } == true
 
     override fun attachBaseContext(newBase: Context) {
         super.attachBaseContext(newBase)
@@ -41,11 +48,29 @@ open class DeviceActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         volumeControlStream = AudioManager.STREAM_MUSIC
+        activities.add(this)
+        if (recoveryApp?.workspace?.identity?.paired == true) window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+        window.decorView.viewTreeObserver.addOnGlobalLayoutListener { applyRecoveryGate() }
     }
 
+    override fun onStart() {
+        super.onStart()
+        if (startedActivities++ == 0) recoveryApp?.workspace?.requireRecovery()
+    }
+    override fun onStop() {
+        startedActivities = (startedActivities - 1).coerceAtLeast(0)
+        super.onStop()
+    }
     override fun onResume() {
         super.onResume()
         resumedNow = true
+        recoveryApp?.let { app ->
+            if (app.workspace.identity.paired) {
+                app.workspace.recoverNow()
+                app.workspace.management.refreshProtection()
+            }
+        }
+        applyRecoveryGate()
         window.insetsController?.let {
             it.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
             it.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -63,7 +88,69 @@ open class DeviceActivity : Activity() {
         super.onPause()
     }
 
+    override fun onDestroy() {
+        activities.remove(this)
+        deviceDialogs.toList().also { deviceDialogs.clear() }.forEach { it.dismiss() }
+        super.onDestroy()
+    }
+
+    /** Covers every native screen and hides its accessibility tree, including saved history. */
+    internal fun applyRecoveryGate() {
+        val app = recoveryApp ?: return
+        val hub = app.workspace
+        val content = findViewById<View>(android.R.id.content) ?: return
+        if (!recoveryBlocksScreen()) {
+            (recoveryOverlay?.parent as? ViewGroup)?.removeView(recoveryOverlay)
+            recoveryOverlay = null; recoveryLabel = ""
+            content.visibility = View.VISIBLE
+            content.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
+            return
+        }
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+        getSystemService(android.view.inputmethod.InputMethodManager::class.java).hideSoftInputFromWindow(content.windowToken, 0)
+        content.clearFocus()
+        content.visibility = View.INVISIBLE
+        content.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+        deviceDialogs.toList().also { deviceDialogs.clear() }.forEach { it.dismiss() }
+        val identity = hub.identity.value
+        val label = if (hub.quarantined) "Device access restricted" else "Recovery verification required"
+        val detail = if (hub.quarantined) identity.optString("lost_message").ifBlank {
+            "This R1 is restricted. Restore access from your robotOS host console."
+        } else "This R1 must verify its recovery status before robotOS opens. Connect to your host and retry. Saved notes and recordings remain on this R1."
+        val signature = label + detail + identity.optString("return_message")
+        if (recoveryOverlay != null && recoveryLabel == signature) return
+        (recoveryOverlay?.parent as? ViewGroup)?.removeView(recoveryOverlay)
+        recoveryLabel = signature
+        val page = ui.page("Device recovery") {}
+        page.root.setBackgroundColor(getColor(R.color.bg))
+        page.body.addView(ui.title(label))
+        page.body.addView(ui.note(detail))
+        if (hub.quarantined) {
+            identity.optString("return_message").takeIf(String::isNotBlank)?.let { page.body.addView(ui.text(it)) }
+            page.body.addView(ui.note(if (identity.optBoolean("secure_lock_applied")) "Android secure lock was requested. robotOS remains restricted until restored by the owner."
+                else "robotOS is restricted. A secure Android screen lock is not active through robotOS; this does not lock other Android apps or protect against physical system access."))
+        }
+        page.body.addView(ui.button("Check recovery status", primary = true) { hub.recoverNow() })
+        page.body.addView(ui.button("Connect to a network") {
+            startActivity(android.content.Intent(android.provider.Settings.Panel.ACTION_INTERNET_CONNECTIVITY))
+        })
+        if (hub.canReenroll) page.body.addView(ui.button("Pair this cleared R1") {
+            startActivity(android.content.Intent(this, dev.r1ptt.workspace.HubSettingsActivity::class.java))
+        })
+        page.body.addView(ui.button("Stop ringing") { hub.management.stopRinging() })
+        recoveryOverlay = page.root
+        (window.decorView as ViewGroup).addView(page.root, ViewGroup.LayoutParams(-1, -1))
+        page.root.bringToFront()
+        wheelScrollTarget = page.scroll
+    }
+
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (recoveryBlocksScreen()) {
+            if (event.keyCode == KeyEvent.KEYCODE_BUTTON_1 && event.action == KeyEvent.ACTION_DOWN)
+                recoveryApp?.workspace?.management?.stopRinging()
+            handleWheel(event)
+            return true
+        }
         if (event.keyCode == KeyEvent.KEYCODE_BUTTON_1) {
             if (event.repeatCount == 0) PttService.instance?.frameworkButton(event.action == KeyEvent.ACTION_DOWN)
             return true
@@ -105,8 +192,12 @@ open class DeviceActivity : Activity() {
     }
 
     fun showDeviceDialog(builder: AlertDialog.Builder): AlertDialog = builder.create().also { dialog ->
+        deviceDialogs.add(dialog)
+        dialog.setOnDismissListener { deviceDialogs.remove(dialog) }
         dialog.setOnKeyListener { _, _, event -> handleWheel(event, scrollable(dialog.window?.decorView), inDialog = true) }
+        if (recoveryApp?.workspace?.identity?.paired == true) dialog.window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
         dialog.show()
+        if (recoveryBlocksScreen()) dialog.dismiss()
     }
 
     /**
@@ -114,6 +205,7 @@ open class DeviceActivity : Activity() {
      * followed by finish() or a page change still shows, on whichever screen is in front.
      */
     fun showToast(message: CharSequence) {
+        if (recoveryBlocksScreen()) return
         val at = SystemClock.uptimeMillis()
         window.decorView.post {
             if (isFinishing || isDestroyed || !resumedNow) pendingToast = message to at else displayToast(message)
@@ -180,8 +272,26 @@ open class DeviceActivity : Activity() {
         return null
     }
 
-    private companion object {
-        var pendingToast: Pair<CharSequence, Long>? = null
+    companion object {
+        private var startedActivities = 0
+        private val activities = java.util.Collections.newSetFromMap(java.util.WeakHashMap<DeviceActivity, Boolean>())
+        fun refreshRecovery(app: dev.r1ptt.App) {
+            val update = {
+                if (app.workspace.blocked) {
+                    PttService.instance?.cancelPressForRecovery()
+                    app.deviceApi.stop(); app.turns.cancelTurn(); app.turns.stopSpeech(); app.updates.restrict()
+                    dev.r1ptt.workspace.WorkspaceActivity.pauseForRecovery()
+                }
+                if (app.workspace.quarantined) {
+                    app.getSystemService(android.app.NotificationManager::class.java).cancel(dev.r1ptt.messages.SmsController.NOTIFICATION)
+                    dev.r1ptt.workspace.WorkspaceActivity.quarantineActive()
+                }
+                activities.toList().forEach { if (!it.isDestroyed) it.applyRecoveryGate() }
+            }
+            if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) update()
+            else android.os.Handler(android.os.Looper.getMainLooper()).post { update() }
+        }
+        private var pendingToast: Pair<CharSequence, Long>? = null
     }
 }
 

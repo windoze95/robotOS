@@ -8,7 +8,7 @@ from pathlib import Path
 import plistlib
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 from server.hermes import setup_hub
 
@@ -86,6 +86,106 @@ class HubInstallerTest(unittest.TestCase):
         for origin in ("http://example.com", "https://user:password@example.com", "https://example.com/path"):
             with self.assertRaises(SystemExit):
                 setup_hub.main(["--public-origin", origin])
+
+    def test_split_host_configuration_preserves_device_identity_and_state(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            state, key = home / 'state', home / 'hermes-key'
+            key.write_text('remote-api-key\n')
+            source = Path(__file__).resolve().parents[2]
+            with patch.object(Path, 'home', return_value=home), patch.object(sys, 'path', list(sys.path)), \
+                 patch.object(setup_hub.sys, 'platform', 'linux'), patch.dict(os.environ, {'HERMES_HOME': str(home / '.hermes')}), \
+                 patch.object(setup_hub.subprocess, 'run') as external, contextlib.redirect_stdout(io.StringIO()) as output:
+                args = ['--source', str(source), '--state', str(state), '--no-start']
+                setup_hub.main(args)
+                before = json.loads((state / 'hub.json').read_text())
+                setup_hub.main(args + ['--hermes-url', 'https://hermes.example.com', '--hermes-token-file', str(key)])
+                after = json.loads((state / 'hub.json').read_text())
+                self.assertEqual('https://hermes.example.com', after['hermes_url'])
+                self.assertEqual('remote-api-key', after['hermes_token'])
+                for field in ('owner_token', 'owner_password', 'mcp_token', 'data_dir'):
+                    self.assertEqual(before[field], after[field])
+                self.assertNotIn('remote-api-key', output.getvalue())
+                external.assert_not_called()
+
+    def test_mcp_only_installs_adapter_and_skill_without_hub_or_service(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            state, key = home / 'adapter', home / 'mcp-key'
+            source = Path(__file__).resolve().parents[2]
+            token = 'scoped-secret-' * 4
+            key.write_text(token + '\n')
+            with patch.object(Path, 'home', return_value=home), patch.object(sys, 'path', list(sys.path)), \
+                 patch.dict(os.environ, {'HERMES_HOME': str(home / '.hermes')}), \
+                 patch.object(setup_hub.shutil, 'which', return_value='/bin/hermes'), \
+                 patch.object(setup_hub.subprocess, 'run') as external, contextlib.redirect_stdout(io.StringIO()) as output:
+                args = ['--source', str(source), '--state', str(state), '--mcp-only', '--no-start',
+                        '--hub-url', 'https://hub.example.com', '--mcp-token-file', str(key)]
+                self.assertEqual(0, setup_hub.main(args))
+                self.assertTrue((state / 'service/robotos_mcp/__main__.py').is_file())
+                self.assertFalse((state / 'service/robotos_hub').exists())
+                self.assertFalse((state / 'hub.json').exists())
+                self.assertFalse((state / 'owner-password.txt').exists())
+                self.assertFalse((home / 'Library/LaunchAgents').exists())
+                self.assertFalse((home / '.config/systemd').exists())
+                self.assertTrue((home / '.hermes/skills/robotos/SKILL.md').is_file())
+                saved_env = home / '.hermes/.env'
+                self.assertEqual(0o600, saved_env.stat().st_mode & 0o777)
+                self.assertEqual(token, setup_hub.read_env(saved_env)['ROBOTOS_HUB_MCP_TOKEN'])
+                calls = [call.args[0] for call in external.call_args_list]
+                self.assertTrue(calls)
+                self.assertTrue(all(command[1:3] == ['config', 'set'] for command in calls))
+                self.assertNotIn(token, repr(calls) + output.getvalue())
+                # Reinstall may reuse the existing scoped credential, without ever opening hub config.
+                (state / 'hub.json').write_text('not a hub config and must not be read')
+                self.assertEqual(0, setup_hub.main(args[:-2]))
+
+    def test_remote_plaintext_and_conflicting_mode_fail_before_install(self):
+        invalid = [
+            ['--hermes-url', 'http://192.168.1.2:8642'],
+            ['--mcp-only', '--hub-url', 'http://hub:8787'],
+            ['--mcp-only'],
+            ['--mcp-only', '--hub-url', 'https://hub.example.com', '--hermes-url', 'https://hermes.example.com'],
+            ['--hub-url', 'https://hub.example.com'],
+        ]
+        with patch.object(setup_hub, 'install_code') as install:
+            for args in invalid:
+                with self.assertRaises(SystemExit):
+                    setup_hub.main(args)
+            install.assert_not_called()
+
+    def test_launchd_retries_only_transient_bootstrap_registration_race(self):
+        with patch.object(setup_hub.subprocess, 'run', side_effect=[Mock(returncode=0), Mock(returncode=5), Mock(returncode=0)]) as run, \
+             patch.object(setup_hub.time, 'sleep') as sleep:
+            setup_hub.start_launch_agent('/private/agent.plist')
+            self.assertEqual(run.call_args_list[1].args, run.call_args_list[2].args)
+            sleep.assert_called_once_with(0.5)
+        with patch.object(setup_hub.subprocess, 'run', side_effect=[Mock(returncode=0), Mock(returncode=78)]) as run, \
+             patch.object(setup_hub.time, 'sleep') as sleep:
+            with self.assertRaises(RuntimeError):
+                setup_hub.start_launch_agent('/private/agent.plist')
+            self.assertEqual(2, run.call_count)
+            sleep.assert_not_called()
+
+    def test_registering_a_foreign_token_cannot_break_local_hub_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            state, key = home / 'hub', home / 'wrong-token'
+            source = Path(__file__).resolve().parents[2]
+            key.write_text('another-hub-token-' * 3)
+            with patch.object(Path, 'home', return_value=home), patch.object(sys, 'path', list(sys.path)), \
+                 patch.dict(os.environ, {'HERMES_HOME': str(home / '.hermes')}), \
+                 patch.object(setup_hub.sys, 'platform', 'linux'), \
+                 patch.object(setup_hub.shutil, 'which', return_value='/bin/hermes'), \
+                 patch.object(setup_hub.subprocess, 'run') as external, contextlib.redirect_stdout(io.StringIO()):
+                args = ['--source', str(source), '--state', str(state), '--no-start']
+                setup_hub.main(args)
+                before = (state / 'hub.json').read_bytes()
+                with self.assertRaises(SystemExit):
+                    setup_hub.main(args + ['--register-hermes', '--mcp-token-file', str(key)])
+                self.assertEqual(before, (state / 'hub.json').read_bytes())
+                self.assertFalse((home / '.hermes/.env').exists())
+                external.assert_not_called()
 
 
 if __name__ == "__main__":

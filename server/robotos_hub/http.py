@@ -8,6 +8,7 @@ import hmac
 import json
 import mimetypes
 import socket
+import sqlite3
 import threading
 import time
 
@@ -199,6 +200,17 @@ class Handler(BaseHTTPRequestHandler):
             parts = path.split('/')
             if path == 'health' and method == 'GET':
                 return self._send(200, {'status': 'ok'}, method=method)
+            if path == 'ready' and method == 'GET':
+                # Do not make workspace readiness depend on an upstream Hermes outage.
+                # A dead worker or unreadable local database does make this instance unready.
+                workers = self.server.workers
+                ready = bool(workers.thread and workers.thread.is_alive() and not workers.stop_event.is_set())
+                try:
+                    with self.store.connection() as db:
+                        ready = db.execute('SELECT id FROM resume WHERE id=1').fetchone() is not None and ready
+                except (sqlite3.Error, OSError):
+                    ready = False
+                return self._send(200 if ready else 503, {'status': 'ok' if ready else 'not_ready'}, method=method)
             if path == 'session' and method == 'POST':
                 self.server.rate_limit.check(('login', self.client_address[0]), 8)
                 body = self._json()

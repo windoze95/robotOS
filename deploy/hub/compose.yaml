@@ -1,0 +1,48 @@
+name: robotos
+services:
+  hub:
+    image: ${ROBOTOS_IMAGE:-robotos-hub:local}
+    build:
+      context: ../..
+      dockerfile: deploy/hub/Dockerfile
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 512m
+    stop_grace_period: 40s
+    ports:
+      # A host TLS proxy (Tailscale Serve, nginx, Caddy) owns external exposure.
+      - '127.0.0.1:${ROBOTOS_LOCAL_PORT:-8787}:8787'
+    environment:
+      ROBOTOS_HUB_BIND: 0.0.0.0
+      ROBOTOS_HUB_ALLOW_REMOTE_BIND: 'true'
+      ROBOTOS_HUB_PUBLIC_ORIGIN: ${ROBOTOS_PUBLIC_ORIGIN:?Set the exact HTTPS console origin}
+      ROBOTOS_HUB_HERMES_URL: ${HERMES_API_URL:?Set the authenticated HTTPS Hermes API origin}
+      ROBOTOS_HUB_OWNER_PASSWORD_FILE: /run/secrets/owner-password
+      ROBOTOS_HUB_OWNER_TOKEN_FILE: /run/secrets/owner-token
+      ROBOTOS_HUB_MCP_TOKEN_FILE: /run/secrets/mcp-token
+      ROBOTOS_HUB_HERMES_TOKEN_FILE: /run/secrets/hermes-token
+      ROBOTOS_HUB_SPEECH_TOKEN_FILE: /run/secrets/speech-token
+      ROBOTOS_HUB_SPEECH_URL: ${SPEECH_API_URL:-}
+      ROBOTOS_HUB_SPEECH_MODEL: ${SPEECH_MODEL:-gpt-4o-mini-transcribe}
+    volumes:
+      - hub-data:/var/lib/robotos
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    secrets: [owner-password, owner-token, mcp-token, hermes-token, speech-token]
+volumes:
+  hub-data:
+secrets:
+  owner-password:
+    file: ${ROBOTOS_SECRET_DIR:-./private}/owner-password
+  owner-token:
+    file: ${ROBOTOS_SECRET_DIR:-./private}/owner-token
+  mcp-token:
+    file: ${ROBOTOS_SECRET_DIR:-./private}/mcp-token
+  hermes-token:
+    file: ${ROBOTOS_SECRET_DIR:-./private}/hermes-token
+  speech-token:
+    file: ${ROBOTOS_SECRET_DIR:-./private}/speech-token

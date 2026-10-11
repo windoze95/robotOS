@@ -147,10 +147,10 @@ class SmsController(
      */
     fun send(review: SmsReview, clearDraft: Boolean = true, agent: Boolean = false,
              authorize: () -> Boolean = { true }, done: (Boolean, String) -> Unit) {
-        if (dispatching || app.updates.installing || (!agent && app.turns.busy)) {
+        if (!app.workspace.networkAllowed || dispatching || app.updates.installing || (!agent && app.turns.busy)) {
             done(false, "Finish the current action before sending."); return
         }
-        if (!authorize() || !canSend || !cellularEnabled() || SubscriptionManager.getDefaultSmsSubscriptionId() != review.record.subscriptionId) {
+        if (!app.workspace.networkAllowed || !authorize() || !canSend || !cellularEnabled() || SubscriptionManager.getDefaultSmsSubscriptionId() != review.record.subscriptionId) {
             done(false, "SMS access or the selected SIM changed. Nothing was sent. Try the command or review again."); return
         }
         dispatching = true
@@ -161,7 +161,7 @@ class SmsController(
             var persisted = false
             var quotaReserved = false
             try {
-                check(authorize() && canSend && !app.updates.installing && cellularEnabled())
+                check(app.workspace.networkAllowed && authorize() && canSend && !app.updates.installing && cellularEnabled())
                 check(SubscriptionManager.getDefaultSmsSubscriptionId() == review.record.subscriptionId)
                 check(db.record(review.record.id) == null) { "This attempt was already recorded." }
                 if (agent) {
@@ -181,7 +181,7 @@ class SmsController(
                 pendingUntil = pending.values.maxOrNull() ?: 0L
                 val sent = ArrayList(record.parts.indices.map { callback(record, it, false) })
                 val delivered = ArrayList(record.parts.indices.map { callback(record, it, true) })
-                if (!authorize()) {
+                if (!app.workspace.networkAllowed || !authorize()) {
                     failBeforeSend(record, "Authorization revoked before handoff")
                     if (quotaReserved) { app.hermesQuota.release(record.id); quotaReserved = false }
                     main.post { done(true, "Device access changed. Nothing was sent.") }
@@ -282,7 +282,7 @@ class SmsController(
     private fun changed() { _revision.value += 1 }
 
     private fun notifyPrivate(message: String) {
-        if (!permitted(Manifest.permission.POST_NOTIFICATIONS)) return
+        if (app.workspace.blocked || !permitted(Manifest.permission.POST_NOTIFICATIONS)) return
         runCatching {
             val notifications = app.getSystemService(NotificationManager::class.java)
             notifications.createNotificationChannel(NotificationChannel(CHANNEL, "Messages", NotificationManager.IMPORTANCE_DEFAULT)

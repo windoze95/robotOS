@@ -74,23 +74,51 @@ Unknown submissions keep the original identity and are never blindly replaced.
 
 ## Device management
 
+`GET /health` is process liveness. `GET /ready` returns `{status:"ok"}` with HTTP 200 only
+while the worker is running and the local database is readable; otherwise it returns
+`{status:"not_ready"}` with HTTP 503. Neither endpoint requires a credential or calls Hermes.
+
 - Owner `GET /devices`, `GET /devices/{id}`.
 - Recovery `POST /devices/self/check-in {name?,app_version,battery,charging,capabilities,
-  settings_revision?,settings?,location?,lost_applied?}` returns `{device_id,lost,lost_message,
+  settings_revision?,settings?,location?,lost_applied?,applied_policy_revision?,security?}` returns
+  `{device_id,lost,revoked,lost_message,policy_revision,applied_policy_revision,
   settings_revision,settings,commands:[...]}`. Capabilities are an object of boolean values.
   Location, when permitted, includes latitude,longitude,accuracy,observed_at; never invent a fix.
+  `policy_revision` starts at 1 and increases when lost/revoked/return-message policy changes.
+  Clients persist/apply policy before commands and acknowledge it on their next check-in.
+  On boot/wake/foreground/reconnect, paired R1s gate cached content and ordinary actions until
+  a fresh recovery check succeeds. Network failure never bypasses this gate; disk caches remain intact.
+  `applied_policy_revision` defaults to 0; future revisions are rejected, stale acknowledgements
+  cannot replace newer ones. When restricted, acknowledging the current revision also requires
+  `security.workspace_restricted:true`. Until that acknowledgement, no commands are returned.
+  `lost_applied` is retained for older clients but does not confirm the current policy.
+  `security` contains boolean observations: `app_restriction_available`, `secure_lock_configured`,
+  `device_admin_active`, `device_owner`, `secure_lock_available`, `secure_lock_applied`, and
+  `workspace_restricted`. These observations never grant local permissions. Owner device
+  responses include this object, both policy revisions and `policy_applied_at`.
 - Owner `PATCH /devices/{id} {base_revision,name?,settings?,lost?,lost_message?,revoked?}` updates
   desired state. Lost is a persistent policy. Desired settings remain distinguishable from applied.
+  Ordinary settings changes are rejected while the resulting policy is lost or revoked; owner
+  recovery changes such as return information, renaming and restoring access remain available.
 - Owner `POST /devices/{id}/commands {id,type,payload,expires_at,confirmation?}` creates a durable
   targeted command; `GET /devices/{id}/commands` lists its receipts. Types: ring, stop_ring,
   show_message, lock, locate, clear_workspace, factory_reset, update_app, reboot.
   Dangerous commands require recent owner authentication and exact `confirmation: device_id`.
   Unsupported capabilities are rejected rather than shown as applied.
+  Lost/revoked devices accept only owner-issued, permitted recovery commands (ring, stop_ring, show_message,
+  lock, locate, clear_workspace, factory_reset). Queued device tools, updates and reboots are
+  cancelled; previously received ones become unknown and cannot be executed again. The same fence
+  applies to MCP-issued management commands and legacy commands whose issuer cannot be established.
 - Recovery `POST /devices/self/commands/{id}/ack {status,result?}`; statuses received, applied,
   failed, unknown. `result` is an object: use `{message:"..."}` for explanatory text or
   `{http_status,body}` for a native device-tool response. Android persists intent before execution
   and never repeats uncertain actions. A permanent conflicting receipt is retained for review
   without preventing unrelated workspace synchronization.
+  A successful receipt includes the latest `policy_revision`, `applied_policy_revision`, `lost`,
+  `revoked` and `lost_message`. Clients apply those before effects. `received` is denied when an
+  ordinary action is quarantined, or recovery policy has not yet been acknowledged; those error
+  bodies carry the same policy fields. A handoff already admitted before policy changes may have
+  executed, and later final receipts remain accepted without pretending that it was cancelled.
 - Owner `GET /audit` returns sanitized administrative history (no prompt bodies or credentials).
 
 ### Scoped MCP device actions

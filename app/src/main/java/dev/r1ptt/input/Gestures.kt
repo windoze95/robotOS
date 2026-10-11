@@ -38,6 +38,13 @@ class Gestures(
     private var holdTimer: Cancellable? = null
     private var tapTimer: Cancellable? = null
 
+    /** Cancels the whole gesture without producing a release, tap, or other user action. */
+    fun cancel() {
+        holdTimer?.cancel(); holdTimer = null
+        tapTimer?.cancel(); tapTimer = null
+        pressed = false; held = false; pendingTaps = 0
+    }
+
     fun down() {
         if (pressed) return // a duplicate edge (auto-repeat, or both input paths reporting)
         pressed = true

@@ -43,7 +43,7 @@ class HermesTexts(
 
     /** Called for each newly saved incoming text. True when it is the owner's and went to Hermes. */
     fun received(record: SmsRecord): Boolean {
-        if (app.workspace.blocked) return false
+        if (app.workspace.quarantined) return false
         val cfg = app.store.value
         val link = cfg.hermes
         if (!record.incoming || !link.passthrough || record.body.isBlank()) return false
@@ -67,16 +67,16 @@ class HermesTexts(
 
     private fun done(id: String) = synchronized(prefs) {
         val edit = prefs.edit().remove("pending.$id").remove("tries.$id").remove("answer.$id")
-            .remove("owner.$id").remove("connection.$id").remove("asking.$id").remove("replying.$id")
+            .remove("owner.$id").remove("connection.$id").remove("asking.$id").remove("replying.$id").remove("recovery_wait.$id")
             .putBoolean("done.$id", true)
         // Incoming SMS records are the durable source; bound this additional deduplication cache.
         prefs.all.keys.filter { it.startsWith("done.") }.dropLast(511).forEach { edit.remove(it) }
         edit.commit()
     }
 
-    private fun allowed(record: SmsRecord, owner: String, connection: String): Boolean {
+    private fun authorityAllowed(record: SmsRecord, owner: String, connection: String): Boolean {
         val link = app.store.value.hermes
-        return !app.workspace.blocked && link.passthrough && link.owner == owner && connection(app) == connection &&
+        return !app.workspace.quarantined && link.passthrough && link.owner == owner && connection(app) == connection &&
             SmsRecipientText.sameNumber(record.peer, owner, SmsRecipientText.region(app))
     }
 
@@ -100,9 +100,20 @@ class HermesTexts(
         val owner = prefs.getString("owner.${record.id}", null)
         val connection = prefs.getString("connection.${record.id}", null)
         // Old unbound queued work cannot safely acquire a different owner's authority on upgrade.
-        if (owner == null || connection == null || !allowed(record, owner, connection)) {
+        if (owner == null || connection == null || !authorityAllowed(record, owner, connection)) {
             last = "A queued text was kept in Messages because relay access changed"
             return true
+        }
+        if (prefs.getBoolean("recovery_wait.${record.id}", false) && clock() - since >= GIVE_UP_MS) {
+            last = if (prefs.getBoolean("asking.${record.id}", false)) "Recovery verification expired. Check Hermes before trying this request again."
+                else "Recovery verification expired. The text remains in Messages; no request was submitted."
+            return true
+        }
+        if (!app.workspace.networkAllowed) {
+            check(prefs.edit().putBoolean("recovery_wait.${record.id}", true).commit())
+            last = "Waiting for device recovery verification; the text remains in Messages"
+            app.workspace.recoverNow()
+            return false
         }
         if (prefs.getBoolean("replying.${record.id}", false)) {
             last = "Reply status is unknown; check Messages before sending again"
@@ -121,7 +132,8 @@ class HermesTexts(
                         "robotOS couldn't reach Hermes. Your text is saved in Messages; no request was submitted."
                     } else {
                         val config = app.store.value
-                        if (!allowed(record, owner, connection)) return true
+                        if (!authorityAllowed(record, owner, connection)) return true
+                        if (!app.workspace.networkAllowed) { app.workspace.recoverNow(); return false }
                         check(prefs.edit().putBoolean("asking.${record.id}", true).commit())
                         try { (ask?.invoke(record.body) ?: if (app.workspace.identity.paired) runBlocking {
                             val deviceId = app.workspace.identity.value.getString("device_id")
@@ -138,9 +150,15 @@ class HermesTexts(
                 check(prefs.edit().putString("answer.${record.id}", answer).commit())
                 answer
             }
-            if (!allowed(record, owner, connection)) {
+            if (!authorityAllowed(record, owner, connection)) {
                 last = "Reply cancelled because relay access changed"
                 return true
+            }
+            if (!app.workspace.networkAllowed) {
+                check(prefs.edit().putBoolean("recovery_wait.${record.id}", true).commit())
+                last = "Reply saved; waiting for device recovery verification"
+                app.workspace.recoverNow()
+                return false
             }
             if (answer.isEmpty()) return true
             check(prefs.edit().putBoolean("replying.${record.id}", true).commit())
@@ -193,7 +211,7 @@ class HermesTexts(
 
         /** Hands one reply to Android on the main thread, as a Hermes (agent) send. */
         internal fun replyAllowed(app: App, owner: String, originalConnection: String) =
-            app.store.value.let { cfg -> !app.workspace.blocked && cfg.hermes.passthrough && cfg.hermes.owner == owner && connection(app) == originalConnection }
+            app.store.value.let { cfg -> app.workspace.networkAllowed && cfg.hermes.passthrough && cfg.hermes.owner == owner && connection(app) == originalConnection }
 
         private fun textOwner(app: App, owner: String, body: String, originalConnection: String): Boolean {
             val latch = CountDownLatch(1)

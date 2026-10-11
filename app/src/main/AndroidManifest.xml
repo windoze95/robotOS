@@ -61,6 +61,12 @@
 
         <activity android:name=".workspace.WorkspaceActivity" android:exported="false" android:screenOrientation="portrait" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".workspace.HubSettingsActivity" android:exported="false" android:screenOrientation="portrait" android:windowSoftInputMode="adjustResize" />
+        <receiver android:name=".workspace.HubRecoveryReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
         <service android:name=".workspace.HubRecoveryService" android:exported="true" android:permission="android.permission.BIND_JOB_SERVICE" />
 
         <activity android:name=".ChatsActivity" android:exported="false" android:screenOrientation="portrait" />

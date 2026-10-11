@@ -9,7 +9,7 @@ import java.io.File
 import java.net.URI
 import java.util.concurrent.TimeUnit
 
-class HubException(val status: Int, val code: String, message: String) : IllegalStateException(message)
+class HubException(val status: Int, val code: String, message: String, val response: JSONObject? = null) : IllegalStateException(message)
 
 /** Device credentials never follow redirects or travel over cleartext except explicit loopback. */
 class HubHttp {
@@ -24,7 +24,7 @@ class HubHttp {
     fun json(base: String, token: String, method: String, path: String, body: JSONObject? = null): JSONObject {
         val request = request(base, token, path).method(method,
             if (method in setOf("GET", "HEAD")) null else (body ?: JSONObject()).toString().toRequestBody(JSON)).build()
-        return execute(request, longRunning = path.endsWith("/transcribe"))
+        return execute(request, longRunning = path.endsWith("/transcribe"), recovery = path.startsWith("/devices/self/"))
     }
     fun upload(base: String, token: String, id: String, file: File, mime: String): JSONObject {
         require(file.length() <= 32L * 1024 * 1024) { "Recording is too large to upload" }
@@ -51,8 +51,8 @@ class HubHttp {
     private fun request(base: String, token: String, path: String): Request.Builder = Request.Builder()
         .url(normalize(base) + "/api/v1" + path).header("Accept", "application/json")
         .apply { if (token.isNotBlank()) header("Authorization", "Bearer $token") }
-    private fun execute(request: Request, longRunning: Boolean = false): JSONObject =
-        call(request, if (longRunning) client.newBuilder().readTimeout(150, TimeUnit.SECONDS).callTimeout(160, TimeUnit.SECONDS).build() else client) { response ->
+    private fun execute(request: Request, longRunning: Boolean = false, recovery: Boolean = false): JSONObject =
+        call(request, if (longRunning) client.newBuilder().readTimeout(150, TimeUnit.SECONDS).callTimeout(160, TimeUnit.SECONDS).build() else if (recovery) client.newBuilder().connectTimeout(5, TimeUnit.SECONDS).readTimeout(8, TimeUnit.SECONDS).callTimeout(10, TimeUnit.SECONDS).build() else client) { response ->
         val raw = response.body?.string().orEmpty()
         if (!response.isSuccessful) fail(response.code, raw)
         if (raw.isBlank()) JSONObject() else JSONObject(raw)
@@ -67,7 +67,7 @@ class HubHttp {
             503 -> "The host service is unavailable. Your local work is saved."
             else -> "The host could not complete this request ($status). Your local work is saved."
         }
-        throw HubException(status, code, message)
+        throw HubException(status, code, message, runCatching { JSONObject(raw.orEmpty()) }.getOrNull())
     }
     companion object {
         private val JSON = "application/json; charset=utf-8".toMediaType()

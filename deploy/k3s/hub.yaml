@@ -1,0 +1,121 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: robotos-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: robotos-hub
+spec:
+  replicas: 1
+  # Never overlap writers during an ordinary rollout. The data-directory process
+  # lock independently refuses a second process. Do not attach an HPA.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: robotos-hub
+  template:
+    metadata:
+      labels:
+        app: robotos-hub
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: hub
+          image: robotos-hub:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8787
+          envFrom:
+            - configMapRef:
+                name: robotos-config
+          env:
+            - name: ROBOTOS_HUB_BIND
+              value: 0.0.0.0
+            - name: ROBOTOS_HUB_ALLOW_REMOTE_BIND
+              value: 'true'
+            - name: ROBOTOS_HUB_OWNER_PASSWORD_FILE
+              value: /run/secrets/owner-password
+            - name: ROBOTOS_HUB_OWNER_TOKEN_FILE
+              value: /run/secrets/owner-token
+            - name: ROBOTOS_HUB_MCP_TOKEN_FILE
+              value: /run/secrets/mcp-token
+            - name: ROBOTOS_HUB_HERMES_TOKEN_FILE
+              value: /run/secrets/hermes-token
+            - name: ROBOTOS_HUB_SPEECH_TOKEN_FILE
+              value: /run/secrets/speech-token
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: '2'
+              memory: 512Mi
+          startupProbe:
+            exec:
+              command: [python, /opt/robotos/healthcheck.py, ready]
+            periodSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: [python, /opt/robotos/healthcheck.py, ready]
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: [python, /opt/robotos/healthcheck.py, health]
+            periodSeconds: 30
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/robotos
+            - name: credentials
+              mountPath: /run/secrets
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: robotos-data
+        - name: credentials
+          secret:
+            secretName: robotos-credentials
+            defaultMode: 0440
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: robotos-hub
+spec:
+  selector:
+    app: robotos-hub
+  ports:
+    - name: http
+      port: 8787
+      targetPort: http

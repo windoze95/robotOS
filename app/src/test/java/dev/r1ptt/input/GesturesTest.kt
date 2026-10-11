@@ -119,4 +119,13 @@ class GesturesTest {
         g.up()
         assertEquals(listOf("press", "hold", "release"), events)
     }
+    @Test fun recoveryCancellationDropsHeldAndPendingTapTimersWithoutSynthesizingActions() {
+        g.down(); time.advance(100); g.cancel(); time.advance(1000); g.up()
+        assertEquals(listOf("press"), events)
+        press(60); g.cancel(); time.advance(1000)
+        assertEquals(listOf("press", "press", "short"), events)
+        press(300)
+        assertEquals(listOf("press", "press", "short", "press", "hold", "release"), events)
+    }
+
 }

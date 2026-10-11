@@ -48,6 +48,7 @@ object SmsExternalDraft {
 class SmsComposeActivity : Activity() {
     override fun onCreate(state: android.os.Bundle?) {
         super.onCreate(state)
+        if ((application as App).workspace.blocked) { startActivity(Intent(this, dev.r1ptt.HomeActivity::class.java)); finish(); return }
         val draft = runCatching { SmsExternalDraft.parse(intent) }.getOrNull()
         startActivity(if (draft != null) SmsExternalDraft.open(this, draft) else Intent(this, MessagesActivity::class.java)
             .putExtra(SmsExternalDraft.NOTICE, "Only one-recipient SMS drafts are supported. MMS, attachments, and group messages are not supported; nothing was sent."))
@@ -59,6 +60,7 @@ class SmsComposeActivity : Activity() {
 class SmsRespondService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if ((application as App).workspace.blocked) { stopSelf(startId); return START_NOT_STICKY }
         val draft = intent?.takeIf { it.action == android.telephony.TelephonyManager.ACTION_RESPOND_VIA_MESSAGE }
             ?.let { runCatching { SmsExternalDraft.parse(it) }.getOrNull() }
         (application as App).sms.queueReply(draft) { stopSelf(startId) }

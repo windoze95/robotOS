@@ -1,0 +1,7 @@
+# Use after compose.tls.yaml AND compose.hermes.yaml when proxying both services.
+services:
+  tls:
+    environment:
+      HERMES_HOSTNAME: ${HERMES_HOSTNAME:?Set the DNS name used in HERMES_API_URL}
+    volumes:
+      - ./Caddyfile.hermes:/etc/caddy/Caddyfile:ro
