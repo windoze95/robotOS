@@ -7,13 +7,15 @@ only relays and acts:
   transcription), sends the text to Hermes unchanged, and speaks Hermes's reply. The R1 never
   interprets texting requests itself; it isn't an agent.
 - **Hermes acts on the R1:** Hermes's `robotos` MCP server gives it `send_sms`, `sms_status`,
-  `recent_texts`, `list_recipients` and `r1_status`. "Text Sam I'm running late" is Hermes calling
+  `recent_texts`, `list_recipients` and `r1_status`, plus separately permitted `speak`, `show`,
+  `set_volume` and `save_recipient` controls. "Text Sam I'm running late" is Hermes calling
   `mcp__robotos__send_sms`, which the R1 carries out with its own SIM and number.
 - **Texting Hermes:** texts from your own number to the R1 go to Hermes (session `robotos-sms`), and
   Hermes's reply is texted back. Texts from anyone else stay in Messages.
-- **Plugged in = radios stay up.** On external power the Wi-Fi/airplane idle cut is skipped, so texts
-  arrive and Hermes can reach the R1 at any time. On battery the normal three-minute cut applies, and
-  the R1 is reachable only while awake. Power never switches the passthrough on or off.
+- **Reachability:** external power skips the Wi-Fi/airplane idle cut. **Stay reachable** does the
+  same on battery; otherwise the saved pocket-mode delay applies, three minutes by default.
+  Cellular service still requires its own setting and a SIM. Connectivity and Tailscale must be
+  available. Power never switches the passthrough on or off.
 
 **Settings → Hermes** on the R1 (also Messages → Options → Hermes) shows whether Hermes can reach the
 R1, when it last did, how many texts it sent today and what happened to your last text. It turns
@@ -21,10 +23,36 @@ Hermes's access and the passthrough on or off and sets your number and the daily
 device token and Hermes's address are provisioned from a computer (below).
 
 ```
- PTT ──► R1: transcribe ──► https://HOST.TAILNET.ts.net/v1/chat/completions ──► Hermes
+ PTT ──► R1: transcribe ──► https://HOST.TAILNET.ts.net/v1/runs ──► Hermes
                                    (Tailscale Serve → 127.0.0.1:8642)                       │
  R1 ◄── device API :8765 ◄── tailscaled HTTP proxy 127.0.0.1:1056 ◄── robotos MCP (stdio) ◄─┘
 ```
+
+Older hosts use `/v1/chat/completions`. Capability discovery selects that compatibility path
+before submission; failed authentication does not select legacy mode.
+
+## Task controls
+
+**Hermes → Check connection** checks the configured host. Supported hosts expose progress,
+approvals, cancellation and model options through the Runs API. Proxy URL prefixes and configured
+credentials are retained for each request. **Choose model** affects future R1 requests and leaves
+the host's global configuration alone.
+
+Requests are recorded locally before submission. Reconnection follows the same task and filters
+replayed events. After restart, final output is saved once to the original chat. It is not spoken
+again automatically. **Check submission** reuses the original request identity only when the
+current host advertises durable idempotency and the request remains inside its retention window.
+An unknown or expired result must be checked on the host before trying another request.
+
+**Stop speech** silences the R1. **Stop task** requests remote cancellation and shows **Stopping**
+until Hermes confirms it. **Review request → Allow once / Deny** applies only to the displayed
+connection, run and approval identity; expired approvals are refreshed. The physical button cannot
+approve an action, and a review blocks gestures from silently cancelling or replacing the task.
+
+**Archive task record** is available after local execution has stopped. Check Hermes on the host
+before confirming it. Archiving clears the R1's active record and keeps a local receipt; it does
+not stop remote work, respond to an approval or resend anything. The archive retains 20 records.
+See [DAILY_DRIVER.md](DAILY_DRIVER.md) for navigation and controls.
 
 ## Pieces
 
@@ -32,15 +60,46 @@ device token and Hermes's address are provisioned from a computer (below).
 |---|---|
 | R1 | `HermesLink` config (`hermes.*`): device API on port 8765, token, passthrough owner. |
 | R1 | `DeviceApi`: JSON over HTTP; serves only Tailscale (100.64.0.0/10, fd7a:115c:a1e0::/48) and loopback peers presenting the token. |
-| R1 | `HermesTexts`: owner texts → Hermes → reply text; retried with backoff for 30 minutes, then one notice. Hermes is asked once per text. |
+| R1 | `HermesTexts`: owner texts → Hermes → reply text. Retries before submission or confirmed SMS rejection use a 30-minute window. An ambiguous submission or SMS handoff is never automatically repeated. |
 | Hermes host | Default profile gateway (`hermes gateway install`) with the API server on 127.0.0.1:8642. |
 | Hermes host | `server/robotos_mcp`: stdio MCP server (standard library only) that calls the R1 through the userspace tailscaled's outbound HTTP proxy. |
 | Hermes host | `server/hermes/skills/robotos/SKILL.md`: when and how Hermes uses the R1. |
 
-Device API endpoints (all need `Authorization: Bearer <token>`): `GET /v1/status`, `POST /v1/sms`
-`{"to","body"}`, `GET /v1/sms/<id>`, `GET /v1/texts[?with=&limit=]`, `GET /v1/recipients`.
+Device API endpoints all require `Authorization: Bearer <token>`:
+
+| Method and path | Input or result |
+|---|---|
+| `GET /v1/status` | Device state, permissions, shared SMS count and receipt retention. |
+| `POST /v1/sms` | `to`, `body`; sends one SMS attempt. |
+| `GET /v1/sms/<id>` | Android's status for that attempt. |
+| `GET /v1/texts[?with=&limit=]` | Local conversations or messages. |
+| `GET /v1/recipients` | Saved names and numbers. |
+| `POST /v1/speak` | `text`, up to 2000 characters; interruptible speech. |
+| `POST /v1/show` | `text`, up to 2000 characters; a dismissible Home notice without waking the display. |
+| `POST /v1/volume` | `level` from 0 to 1; returns the applied speech volume. |
+| `POST /v1/recipients` | `name` and `number`; validates and saves a recipient. |
+| `GET /v1/requests/<request_id>` | Recovers the original device-action receipt (`request_status` in MCP). |
+
 `to` is a phone number (spoken digits are fine) or an exact saved recipient name; ten-digit numbers
-get `+1` on a US SIM. Hermes may send at most `hermes.dailySendLimit` texts a day (default 100).
+get `+1` on a US SIM. SMS tool sends and owner-relay replies share `hermes.dailySendLimit`
+(default 100, zero means unlimited). Queued owner texts retain their original owner and connection;
+permission and identity changes are checked before forwarding and before SMS delivery.
+
+The four added controls require `hermes.allowSpeak`, `allowShow`, `allowVolume` and
+`allowSaveRecipient` respectively. Each defaults off and also requires `hermes.deviceApi`.
+Existing enabled SMS access survives migration. Speech obeys Quiet mode and rejects microphone
+or playback conflicts. Home retains at most 20 notices.
+
+POST bodies accept `request_id` (16–128 letters, digits, hyphens or underscores); MCP supplies one
+when omitted. Receipts are persisted before execution and retained for at least seven days.
+There are 512 slots; a full store rejects a new action instead of evicting an unexpired receipt.
+Malformed receipts block new work and remain available for recovery.
+
+Keep the same ID and exact payload when recovering an action. An interrupted response or HTTP 202
+with `status: unknown` may mean the action ran. Query `request_status`, or `sms_status` when an SMS
+ID is available; do not start a replacement action with a new ID. Exact retries require
+`r1_status.request_receipt_retention_seconds` support and must be inside that window. Older
+robotOS versions cannot guarantee this. A missing or expired receipt is not proof nothing happened.
 
 ## Setup
 
@@ -94,6 +153,12 @@ Tests: `python3 -m unittest server.robotos_mcp.tests.test_robotos_mcp server.her
   `curl -x http://127.0.0.1:1056 -H "Authorization: Bearer $ROBOTOS_R1_TOKEN" http://<R1 IP>:8765/v1/status`
 - Ask Hermes "what's my R1's battery level?": it should call `mcp__robotos__r1_status`.
 - `adb logcat -s r1ptt` shows content-free events: `device api: …`, `hermes text: …`.
+
+Local tests cover mocked host capabilities, request replay, approval identity, cancellation,
+recovery, device permissions, receipt corruption and shared SMS quotas. The CI workflow runs
+Android, Python and Node checks; consult the build's PR for its result. Current-build host,
+physical-control, carrier and reboot/reconnect acceptance remains pending. No installation or
+measurement is established by these tests.
 
 ## Security notes
 

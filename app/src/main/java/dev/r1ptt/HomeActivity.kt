@@ -39,6 +39,7 @@ import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import dev.r1ptt.hermes.HermesRunState
+import dev.r1ptt.hermes.DeviceNotice
 import dev.r1ptt.audio.AudioPlayback
 import kotlin.math.sqrt
 
@@ -116,6 +117,7 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
         findViewById<View>(R.id.menu).setOnClickListener { openMenu() }
         findViewById<View>(R.id.stop).setOnClickListener { app.turns.cancelTurn() }
         findViewById<View>(R.id.hermes_task).setOnClickListener { startActivity(Intent(this, dev.r1ptt.hermes.HermesActivity::class.java)) }
+        findViewById<View>(R.id.hermes_notice).setOnClickListener { app.notices.state.value.lastOrNull()?.let(::openNotice) }
         findViewById<View>(R.id.latest).setOnClickListener { followLatest = true; scrollToEnd() }
         scroll.setOnScrollChangeListener { _, _, y, _, _ ->
             val bottom = scroll.getChildAt(0)?.height ?: 0
@@ -160,6 +162,7 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
             s.launch { AudioPlayback.flow.collect { render(app.turns.state.value) } }
             s.launch { app.history.errors.collect { if (it != null) status.text = it } }
             s.launch { app.hermesRuns.state.collect { renderTask(it) } }
+            s.launch { app.notices.state.collect(::renderNotices) }
         }
         render(app.turns.state.value)
         registerReceiver(batteryEvents, IntentFilter(Intent.ACTION_BATTERY_CHANGED).apply {
@@ -276,7 +279,7 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
         status.setTextColor(getColor(if (s.phase == Phase.ERROR) R.color.error else R.color.dim))
         val stop = findViewById<TextView>(R.id.stop)
         stop.visibility = if (s.phase.active) View.VISIBLE else View.GONE
-        stop.text = if (AudioPlayback.active) "Stop speech" else if (app.hermesRuns.state.value.run?.active == true) "Stop task" else "Disconnect"
+        stop.text = stopLabel()
         stop.setOnClickListener { if (AudioPlayback.active) app.turns.stopSpeech() else app.turns.cancelTurn() }
         if (!s.phase.active) submittedDraft = null
         status.text = when (s.phase) {
@@ -392,8 +395,41 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
         val run = state.run
         line.visibility = if (run != null && (run.active || !run.delivered)) View.VISIBLE else View.GONE
         line.text = state.message.ifBlank { run?.label.orEmpty() }
+        findViewById<TextView>(R.id.stop).text = stopLabel()
         app.hermesRuns.confirmAdmittedDraft(app.history)
         app.hermesRuns.reconcile(app.history)
+    }
+
+    private fun stopLabel() = if (AudioPlayback.active) "Stop speech"
+        else if (app.hermesRuns.state.value.run?.active == true) "Stop task" else "Disconnect"
+
+    private fun renderNotices(notices: List<DeviceNotice>) {
+        findViewById<TextView>(R.id.hermes_notice).apply {
+            visibility = if (notices.isEmpty()) View.GONE else View.VISIBLE
+            text = notices.lastOrNull()?.let { "Note from Hermes${if (notices.size > 1) " · ${notices.size}" else ""}\n${it.text}" }.orEmpty()
+            contentDescription = "$text. Tap to read or dismiss"
+        }
+    }
+
+    private fun openNotice(notice: DeviceNotice) {
+        val message = ui.text(notice.text).apply {
+            setTextIsSelectable(true)
+            setPadding(dp(20), dp(12), dp(20), dp(12))
+        }
+        val body = ScrollView(this).apply { addView(message) }
+        val dialog = AlertDialog.Builder(this).setTitle("Note from Hermes").setView(body)
+            .setPositiveButton("Dismiss note") { _, _ ->
+                runCatching { app.notices.dismiss(notice.id) }.onFailure {
+                    android.widget.Toast.makeText(this, "The note could not be dismissed", android.widget.Toast.LENGTH_LONG).show()
+                }
+            }.setNegativeButton("Close", null)
+        if (app.notices.state.value.size > 1) dialog.setNeutralButton("All notes") { _, _ ->
+            val notes = app.notices.state.value.asReversed()
+            showDeviceDialog(AlertDialog.Builder(this).setTitle("Notes from Hermes")
+                .setItems(notes.map { it.text.take(100) }.toTypedArray()) { _, index -> openNotice(notes[index]) }
+                .setNegativeButton("Close", null))
+        }
+        showDeviceDialog(dialog)
     }
 
     private fun renderConnectivity() {
@@ -407,7 +443,10 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
         textSp = c.textSizeSp.coerceIn(14, 24).toFloat()
         live.textSize = textSp
         input.textSize = textSp
-        for (i in 0 until list.childCount) ((list.getChildAt(i) as? LinearLayout)?.getChildAt(1) as? TextView)?.textSize = textSp
+        for (i in 0 until list.childCount) (list.getChildAt(i) as? LinearLayout)?.let { row ->
+            (row.getChildAt(0) as? TextView)?.textSize = 13f * textSp / 17f
+            (row.getChildAt(1) as? TextView)?.textSize = textSp
+        }
     }
 
     private fun scrollToEnd() {

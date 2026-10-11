@@ -31,6 +31,7 @@ class SmsControllerTest {
     @Before fun setup() {
         app = RuntimeEnvironment.getApplication() as App
         app.deleteDatabase("messages.db")
+        app.getSharedPreferences("device_api", 0).edit().clear().commit()
         shadowOf(app.packageManager).setSystemFeature(PackageManager.FEATURE_TELEPHONY_MESSAGING, true)
         shadowOf(app).grantPermissions(Manifest.permission.SEND_SMS)
         ShadowSubscriptionManager.setDefaultSmsSubscriptionId(1)
@@ -79,6 +80,28 @@ class SmsControllerTest {
         assertFalse(send(review).first)
         assertTrue(transport.records.isEmpty())
         SmsStore(app).use { assertTrue(it.threads().isEmpty()) }
+    }
+
+    @Test fun agentAuthorizationIsCheckedAgainOnWorkerBeforeHandoff() {
+        val review = review()
+        var checks = 0
+        var result: Pair<Boolean, String>? = null
+        controller.send(review, agent = true, authorize = { ++checks == 1 }) { consumed, message -> result = consumed to message }
+        val until = System.nanoTime() + TimeUnit.SECONDS.toNanos(8)
+        while (result == null && System.nanoTime() < until) { shadowOf(Looper.getMainLooper()).idle(); Thread.sleep(5) }
+        assertFalse(requireNotNull(result).first)
+        assertTrue(transport.records.isEmpty())
+        assertEquals(0, app.hermesQuota.sentToday())
+    }
+
+    @Test fun agentSendsConsumeTheSameQuotaRegardlessOfCaller() {
+        app.hermesQuota.claim("existing-api-send", app.store.value.hermes.dailySendLimit)
+        var result: Boolean? = null
+        controller.send(review(), agent = true) { consumed, _ -> result = consumed }
+        val until = System.nanoTime() + TimeUnit.SECONDS.toNanos(8)
+        while (result == null && System.nanoTime() < until) { shadowOf(Looper.getMainLooper()).idle(); Thread.sleep(5) }
+        assertEquals(true, result)
+        assertEquals(2, app.hermesQuota.sentToday())
     }
 
     @Test fun missingDefaultSimCannotSilentlyChooseSlotZero() {

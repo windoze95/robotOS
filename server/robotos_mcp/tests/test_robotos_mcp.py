@@ -2,6 +2,7 @@ import io
 import json
 import threading
 import unittest
+from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import server.robotos_mcp as mcp
@@ -38,6 +39,8 @@ class FakeR1(BaseHTTPRequestHandler):
             self.reply(200, {"path": self.path})
         elif self.path.startswith("/v1/sms/"):
             self.reply(404, {"error": "No text with that id."})
+        elif self.path.startswith("/v1/requests/"):
+            self.reply(200, {"request_id": self.path.rsplit("/", 1)[-1], "status": "saved"})
         else:
             self.reply(404, {"error": "Not found"})
 
@@ -46,8 +49,11 @@ class FakeR1(BaseHTTPRequestHandler):
             return
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         FakeR1.sent.append(body)
-        if body["to"] == "Nobody":
-            self.reply(404, {"error": "No recipient named \"Nobody\" is saved on the R1. Nothing was sent; use a phone number."})
+        if self.path != "/v1/sms":
+            self.reply(200, {"status": "applied", "request_id": body["request_id"], "path": self.path})
+        elif body["to"] == "Nobody":
+            self.reply(404, {"error": "No recipient named \"Nobody\" is saved on the R1. Nothing was sent; use a phone number.",
+                             "request_id": body["request_id"]})
         else:
             self.reply(200, {"id": "00000000-0000-4000-8000-000000000001", "to": "+14055550123", "status": "sent", "parts": 1})
 
@@ -86,7 +92,8 @@ class RobotosMcpTest(unittest.TestCase):
 
     def test_tools_list_is_static_and_schemas_are_closed(self):
         tools = self.rpc({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})[0]["result"]["tools"]
-        self.assertEqual(["send_sms", "sms_status", "recent_texts", "list_recipients", "r1_status"], [t["name"] for t in tools])
+        self.assertEqual(["send_sms", "sms_status", "recent_texts", "list_recipients", "r1_status",
+                          "speak", "show", "set_volume", "save_recipient", "request_status"], [t["name"] for t in tools])
         for tool in tools:
             self.assertEqual("object", tool["inputSchema"]["type"])
             self.assertFalse(tool["inputSchema"]["additionalProperties"])
@@ -96,7 +103,65 @@ class RobotosMcpTest(unittest.TestCase):
                           "params": {"name": "send_sms", "arguments": {"to": "405-555-0123", "body": "On my way"}}})[0]
         self.assertFalse(reply["result"]["isError"])
         self.assertEqual("sent", reply["result"]["structuredContent"]["status"])
-        self.assertEqual([{"to": "405-555-0123", "body": "On my way"}], FakeR1.sent)
+        sent = FakeR1.sent[0].copy()
+        self.assertEqual(36, len(sent.pop("request_id")))
+        self.assertEqual({"to": "405-555-0123", "body": "On my way"}, sent)
+
+    def test_device_controls_include_recoverable_identity(self):
+        for name, args, path in (("speak", {"text": "Dinner is ready"}, "/v1/speak"),
+                                 ("show", {"text": "Meeting at 3"}, "/v1/show"),
+                                 ("set_volume", {"level": 0.4}, "/v1/volume"),
+                                 ("save_recipient", {"name": "Sam", "number": "+14055550123"}, "/v1/recipients")):
+            args["request_id"] = "stable-request-id-1234"
+            _, error, result = mcp.run_tool(self.r1, name, args)
+            self.assertFalse(error)
+            self.assertEqual(path, result["path"])
+            self.assertEqual("stable-request-id-1234", result["request_id"])
+        _, error, result = mcp.run_tool(self.r1, "request_status", {"request_id": "stable-request-id-1234"})
+        self.assertFalse(error)
+        self.assertEqual("saved", result["status"])
+
+    def test_ambiguous_post_reports_unknown_and_never_retries(self):
+        with patch.object(self.r1.opener, "open", side_effect=TimeoutError()) as opened:
+            text, error, result = mcp.run_tool(self.r1, "send_sms", {"to": "Sam", "body": "Hello"})
+        self.assertEqual(1, opened.call_count)
+        self.assertTrue(error)
+        self.assertIn("unknown", text)
+        self.assertNotIn("Nothing was done", text)
+        self.assertEqual("unknown", result["status"])
+        self.assertEqual(36, len(result["request_id"]))
+
+    def test_invalid_control_arguments_do_not_make_requests(self):
+        for name, args in (("speak", {"text": ""}), ("show", {"text": "x" * 2001}),
+                           ("set_volume", {"level": 2}), ("set_volume", {"level": True}),
+                           ("save_recipient", {"name": "Sam"}), ("show", {"text": "Hi", "wake": True})):
+            self.assertTrue(mcp.run_tool(self.r1, name, args)[1])
+        self.assertEqual([], FakeR1.sent)
+
+    def test_proxy_http_errors_preserve_the_request_id_and_are_unknown(self):
+        for code, body in ((502, b'{"error":"Bad gateway"}'), (504, b"<html>Timeout</html>"),
+                           (404, b'{"error":"Proxy route missing"}'), (500, b'[]')):
+            error = mcp.urllib.error.HTTPError(self.r1.url, code, "Proxy failure", {}, io.BytesIO(body))
+            with patch.object(self.r1.opener, "open", side_effect=error) as opened:
+                text, failed, result = mcp.run_tool(self.r1, "send_sms", {"to": "Sam", "body": "Hello"})
+            self.assertTrue(failed)
+            self.assertEqual(1, opened.call_count)
+            self.assertEqual("unknown", result["status"])
+            self.assertEqual(36, len(result["request_id"]))
+            self.assertIn("do not repeat", text)
+            self.assertNotIn("Nothing was done", text)
+
+    def test_authoritative_blocked_receipt_is_preserved(self):
+        ident = "receipt-request-id-1234"
+        body = json.dumps({"error": "Receipt recovery is required. No new action was started.",
+                           "status": "blocked", "request_id": ident}).encode()
+        error = mcp.urllib.error.HTTPError(self.r1.url, 503, "Unavailable", {}, io.BytesIO(body))
+        with patch.object(self.r1.opener, "open", side_effect=error):
+            text, failed, result = mcp.run_tool(self.r1, "show", {"text": "Hi", "request_id": ident})
+        self.assertTrue(failed)
+        self.assertEqual("blocked", result["status"])
+        self.assertEqual(ident, result["request_id"])
+        self.assertIn("recovery", text)
 
     def test_errors_are_tool_errors_with_the_r1_explanation(self):
         reply = self.rpc({"jsonrpc": "2.0", "id": 1, "method": "tools/call",

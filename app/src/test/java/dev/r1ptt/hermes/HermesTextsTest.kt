@@ -103,20 +103,60 @@ class HermesTextsTest {
         assertEquals(1, asked.size)
     }
 
-    @Test fun hermesOutageEndsInOneNoticeAfterTheGiveUpWindow() {
+    @Test fun anAmbiguousHermesFailureIsNeverSubmittedAgain() {
         answer = { throw java.io.IOException("Connection refused") }
         val texts = texts()
         assertTrue(texts.received(incoming(owner, "Hello?")))
         await { asked.size == 1 }
-        Thread.sleep(200)
-        assertTrue(replies.isEmpty())
+        await { replies.size == 1 }
+        assertTrue(replies.single().second.contains("outcome is unknown"))
         now.addAndGet(HermesTexts.GIVE_UP_MS + 1)
         texts.resume()
         await { replies.size == 1 }
-        assertTrue(replies.single().second.contains("couldn't reach Hermes"))
+        assertEquals(1, asked.size)
         texts.resume()
         Thread.sleep(200)
         assertEquals(1, replies.size)
+    }
+
+    @Test fun ownerChangesWhileHermesAnswersRevokeDelivery() {
+        val began = java.util.concurrent.CountDownLatch(1)
+        val finish = java.util.concurrent.CountDownLatch(1)
+        answer = { began.countDown(); finish.await(5, TimeUnit.SECONDS); "Private reply" }
+        val texts = texts()
+        assertTrue(texts.received(incoming(owner, "My private question")))
+        assertTrue(began.await(5, TimeUnit.SECONDS))
+        configure { it.copy(hermes = it.hermes.copy(owner = "+14055550999")) }
+        finish.countDown()
+        Thread.sleep(200)
+        texts.resume()
+        Thread.sleep(200)
+        assertTrue(replies.isEmpty())
+        assertEquals(1, asked.size)
+    }
+
+    @Test fun disabledRelayRevokesQueuedDelivery() {
+        replyWorks = false
+        val texts = texts()
+        texts.received(incoming(owner, "Turn on the light"))
+        await { asked.size == 1 }
+        Thread.sleep(200)
+        configure { it.copy(hermes = it.hermes.copy(passthrough = false)) }
+        replyWorks = true
+        texts.resume()
+        Thread.sleep(200)
+        assertEquals(1, asked.size)
+        assertTrue(replies.isEmpty())
+    }
+
+    @Test fun queuedReplyCannotAcquireANewConnectionsAuthority() {
+        val original = HermesTexts.connectionId(app.store.value)
+        assertTrue(HermesTexts.replyAllowed(app, owner, original))
+        configure { it.copy(agent = it.agent.copy(baseUrl = "https://changed.example/v1")) }
+        assertFalse(HermesTexts.replyAllowed(app, owner, original))
+        assertTrue(HermesTexts.replyAllowed(app, owner, HermesTexts.connectionId(app.store.value)))
+        configure { it.copy(hermes = it.hermes.copy(passthrough = false)) }
+        assertFalse(HermesTexts.replyAllowed(app, owner, HermesTexts.connectionId(app.store.value)))
     }
 
     @Test fun longAnswersAreCutToAFewTexts() {

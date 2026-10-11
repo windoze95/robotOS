@@ -27,6 +27,10 @@
         android:minHeight="48dp" android:gravity="center_vertical" android:paddingVertical="8dp"
         android:textSize="14sp" android:textColor="@color/accent" android:clickable="true" android:focusable="true"
         android:visibility="gone" android:maxLines="2" android:ellipsize="end" />
+    <TextView android:id="@+id/hermes_notice" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:minHeight="48dp" android:gravity="center_vertical" android:paddingHorizontal="12dp" android:paddingVertical="8dp"
+        android:background="@drawable/field" android:textSize="14sp" android:textColor="@color/fg"
+        android:clickable="true" android:focusable="true" android:visibility="gone" android:maxLines="2" android:ellipsize="end" />
     <ProgressBar android:id="@+id/meter" style="?android:attr/progressBarStyleHorizontal"
         android:layout_width="match_parent" android:layout_height="3dp" android:max="100"
         android:progressTint="@color/accent" android:visibility="invisible" />
