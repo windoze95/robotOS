@@ -21,6 +21,7 @@ class App : Application() {
     val deviceApi by lazy { dev.r1ptt.hermes.DeviceApi(this) }
     /** The owner's texts to the R1's number, passed through to Hermes. */
     val hermesTexts by lazy { dev.r1ptt.hermes.HermesTexts(this) }
+    val hermesRuns by lazy { dev.r1ptt.hermes.HermesRuns(filesDir) { store.value } }
     lateinit var store: ConfigStore
         private set
     lateinit var history: History

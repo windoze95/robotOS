@@ -25,7 +25,8 @@ class History(dir: File) {
                               val draft: String = "", val updatedAt: Long = System.currentTimeMillis(),
                               val scrollY: Int = 0, val followLatest: Boolean = true)
     private val io = ScheduledThreadPoolExecutor(1).apply { removeOnCancelPolicy = true }
-    private val pending = mutableMapOf<String, ScheduledFuture<*>>()
+    private class PendingWrite { var future: ScheduledFuture<*>? = null }
+    private val pending = mutableMapOf<String, PendingWrite>()
     private val records = linkedMapOf<String, Record>()
     private val dirty = mutableSetOf<String>()
     private var active = ""
@@ -111,7 +112,7 @@ class History(dir: File) {
 
     @Synchronized fun remove(id: String) {
         if (records.remove(id) == null) return
-        pending.remove(id)?.cancel(false)
+        pending.remove(id)?.future?.cancel(false)
         dirty.remove(id)
         if (records.isEmpty()) Record(newId()).let { records[it.id] = it }
         if (active == id) active = records.values.maxBy { it.updatedAt }.id
@@ -165,19 +166,36 @@ class History(dir: File) {
     private fun persist(id: String, delay: Long = 0) {
         dirty.add(id)
         // Bound the save delay from the first edit; continuous scrolling cannot postpone a draft.
-        if (delay > 0 && pending[id]?.isDone == false) return
-        pending.remove(id)?.cancel(false)
-        pending[id] = io.schedule({
-            if (failures.value != null) return@schedule
-            val (record, selected) = synchronized(this) { dirty.remove(id); records[id] to active }
-            if (record == null) return@schedule
-            runCatching {
-                database?.let { db ->
-                    db.beginTransaction()
-                    try { write(db, record); setActive(db, selected); db.setTransactionSuccessful() }
-                    finally { db.endTransaction() }
+        if (delay > 0 && pending[id]?.future?.isDone == false) return
+        pending.remove(id)?.future?.cancel(false)
+        val job = PendingWrite()
+        pending[id] = job
+        job.future = io.schedule({
+            try {
+                if (failures.value != null) return@schedule
+                val (record, selected) = synchronized(this) {
+                    if (pending[id] !== job) return@schedule
+                    dirty.remove(id)
+                    records[id] to active
                 }
-            }.onFailure { failures.value = "Could not save chats. Existing saved history is preserved." }
+                if (record == null) return@schedule
+                runCatching {
+                    database?.let { db ->
+                        db.beginTransaction()
+                        try { write(db, record); setActive(db, selected); db.setTransactionSuccessful() }
+                        finally { db.endTransaction() }
+                    }
+                }.onFailure { failures.value = "Could not save chats. Existing saved history is preserved." }
+            } finally {
+                synchronized(this) {
+                    // A delayed edit can arrive after this job captured its snapshot. Save it
+                    // next, unless an immediate write or deletion already replaced this job.
+                    if (pending[id] === job) {
+                        pending.remove(id)
+                        if (id in dirty && id in records && failures.value == null) persist(id)
+                    }
+                }
+            }
         }, delay, TimeUnit.MILLISECONDS)
     }
 

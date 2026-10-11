@@ -540,11 +540,12 @@ class MessagesActivity : DeviceActivity(), DictationTarget {
                 Phase.TRANSCRIBING -> "Transcribing into draft…"
                 else -> "Voice activity in progress…"
             }
-            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         } else {
             status.text = if (turn.phase == Phase.ERROR) turn.note else idleHint()
-            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
+        if (turn.phase == Phase.LISTENING || turn.phase == Phase.DICTATING)
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
     private fun adaptToKeyboard() {
