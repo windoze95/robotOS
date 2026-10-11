@@ -63,6 +63,8 @@ import dev.r1ptt.ui.VoiceStage
  */
 class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
     private val app get() = application as App
+    /** What the user calls the agent (Settings → Hermes → Name), shown wherever it is spoken to. */
+    private val agent get() = app.store.value.agent.displayName
 
     private lateinit var status: TextView
     private lateinit var scroll: ScrollView
@@ -510,7 +512,7 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
         empty.visibility = if (showing) View.VISIBLE else View.GONE
         (scroll.getChildAt(0) as LinearLayout).gravity = if (showing) Gravity.CENTER_VERTICAL else Gravity.TOP
         val setup = setupNeeded()
-        findViewById<TextView>(R.id.empty_body).text = setup ?: "Release to send it to Hermes."
+        findViewById<TextView>(R.id.empty_body).text = setup ?: "Release to send it to $agent."
         findViewById<View>(R.id.empty_legend).visibility = if (setup == null) View.VISIBLE else View.GONE
         val existing = empty.findViewWithTag<Button>("setup")
         if (setup == null) { existing?.let(empty::removeView); return }
@@ -579,11 +581,7 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
                 isAllCaps = false
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
-                text = SpannableStringBuilder("HERMES").apply {
-                    val time = DateUtils.formatDateTime(this@HomeActivity, m.at, DateUtils.FORMAT_SHOW_TIME or if (DateUtils.isToday(m.at)) 0
-                        else DateUtils.FORMAT_SHOW_DATE or DateUtils.FORMAT_NO_YEAR or DateUtils.FORMAT_ABBREV_MONTH)
-                    append("  ·  ${time.uppercase()}", ForegroundColorSpan(getColor(R.color.faint)), 0)
-                }
+                text = replyLabel(m)
                 setCompoundDrawablesRelative(ui.icon(R.drawable.ic_hermes, R.color.accent).apply { setBounds(0, 0, dp(12), dp(12)) }, null, null, null)
                 compoundDrawablePadding = dp(6)
             })
@@ -596,6 +594,13 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
                 setPadding(0, dp(6), 0, 0)
             })
         }
+    }
+
+    /** The agent's name and when it replied: today's time, or the date for older replies. */
+    private fun replyLabel(m: Msg) = SpannableStringBuilder(agent.uppercase()).apply {
+        val time = DateUtils.formatDateTime(this@HomeActivity, m.at, DateUtils.FORMAT_SHOW_TIME or if (DateUtils.isToday(m.at)) 0
+            else DateUtils.FORMAT_SHOW_DATE or DateUtils.FORMAT_NO_YEAR or DateUtils.FORMAT_ABBREV_MONTH)
+        append("  ·  ${time.uppercase()}", ForegroundColorSpan(getColor(R.color.faint)), 0)
     }
 
     // ---- menu ----
@@ -654,6 +659,13 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
     }
 
     private fun renderTask(state: HermesRunState) {
+        drawTask(state)
+        renderAction(shown())
+        app.hermesRuns.confirmAdmittedDraft(app.history)
+        app.hermesRuns.reconcile(app.history)
+    }
+
+    private fun drawTask(state: HermesRunState) {
         val card = findViewById<TextView>(R.id.hermes_task)
         val run = state.run
         card.visibility = if (run != null && (run.active || !run.delivered)) View.VISIBLE else View.GONE
@@ -661,24 +673,21 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
         val trouble = run?.status in setOf("failed", "submission_unknown", "interrupted")
         val tint = when { urgent -> R.color.on_accent; trouble -> R.color.error; else -> R.color.accent }
         // An approval names what Hermes wants to do, so the decision is visible before it is opened.
-        card.text = cardLabel(if (urgent) "Approval needed" else "Hermes task", tint)
-            .append(run?.approval?.description?.takeIf { urgent && it.isNotBlank() } ?: state.message.ifBlank { run?.label.orEmpty() })
+        card.text = cardLabel(if (urgent) "Approval needed" else "$agent task", tint)
+            .append(run?.approval?.description?.takeIf { urgent && it.isNotBlank() } ?: state.message.ifBlank { run?.label(agent).orEmpty() })
         card.setTextColor(getColor(if (urgent) R.color.on_accent else R.color.fg))
         card.background = ui.pressable(ui.background(if (urgent) R.color.accent else R.color.field, 18).apply {
             if (!urgent) setStroke(dp(1), getColor(if (trouble) R.color.error else R.color.outline))
         }, 18, onAccent = urgent)
         card.setCompoundDrawablesRelativeWithIntrinsicBounds(ui.icon(R.drawable.ic_hermes, tint), null,
             ui.icon(R.drawable.ic_chevron_right, if (urgent) R.color.on_accent else R.color.faint), null)
-        renderAction(shown())
-        app.hermesRuns.confirmAdmittedDraft(app.history)
-        app.hermesRuns.reconcile(app.history)
     }
 
     private fun renderNotices(notices: List<DeviceNotice>) {
         findViewById<TextView>(R.id.hermes_notice).apply {
             visibility = if (notices.isEmpty()) View.GONE else View.VISIBLE
             text = notices.lastOrNull()?.let {
-                cardLabel("Note from Hermes${if (notices.size > 1) " · ${notices.size}" else ""}", R.color.accent).append(it.text)
+                cardLabel("Note from $agent${if (notices.size > 1) " · ${notices.size}" else ""}", R.color.accent).append(it.text)
             } ?: ""
             contentDescription = "$text. Tap to read or dismiss"
             background = ui.pressable(ui.background(R.color.field, 18).apply { setStroke(dp(1), getColor(R.color.accent)) }, 18)
@@ -693,13 +702,13 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
             setPadding(dp(20), dp(12), dp(20), dp(12))
         }
         val body = ScrollView(this).apply { addView(message) }
-        val dialog = AlertDialog.Builder(this).setTitle("Note from Hermes").setView(body)
+        val dialog = AlertDialog.Builder(this).setTitle("Note from $agent").setView(body)
             .setPositiveButton("Dismiss note") { _, _ ->
                 runCatching { app.notices.dismiss(notice.id) }.onFailure { showToast("The note could not be dismissed") }
             }.setNegativeButton("Close", null)
         if (app.notices.state.value.size > 1) dialog.setNeutralButton("All notes") { _, _ ->
             val notes = app.notices.state.value.asReversed()
-            showDeviceDialog(AlertDialog.Builder(this).setTitle("Notes from Hermes")
+            showDeviceDialog(AlertDialog.Builder(this).setTitle("Notes from $agent")
                 .setItems(notes.map { it.text.take(100) }.toTypedArray()) { _, index -> openNotice(notes[index]) }
                 .setNegativeButton("Close", null))
         }
@@ -727,14 +736,22 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
         textSp = c.textSizeSp.coerceIn(14, 24).toFloat()
         live.textSize = textSp
         input.textSize = textSp
+        val name = c.agent.displayName
+        input.hint = "Message $name"
+        input.contentDescription = "Message to $name"
+        findViewById<TextView>(R.id.empty_kicker).text = name
+        findViewById<TextView>(R.id.live_label).text = name
         for (i in 0 until list.childCount) (list.getChildAt(i) as? LinearLayout)?.let { row ->
-            if ((row.tag as? Msg)?.role == Msg.USER) (row.getChildAt(0) as? TextView)?.textSize = textSp
+            val m = row.tag as? Msg
+            if (m?.role == Msg.USER) (row.getChildAt(0) as? TextView)?.textSize = textSp
             else {
-                (row.getChildAt(0) as? TextView)?.textSize = labelSp()
+                (row.getChildAt(0) as? TextView)?.apply { textSize = labelSp(); if (m != null) text = replyLabel(m) }
                 (row.getChildAt(1) as? TextView)?.textSize = textSp
             }
         }
         renderEmpty()
+        renderNotices(app.notices.state.value)
+        drawTask(app.hermesRuns.state.value)
     }
 
     /** Transcript labels follow the text size, but stay on one line at the largest sizes. */

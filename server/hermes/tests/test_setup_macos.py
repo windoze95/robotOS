@@ -46,6 +46,24 @@ class SetupMacosTest(unittest.TestCase):
         self.assertEqual("90", setup.config_value(entry["timeout"]))
         self.assertEqual(entry["env"], json.loads(setup.config_value(entry["env"])))
 
+    def test_introduce_asks_hermes_once_and_only_while_the_r1_has_no_name(self):
+        asked = []
+        states = iter([{"name_settable": True, "name": None}, {"name_settable": False, "name": "Robot"}])
+        self.assertEqual("Robot", setup.introduce(lambda: next(states), lambda: asked.append(1)))
+        self.assertEqual([1], asked)
+        # Already named (by Hermes or the user): Hermes is not asked again.
+        self.assertEqual("Robot", setup.introduce(lambda: {"name_settable": False, "name": "Robot"}, lambda: asked.append(2)))
+        self.assertEqual([1], asked)
+
+        def asleep():
+            raise OSError("no route")
+        self.assertIsNone(setup.introduce(asleep, lambda: asked.append(3)))
+        self.assertEqual([1], asked)
+
+        def interrupted():
+            raise TimeoutError()
+        self.assertIsNone(setup.introduce(lambda: {"name_settable": True, "name": None}, interrupted))
+
     def test_bad_arguments_stop_before_changing_anything(self):
         for argv in (["--r1", "100.1.1.1; rm -rf /"], ["--r1", "100.1.1.1", "--owner", "405-555-0123"]):
             with self.assertRaises(SystemExit):

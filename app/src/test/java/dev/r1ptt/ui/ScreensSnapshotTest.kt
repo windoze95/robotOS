@@ -208,6 +208,24 @@ class ScreensSnapshotTest {
         controller.pause().stop().destroy()
     }
 
+    @Test fun theAgentsNameReplacesHermesWhereYouTalkToIt() {
+        configured()
+        conversation()
+        app.store.update { it.copy(agent = it.agent.copy(name = "Robot")) }
+        val controller = open(HomeActivity::class.java)
+        val home = controller.get()
+        online(home)
+        assertEquals("Message Robot", home.findViewById<android.widget.EditText>(R.id.input).hint.toString())
+        val labels = all(home.findViewById(R.id.list)).filterIsInstance<TextView>().map { it.text.toString() }
+        assertTrue(labels.any { it.startsWith("ROBOT  ·") })
+        assertFalse(labels.any { it.startsWith("HERMES") })
+        app.notices.add("Your package was delivered.")
+        settle()
+        assertTrue(home.findViewById<TextView>(R.id.hermes_notice).text.startsWith("NOTE FROM ROBOT"))
+        snap(home, "home-15-named")
+        controller.pause().stop().destroy()
+    }
+
     @Test fun homeFirstRunAndDictation() {
         val controller = open(HomeActivity::class.java)
         val home = controller.get()
@@ -240,7 +258,13 @@ class ScreensSnapshotTest {
             c.pause().stop().destroy()
         }
         open(ChatsActivity::class.java).also { snap(it.get(), "chats"); it.pause().stop().destroy() }
-        open(HermesActivity::class.java).also { snap(it.get(), "hermes"); it.pause().stop().destroy() }
+        open(HermesActivity::class.java).also { c ->
+            snap(c.get(), "hermes")
+            val field = all(c.get().window.decorView).first { it.contentDescription == "What you call Hermes" }
+            all(c.get().window.decorView).filterIsInstance<android.widget.ScrollView>().first().scrollTo(0, field.top - 160)
+            snap(c.get(), "hermes-name")
+            c.pause().stop().destroy()
+        }
         open(UpdateActivity::class.java).also { snap(it.get(), "updates"); it.pause().stop().destroy() }
         open(MessagesActivity::class.java).also { c ->
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(2))

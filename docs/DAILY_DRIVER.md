@@ -29,6 +29,9 @@ replies remain selectable. The palette is a readability choice, not a measured b
   and **Settings**. **Read reply** reads the last completed reply aloud.
 - The battery readout opens **Quick controls**. A Wi-Fi mark appears in it only while offline;
   the fill turns orange while charging.
+- Your agent's name appears in chats, the text field's hint, notes and task cards. Set it under
+  **Hermes → Name**; left empty, it shows "Hermes" and Hermes may set it once during setup
+  ([HERMES.md](HERMES.md)).
 - Notices sent with Hermes's `show` tool appear on Home and can be dismissed. They do not replace
   the conversation or wake the display.
 

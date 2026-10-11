@@ -11,6 +11,7 @@ import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
 import android.util.Log
 import dev.r1ptt.App
+import dev.r1ptt.data.Agent
 import dev.r1ptt.data.HermesLink
 import dev.r1ptt.messages.SmsDraft
 import dev.r1ptt.messages.SmsRecipientResolver
@@ -117,10 +118,11 @@ class DeviceApi(
                     body.put("request_id", id)
                     // Capture the authenticated identity; recheck it at the actual execution boundary.
                     receipts.perform(id, link.token, request.path + "\n" + body.toString()) {
-                        if (!permitted(link.token, request.path)) 403 to error("This device action is disabled.")
+                        if (!permitted(link.token, request.path)) 403 to error(if (request.path == "/v1/name") NAMED else "This device action is disabled.")
                         else when (request.path) {
                             "/v1/sms" -> send(body, link.token)
                             "/v1/recipients" -> saveRecipient(body, link.token)
+                            "/v1/name" -> rename(body, link.token)
                             else -> control(request.path, body, link.token)
                         }
                     }
@@ -157,6 +159,7 @@ class DeviceApi(
             "/v1/volume" -> link.allowVolume
             "/v1/recipients" -> link.allowSaveRecipient
             "/v1/sms" -> true // Existing enabled SMS access is preserved.
+            "/v1/name" -> app.store.value.agent.name.isBlank() // once: only while the user hasn't named it
             else -> false
         }
     }
@@ -200,6 +203,22 @@ class DeviceApi(
         return 200 to JSONObject().put("status", "saved").put("name", name).put("number", number)
     }
 
+    /**
+     * Hermes tells the R1 what the user calls it, usually once during setup. It works only while the
+     * name is empty, checked atomically with the save, so after that only the user can change it.
+     */
+    private fun rename(body: JSONObject, token: String): Pair<Int, JSONObject> {
+        val name = requireNotNull(Agent.cleanName(body.optString("name"))) {
+            "name must be 1–${Agent.NAME_MAX} letters or digits, with spaces, apostrophes, hyphens or periods."
+        }
+        var named = false
+        app.store.update { c ->
+            if (c.hermes.deviceApi && c.hermes.token == token && c.agent.name.isBlank()) c.copy(agent = c.agent.copy(name = name)).also { named = true }
+            else c
+        }
+        return if (named) 200 to JSONObject().put("status", "named").put("name", name) else 403 to error(NAMED)
+    }
+
     /** A timed-out queued action cannot execute later without its caller knowing. */
     private fun onMain(action: () -> Pair<Int, JSONObject>): Pair<Int, JSONObject> {
         val latch = CountDownLatch(1)
@@ -226,8 +245,11 @@ class DeviceApi(
             app.getSystemService(TelephonyManager::class.java).createForSubscriptionId(sub).networkOperatorName
         }.getOrNull().orEmpty()
         val link = app.store.value.hermes
+        val name = app.store.value.agent.name
         return JSONObject()
             .put("device", "Rabbit R1 running robotOS")
+            .put("name", name.ifBlank { null } ?: JSONObject.NULL)
+            .put("name_settable", name.isBlank())
             .put("app_version", runCatching { app.packageManager.getPackageInfo(app.packageName, 0).versionName }.getOrNull())
             .put("battery_percent", if (scale > 0 && level >= 0) level * 100 / scale else JSONObject.NULL)
             .put("charging", (battery?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0)
@@ -400,7 +422,8 @@ class DeviceApi(
         private const val TAG = "r1ptt"
         private const val MAX_HEAD = 8 * 1024
         private const val MAX_BODY = 64 * 1024
-        private val MUTATIONS = setOf("/v1/sms", "/v1/speak", "/v1/show", "/v1/volume", "/v1/recipients")
+        private val MUTATIONS = setOf("/v1/sms", "/v1/speak", "/v1/show", "/v1/volume", "/v1/recipients", "/v1/name")
+        private const val NAMED = "The R1 already has a name for you. Only the user can change it, in robotOS under Hermes."
 
         private fun error(message: String) = JSONObject().put("error", message)
 

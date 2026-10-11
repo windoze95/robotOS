@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
 import android.os.Bundle
+import android.text.InputFilter
 import android.text.InputType
 import android.text.format.DateUtils
 import android.view.View
@@ -19,6 +20,7 @@ import android.widget.Switch
 import android.widget.TextView
 import dev.r1ptt.App
 import dev.r1ptt.R
+import dev.r1ptt.data.Agent
 import dev.r1ptt.data.ConfigPersistenceException
 import dev.r1ptt.data.HermesLink
 import dev.r1ptt.messages.SmsRecipientText
@@ -44,6 +46,8 @@ class HermesActivity : DeviceActivity() {
     private lateinit var act: Switch
     private lateinit var passthrough: Switch
     private lateinit var owner: EditText
+    private lateinit var name: EditText
+    private var initialName = ""
     private lateinit var limit: EditText
     private lateinit var speak: Switch
     private lateinit var show: Switch
@@ -67,6 +71,8 @@ class HermesActivity : DeviceActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         val cfg = app.store.value
         initialLink = cfg.hermes
+        initialName = cfg.agent.name
+        val agent = cfg.agent.displayName
         val page = ui.page("Hermes") { finish() }
         setContentView(page.root); wheelScrollTarget = page.scroll
         val body = page.body
@@ -77,6 +83,13 @@ class HermesActivity : DeviceActivity() {
             addView(ui.button("Check connection") { checkConnection() }.apply { (layoutParams as LinearLayout.LayoutParams).bottomMargin = 0 })
         })
         tasks = ui.column(); body.addView(tasks)
+        body.addView(ui.section("Name"))
+        name = ui.field(Agent.DEFAULT_NAME, cfg.agent.name, InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS).apply {
+            contentDescription = "What you call Hermes"
+            filters = arrayOf(InputFilter.LengthFilter(Agent.NAME_MAX))
+        }
+        body.addView(name)
+        body.addView(ui.note("What robotOS calls your agent in chats, hints and notes. Left empty, Hermes can set its own name once, during setup."))
         body.addView(ui.section("Model"))
         modelSummary = ui.text(modelLabel(), 16f).apply { setPadding(ui.dp(4), 0, ui.dp(4), ui.dp(10)) }; body.addView(modelSummary)
         body.addView(ui.button("Choose model") { chooseModel() })
@@ -84,15 +97,15 @@ class HermesActivity : DeviceActivity() {
         body.addView(ui.section("This R1"))
         status = ui.mono(describe(), R.color.dim, 12f, 500).apply { setLineSpacing(ui.dp(4).toFloat(), 1f); setPadding(ui.dp(4), 0, ui.dp(4), ui.dp(12)) }
         body.addView(status)
-        act = ui.toggle("Let Hermes access this R1", cfg.hermes.deviceApi); body.addView(act)
+        act = ui.toggle("Let $agent access this R1", cfg.hermes.deviceApi); body.addView(act)
         if (cfg.hermes.token.length < 32) {
             act.isEnabled = false
             body.addView(ui.note("Set up the device connection from your computer first."))
         }
         body.addView(ui.note("Access includes text messages, saved recipients and device status."))
-        body.addView(ui.section("Your texts to Hermes"))
-        passthrough = ui.toggle("Relay my texts to Hermes", cfg.hermes.passthrough); body.addView(passthrough)
-        body.addView(ui.note("Only texts from your number are relayed. Hermes replies by SMS."))
+        body.addView(ui.section("Your texts to $agent"))
+        passthrough = ui.toggle("Relay my texts to $agent", cfg.hermes.passthrough); body.addView(passthrough)
+        body.addView(ui.note("Only texts from your number are relayed. $agent replies by SMS."))
         body.addView(ui.section("Text limit"))
         limit = ui.field("Texts per day · 0 for unlimited", cfg.hermes.dailySendLimit.toString(), InputType.TYPE_CLASS_NUMBER)
         body.addView(limit)
@@ -146,7 +159,7 @@ class HermesActivity : DeviceActivity() {
             if (urgent) background = ui.background(R.color.accent, 20)
             val ink = if (urgent) R.color.on_accent else R.color.fg
             addView(ui.mono(if (urgent) "Waiting for you" else run.status.replace('_', ' '), if (urgent) R.color.on_accent else R.color.accent))
-            addView(ui.title(run.approval?.description?.takeIf { urgent && it.isNotBlank() } ?: run.label, 19f, 600).apply {
+            addView(ui.title(run.approval?.description?.takeIf { urgent && it.isNotBlank() } ?: run.label(app.store.value.agent.displayName), 19f, 600).apply {
                 setTextColor(getColor(ink)); setPadding(0, ui.dp(4), 0, 0)
             })
             if (run.error.isNotBlank()) addView(ui.text(run.error, 14f).apply { setTextColor(getColor(if (urgent) ink else R.color.error)); setPadding(0, ui.dp(6), 0, 0) })
@@ -164,7 +177,7 @@ class HermesActivity : DeviceActivity() {
         if (run.active && run.runId.isNotBlank()) tasks.addView(ui.button("Stop task") { app.hermesRuns.stop() }
             .apply { isEnabled = !state.working && run.canStop && run.status != "stopping" })
         if (run.terminal && run.output.isNotBlank()) tasks.addView(ui.actionRow("Read result", run.output.take(100)) {
-            showText("Hermes", run.output)
+            showText(app.store.value.agent.displayName, run.output)
         })
         if (app.hermesRuns.canArchive) tasks.addView(ui.button("Archive task record") {
             showDeviceDialog(AlertDialog.Builder(this).setTitle("Archive this record?")
@@ -181,7 +194,7 @@ class HermesActivity : DeviceActivity() {
         val a = run.approval ?: return
         val content = ui.column().apply {
             setPadding(ui.dp(16), ui.dp(12), ui.dp(16), ui.dp(16))
-            addView(ui.text(a.description.ifBlank { "Hermes needs your decision to continue." }, 17f))
+            addView(ui.text(a.description.ifBlank { "${app.store.value.agent.displayName} needs your decision to continue." }, 17f))
             if (a.command.isNotBlank()) addView(ui.mono(a.command, R.color.fg, 12f, 500).apply {
                 isAllCaps = false
                 letterSpacing = 0f
@@ -294,10 +307,13 @@ class HermesActivity : DeviceActivity() {
         if (number == null || (passthrough.isChecked && number.isEmpty())) { toast("Enter your phone number with its country code"); return }
         val perDay = limit.text.toString().trim().toIntOrNull()
         if (perDay == null || perDay !in 0..10_000) { toast("Enter a daily limit from 0 to 10000"); return }
+        val typed = name.text.toString().trim()
+        val newName = if (typed.isEmpty()) "" else Agent.cleanName(typed)
+            ?: run { toast("Use letters or numbers for the name, with spaces, apostrophes, hyphens or periods"); return }
         try {
             app.store.update { cfg ->
                 val current = cfg.hermes
-                cfg.copy(hermes = current.copy(
+                cfg.copy(agent = if (newName != initialName) cfg.agent.copy(name = newName) else cfg.agent, hermes = current.copy(
                     deviceApi = if (act.isChecked != initialLink.deviceApi) act.isChecked && act.isEnabled else current.deviceApi,
                     passthrough = if (passthrough.isChecked != initialLink.passthrough) passthrough.isChecked else current.passthrough,
                     owner = if (owner.text.toString() != initialLink.owner) number else current.owner,

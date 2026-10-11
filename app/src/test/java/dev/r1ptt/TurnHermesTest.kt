@@ -71,6 +71,12 @@ class TurnHermesTest {
         .setBody(JSONObject().put("choices", JSONArray().put(JSONObject().put("message", JSONObject().put("content", text))
             .put("finish_reason", "stop"))).toString()))
 
+    @Test fun hermesIsToldTheNameTheUserGaveItOnlyWhenThereIsOne() {
+        assertFalse(TurnController.deviceContext(AppConfig()).contains("calls you"))
+        val named = AppConfig().let { it.copy(agent = it.agent.copy(name = "Robot")) }
+        assertTrue(TurnController.deviceContext(named).endsWith(" The user calls you Robot."))
+    }
+
     @Test fun hermesGetsTheRequestUnchangedInItsSessionAndActsThroughItsTools() {
         MockWebServer().use { server ->
             server.start(); hermes(server)

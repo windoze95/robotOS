@@ -128,7 +128,7 @@ class HermesRuns(
                     val run = state.value.run ?: return@events false
                     if (accepted) {
                         if (event.name == "message.delta" && !run.transcriptIncomplete) onDelta(event.data.optString("delta"))
-                        onStatus(run.label)
+                        onStatus(run.label(config().agent.displayName))
                     }
                     !run.terminal && run.status != "waiting_for_approval"
                 }
@@ -153,7 +153,7 @@ class HermesRuns(
 
     private fun result(run: HermesRun): String {
         if (run.status == "completed") return run.output
-        throw IOException(run.error.ifBlank { run.label })
+        throw IOException(run.error.ifBlank { run.label(config().agent.displayName) })
     }
 
     private fun requireDelivered(run: HermesRun?) {

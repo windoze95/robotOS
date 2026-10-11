@@ -109,7 +109,7 @@ class SettingsActivity : DeviceActivity() {
         body.addView(ui.actionRow("Wi-Fi", if (app.radio.isOnline()) "A network is available" else "No network connection",
             if (app.radio.isOnline()) R.drawable.ic_wifi else R.drawable.ic_wifi_off) { openSystem(Settings.ACTION_WIFI_SETTINGS) })
         toggle("Stay reachable on battery", cfg.power.reachableOnBattery) { on -> save(radio = true) { it.copy(power = it.power.withReachability(on)) } }
-        body.addView(ui.note("Keeps the radios available for Hermes and incoming texts. Uses more battery. On external power, radios stay available automatically."))
+        body.addView(ui.note("Keeps the radios available for ${cfg.agent.displayName} and incoming texts. Uses more battery. On external power, radios stay available automatically."))
         body.addView(ui.actionRow("Radio sleep delay", "${cfg.power.pocketIdleMinutes} minutes in pocket mode", R.drawable.ic_reach) {
             val minutes = intArrayOf(1, 3, 5, 10)
             choose("Radio sleep delay", arrayOf("1 minute", "3 minutes", "5 minutes", "10 minutes")) { index ->

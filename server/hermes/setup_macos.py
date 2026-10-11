@@ -32,6 +32,10 @@ TAILSCALE_LABEL = "ai.robotos.tailscale"
 PROXY = "127.0.0.1:1056"
 API_PORT = 8642
 R1_PORT = 8765
+INTRODUCE = (
+    "robotOS setup: the R1 has no name for you yet. Call the robotos set_name tool once with the name the user "
+    "calls you, as they say it. Then reply with only that name."
+)
 
 
 def merge_env(text, wanted, generated):
@@ -138,6 +142,30 @@ def wait_for(check, seconds):
     return False
 
 
+def introduce(status, ask):
+    """Hermes tells the R1 its name, once, while the R1 has none. `status()` reads the R1; `ask()` asks Hermes.
+
+    Returns the R1's name afterwards, or None when there is none yet.
+    """
+    try:
+        state = status()
+    except Exception as error:
+        say(f"The R1 isn't reachable ({error.__class__.__name__}); later, ask Hermes to set its name on the R1")
+        return None
+    if not state.get("name_settable"):
+        say(f"The R1 already calls Hermes {state.get('name')}; change it on the R1 under Hermes → Name")
+        return state.get("name")
+    say("Asking Hermes what the R1 should call it")
+    try:
+        ask()
+        name = status().get("name")
+    except Exception as error:
+        say(f"Hermes didn't finish ({error.__class__.__name__})")
+        name = None
+    say(f"The R1 now calls Hermes {name}" if name else "No name was set; the R1 shows 'Hermes' (set one under Hermes → Name)")
+    return name
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--r1", required=True, help="the R1's tailnet address (its 100.x IP or MagicDNS name)")
@@ -149,11 +177,27 @@ def main(argv=None):
     parser.add_argument("--python", default=next((p for p in ("/opt/homebrew/bin/python3", "/usr/local/bin/python3")
                                                   if Path(p).exists()), sys.executable),
                         help="Python 3.9+ that Hermes runs the MCP server with (a stable path survives upgrades)")
+    parser.add_argument("--introduce", action="store_true",
+                        help="after setup, once the R1 has its settings: ask Hermes to tell the R1 its name")
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[A-Za-z0-9.:-]+", args.r1):
         raise SystemExit("--r1 must be an IP address or host name")
     if args.owner and not re.fullmatch(r"\+[1-9]\d{6,14}", args.owner):
         raise SystemExit("--owner must be in international form, like +14055550123")
+    if args.introduce:
+        keys = read_env(HERMES_HOME / ".env")
+        if not keys.get("API_SERVER_KEY") or not keys.get("ROBOTOS_R1_TOKEN"):
+            raise SystemExit("Run the setup first: Hermes's API key and the R1 device token are missing")
+        proxy = urllib.request.build_opener(urllib.request.ProxyHandler({"http": f"http://{PROXY}"}))
+        status = lambda: json.load(proxy.open(urllib.request.Request(f"http://{args.r1}:{R1_PORT}/v1/status",
+                                                                     headers={"Authorization": "Bearer " + keys["ROBOTOS_R1_TOKEN"]}), timeout=10))
+        chat = urllib.request.Request(
+            f"http://127.0.0.1:{API_PORT}/v1/chat/completions",
+            data=json.dumps({"model": "hermes-agent", "messages": [{"role": "user", "content": INTRODUCE}]}).encode(),
+            headers={"Authorization": "Bearer " + keys["API_SERVER_KEY"], "Content-Type": "application/json",
+                     "X-Hermes-Session-Id": "robotos-setup"})
+        introduce(status, lambda: urllib.request.urlopen(chat, timeout=180).read())
+        return 0
     os.umask(0o077)
     hermes = find("hermes", HOME / ".local/bin/hermes")
     tailscale = find("tailscale", "/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale")

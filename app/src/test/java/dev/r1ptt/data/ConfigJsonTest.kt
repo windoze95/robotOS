@@ -27,6 +27,24 @@ class ConfigJsonTest {
         assertEquals(7, ConfigJson.merge(reachable, JSONObject("""{"power":{"stayReachable":false}}""")).power.wifiIdleMinutes)
     }
 
+    @Test fun theAgentsNameIsTidiedAndAnInvalidOneIsIgnored() {
+        assertEquals("Robot", Agent.cleanName("  Robot "))
+        assertEquals("Mr. Robot", Agent.cleanName("Mr.   Robot"))
+        assertEquals("R2-D2", Agent.cleanName("R2-D2"))
+        assertEquals("Zoë", Agent.cleanName("Zoë"))
+        assertEquals("Robot Maker", Agent.cleanName("Robot\nMaker"))
+        listOf("", "   ", "-Robot", "<b>Robot</b>", "Robot\u0000", "x".repeat(25)).forEach { assertEquals(null, Agent.cleanName(it)) }
+        val named = ConfigJson.merge(Config(), JSONObject("""{"agent":{"name":"Robot"}}"""))
+        assertEquals("Robot", named.agent.name)
+        assertEquals("Robot", named.agent.displayName)
+        assertEquals(named, ConfigJson.merge(Config(), ConfigJson.toJson(named)))
+        assertEquals("Robot", ConfigJson.merge(named, JSONObject("""{"agent":{"apiKey":"k"}}""")).agent.name)
+        assertEquals("Robot", ConfigJson.merge(named, JSONObject("""{"agent":{"name":"<b>"}}""")).agent.name)
+        val cleared = ConfigJson.merge(named, JSONObject("""{"agent":{"name":""}}"""))
+        assertEquals("", cleared.agent.name)
+        assertEquals("Hermes", cleared.agent.displayName)
+    }
+
     @Test
     fun partialImportOnlyTouchesWhatItNames() {
         val c = ConfigJson.merge(Config(), JSONObject("""{"agent":{"apiKey":"k-1"},"power":{"wifiIdleMinutes":0}}"""))

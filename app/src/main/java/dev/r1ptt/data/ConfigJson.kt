@@ -13,6 +13,7 @@ object ConfigJson {
             put("baseUrl", c.agent.baseUrl); put("apiKey", c.agent.apiKey); put("model", c.agent.model)
             put("provider", c.agent.provider)
             put("headers", JSONObject(c.agent.headers)); put("timeoutSec", c.agent.timeoutSec)
+            put("name", c.agent.name)
         })
         put("openaiKey", c.openaiKey)
         put("systemPrompt", c.systemPrompt)
@@ -59,6 +60,8 @@ object ConfigJson {
                 model = a.str("model", base.agent.model), timeoutSec = a.int("timeoutSec", base.agent.timeoutSec),
                 provider = a.str("provider", base.agent.provider),
                 headers = a.optJSONObject("headers")?.let { h -> h.keys().asSequence().associateWith { h.getString(it) } } ?: base.agent.headers,
+                // An empty name clears it; one that isn't a valid name keeps the current one.
+                name = a.str("name", base.agent.name).let { if (it.isBlank()) "" else Agent.cleanName(it) ?: base.agent.name },
             ) } ?: base.agent,
             openaiKey = j.str("openaiKey", base.openaiKey),
             systemPrompt = j.str("systemPrompt", base.systemPrompt),

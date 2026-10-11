@@ -21,13 +21,16 @@ done
 need adb; need ssh; need rsync; need jq
 
 say "Finding the R1's tailnet address"
-R1=$(adb shell ip -4 addr show tun0 2>/dev/null | awk '/inet /{split($2, a, "/"); print a[1]}' | tr -d '\r')
+# Tailscale's VPN interface is tun0 or tun1 depending on how often it has reconnected.
+R1=$(adb shell ip -4 addr 2>/dev/null | awk '/^[0-9]+: tun/{tun=1; next} /^[0-9]+:/{tun=0} tun && /inet /{split($2, a, "/"); print a[1]; exit}' | tr -d '\r')
 [ -n "$R1" ] || die "The R1 has no tailnet address. Open its Tailscale app, sign in to your tailnet, and allow the VPN."
 
 say "Setting up Hermes on $HOST (approve any Tailscale link it prints)"
 STAGE=".robotos-setup"
+SETUP="PY=\$(command -v /opt/homebrew/bin/python3 || command -v python3); \"\$PY\" $STAGE/hermes/setup_macos.py --source $STAGE --r1 $R1"
 rsync -a --delete --exclude __pycache__ --exclude tests "$ROOT/server/robotos_mcp" "$ROOT/server/hermes" "$HOST:$STAGE/"
-ssh -t "$HOST" "PY=\$(command -v /opt/homebrew/bin/python3 || command -v python3); \"\$PY\" $STAGE/hermes/setup_macos.py --source $STAGE --r1 $R1 ${OWNER:+--owner $OWNER}; rc=\$?; rm -rf $STAGE; exit \$rc"
+trap 'ssh "$HOST" "rm -rf $STAGE" >/dev/null 2>&1 || true' EXIT
+ssh -t "$HOST" "$SETUP ${OWNER:+--owner $OWNER}"
 
 say "Pointing the R1 at Hermes"
 JSON=$(ssh "$HOST" 'cat "$HOME/Library/Application Support/robotOS/r1-hermes.json"')
@@ -44,5 +47,10 @@ for _ in 1 2 3 4 5 6; do
   HEALTH=$(adb shell curl -s -m 10 "${URL%/v1}/health" | tr -d '\r') && [ -n "$HEALTH" ] && break
   sleep 5
 done
-case "${HEALTH:-}" in *'"ok"'*) say "Done. Hold the button and ask Hermes something." ;;
+case "${HEALTH:-}" in
+  *'"ok"'*)
+    # Once, while the R1 has no name for it: Hermes tells the R1 what the user calls it.
+    say "Letting Hermes tell the R1 its name"
+    ssh "$HOST" "$SETUP --introduce" || warn "Hermes didn't set a name; set one on the R1 under Hermes → Name."
+    say "Done. Hold the button and talk." ;;
   *) warn "The R1 couldn't reach $URL yet. Check that its Tailscale app is connected, then run this again." ;; esac

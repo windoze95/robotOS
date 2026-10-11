@@ -380,7 +380,7 @@ class TurnController(private val app: App) : Gestures.Listener {
             } catch (e: CancellationException) {
                 throw e
             } catch (_: dev.r1ptt.hermes.HermesTaskPaused) {
-                if (current === turn) note("Hermes needs your decision")
+                if (current === turn) note("${app.store.value.agent.displayName} needs your decision")
             } catch (e: Throwable) {
                 if (turn.input.target?.privateDictation() == true) Log.w(TAG, "Private dictation failed")
                 else Log.w(TAG, "turn failed", e)
@@ -472,7 +472,7 @@ class TurnController(private val app: App) : Gestures.Listener {
         app.history.saveDraft(text, conversation = turn.conversation)
         _state.value = TurnState(phase = Phase.THINKING)
         awaitNetwork()
-        val req = ChatRequest.build(cfg.copy(systemPrompt = cfg.systemPrompt + HERMES_DEVICE),
+        val req = ChatRequest.build(cfg.copy(systemPrompt = cfg.systemPrompt + deviceContext(cfg)),
             listOf(Msg(Msg.USER, text)), turn.conversation)
         val speechConfig = app.store.value
         val speaker = if (speechConfig.tts.enabled && !speechConfig.quiet) {
@@ -481,7 +481,7 @@ class TurnController(private val app: App) : Gestures.Listener {
         val splitter = SentenceSplitter()
 
         val finalReply = io { calls ->
-            val runsReply = app.hermesRuns.execute(cfg.copy(systemPrompt = cfg.systemPrompt + HERMES_DEVICE), text,
+            val runsReply = app.hermesRuns.execute(cfg.copy(systemPrompt = cfg.systemPrompt + deviceContext(cfg)), text,
                 "r1ptt-${turn.conversation}", calls,
                 onDelta = { d ->
                     if (current === turn) {
@@ -641,5 +641,9 @@ class TurnController(private val app: App) : Gestures.Listener {
         /** What Hermes is told about this device on every push-to-talk turn. */
         private const val HERMES_DEVICE = " You are the agent behind this Rabbit R1 (robotOS); it relays what the user says and speaks your reply. " +
             "Act on it with your robotos tools, for example to text someone: do what was asked, then say briefly what happened."
+
+        /** The device context, plus the name the user gave the agent on this R1 when there is one. */
+        internal fun deviceContext(cfg: Config) =
+            HERMES_DEVICE + if (cfg.agent.name.isBlank()) "" else " The user calls you ${cfg.agent.name}."
     }
 }

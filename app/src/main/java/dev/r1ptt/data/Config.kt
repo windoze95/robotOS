@@ -16,7 +16,24 @@ data class Agent(
     val headers: Map<String, String> = emptyMap(),
     /** Read timeout for the streamed reply; an agent can work for minutes. */
     val timeoutSec: Int = 300,
-)
+    /**
+     * What the user calls the agent, shown in chats, hints and notes. Blank shows "Hermes", and is the
+     * only state in which Hermes may set its own name (once, during setup).
+     */
+    val name: String = "",
+) {
+    /** The agent's name as robotOS shows it. */
+    val displayName: String get() = name.ifBlank { DEFAULT_NAME }
+
+    companion object {
+        const val DEFAULT_NAME = "Hermes"
+        const val NAME_MAX = 24
+        private val NAME = Regex("[\\p{L}\\p{N}][\\p{L}\\p{N} '’.-]*")
+
+        /** A tidy display name, or null: letters and digits, with spaces, apostrophes, hyphens and periods after the first. */
+        fun cleanName(raw: String): String? = raw.trim().replace(Regex("\\s+"), " ").takeIf { it.length in 1..NAME_MAX && NAME.matches(it) }
+    }
+}
 
 /** An OpenAI-compatible audio endpoint (`/audio/transcriptions` or `/audio/speech`). */
 data class Endpoint(
