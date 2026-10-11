@@ -36,7 +36,7 @@ class RadioPolicy(private val ctx: Context, private val store: ConfigStore) {
     private val io = Executors.newSingleThreadExecutor()
     /** Reasons to keep the radios up (external power); the idle cut waits for none. */
     private val holds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-    private val held: Boolean get() = holds.isNotEmpty() || store.value.power.stayReachable
+    private val held: Boolean get() = holds.isNotEmpty() || store.value.power.reachableOnBattery
     val deliberateAirplane: Boolean get() = store.value.power.cellular && (prefs.getBoolean("manual_airplane", false) || !cutByUs) &&
         Settings.Global.getInt(ctx.contentResolver, Settings.Global.AIRPLANE_MODE_ON, 0) != 0
 

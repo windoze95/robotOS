@@ -106,12 +106,12 @@ class SettingsActivity : DeviceActivity() {
     private fun power() {
         val cfg = app.store.value
         body.addView(ui.actionRow("Wi-Fi", if (app.radio.isOnline()) "A network is available" else "No network connection") { openSystem(Settings.ACTION_WIFI_SETTINGS) })
-        toggle("Stay reachable on battery", cfg.power.stayReachable) { on -> save(radio = true) { it.copy(power = it.power.copy(stayReachable = on)) } }
+        toggle("Stay reachable on battery", cfg.power.reachableOnBattery) { on -> save(radio = true) { it.copy(power = it.power.withReachability(on)) } }
         body.addView(ui.text("Keeps the radios available for Hermes and incoming texts. Uses more battery. On external power, radios stay available automatically.", 14f, true))
-        body.addView(ui.actionRow("Radio sleep delay", if (cfg.power.wifiIdleMinutes == 0) "Never" else "${cfg.power.wifiIdleMinutes} minutes after screen off") {
-            val minutes = intArrayOf(1, 3, 5, 10, 0)
-            choose("Radio sleep delay", arrayOf("1 minute", "3 minutes", "5 minutes", "10 minutes", "Never")) { index ->
-                if (save(radio = true) { it.copy(power = it.power.copy(wifiIdleMinutes = minutes[index])) }) show(Page.POWER)
+        body.addView(ui.actionRow("Radio sleep delay", "${cfg.power.pocketIdleMinutes} minutes in pocket mode") {
+            val minutes = intArrayOf(1, 3, 5, 10)
+            choose("Radio sleep delay", arrayOf("1 minute", "3 minutes", "5 minutes", "10 minutes")) { index ->
+                if (save(radio = true) { it.copy(power = it.power.normalized().copy(wifiIdleMinutes = minutes[index])) }) show(Page.POWER)
             }
         })
         toggle("Use cellular data", cfg.power.cellular) { on -> save(radio = true) { it.copy(power = it.power.copy(cellular = on)) } }
