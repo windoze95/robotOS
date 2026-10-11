@@ -58,9 +58,16 @@ legacy streamed reply finishes. Outside robotOS, Android's existing wheel behavi
 
 Quiet mode and Stay reachable are independent. Neither turns SMS relay or Hermes's device
 permissions on. Network availability, successful contact with Hermes and inbound device access
-are separate states; **Hermes → Check connection** checks the remote connection explicitly.
+are separate states. Paired devices use **Hermes → Host & devices** and **Workspace runs**;
+unpaired legacy connections retain **Check connection**.
 
 ## Hermes tasks and approvals
+
+Paired R1s use host-owned runs through **Hermes → Workspace runs**. The host manages models and
+credentials; paired screens do not offer the legacy direct model picker or connection form.
+Saved content and actions remain behind recovery verification on boot, wake, foreground and
+reconnect. See [HERMES.md](HERMES.md) for the shared workflow. The local task-record controls
+below describe the optional unpaired direct connection.
 
 On a compatible host, robotOS saves the request and task identity before it needs them for
 recovery. **Hermes** shows the task, progress, model, pending approval and available controls.

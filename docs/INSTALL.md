@@ -16,7 +16,10 @@ This takes about an hour of hands-on time once Rabbit has approved developer mod
   - Google Chrome (for Rabbit's flash tool)
 - A USB-C data cable.
 - An OpenAI API key, for speech (transcription and reading replies aloud).
-- A Mac running [Hermes Agent](https://github.com/NousResearch/hermes-agent), the agent the R1 is a remote for ([HERMES.md](HERMES.md)).
+- An always-available host for Docker Compose and a model/provider for
+  [Hermes Agent](https://github.com/NousResearch/hermes-agent). The primary setup runs the shared
+  robotOS service and Hermes together. Native macOS/Linux, k3s and separate hosts are supported
+  alternatives ([DEPLOYMENT.md](DEPLOYMENT.md)).
 - Downloads, all saved into `firmware/` (git-ignores it):
   - **Stock rabbitOS v0.8.293**: `rabbit_OS_v0.8.293.zip` from
     https://github.com/rabbit-hmi-oss/firmware/releases. Unzip it to `firmware/stock/`.
@@ -28,10 +31,13 @@ This takes about an hour of hands-on time once Rabbit has approved developer mod
 ## 0. Check speech from your Mac
 
 ```sh
-cp tools/r1ptt.example.json tools/r1ptt.json      # set openaiKey; Hermes's fields come later
+cp tools/r1ptt.example.json tools/r1ptt.json      # set openaiKey for local speech; pairing supplies the workspace connection
 tools/build.sh                                     # builds out/r1ptt.apk and out/r1ptt-system.zip
 tools/smoke-test.sh --play                         # speech-to-text and text-to-speech (and Hermes, if reachable)
 ```
+
+The example config contains only local speech settings and device preferences. Shared host
+credentials do not belong there; enrollment supplies a separate workspace identity later.
 
 If the smoke test fails, fix the config before touching the R1. For example, if a model name is
 rejected, change `stt.model` or `tts.model`.
@@ -118,39 +124,62 @@ The script makes these changes:
 - Installs the app with its permissions.
 - Grants the app root.
 - Makes the app the home screen.
-- Turns the lock screen off.
+- Preserves the existing lock screen and device-admin state. Configure a PIN/password and grant
+  device-admin access locally if you want Android secure locking; provisioning does not grant it.
 - Sets a 15 s screen timeout and low brightness.
 - Turns on Android's dark theme, colored from the R1's orange, so Android's own screens and the
   keyboard match robotOS.
 - Disables the bloat in `tools/debloat.txt`.
-- Pushes your config, including API keys.
+- Pushes your local speech settings and device preferences from the supplied config.
 - Reboots.
 
 It's safe to re-run, e.g. after editing the config or rebuilding. `--undo-debloat` re-enables the
 disabled apps.
 
-Then connect Hermes: `tools/hermes-setup.sh --host you@hermes-host` ([HERMES.md](HERMES.md)) sets up
-Hermes's side and pushes the R1's settings. Until then, the R1 can dictate but has no one to answer.
+Then follow the [Docker Compose quickstart](DEPLOYMENT.md#primary-setup-docker-compose-with-robotos-and-hermes)
+to install the shared hub and Hermes from published images, initialize private credentials,
+configure the model/provider and expose HTTPS. Sign in to the console with its locally saved
+owner password. Create a separate enrollment code for each R1 and enter the hub URL and code
+under **Workspace settings**. The host's Hermes key is never imported into a paired R1.
+
+For an existing native Hermes installation, the alternative host command is:
+
+```sh
+tools/hub-setup.sh --public-origin https://YOUR-HOST.YOUR-TAILNET.ts.net:9443
+```
+
+This native command configures the hub, authenticated loopback Hermes API and scoped MCP adapter,
+starts both services and checks them. It preserves existing credentials and data. HTTPS routes
+remain explicit; see [HUB.md](HUB.md#native-installation-alternative). macOS services require a
+logged-in session; Linux user services need lingering for availability after logout.
+
+Keep the host awake and reachable. A paired R1 must verify recovery status on wake before
+showing saved content or accepting normal actions; an unreachable host keeps it restricted.
+Network and recovery controls remain available. Enable device tools and recovery permissions
+on the R1 only as needed. Pairing does not enable SMS, location or remote locking.
 
 ## 6. Check that it works
 
 Work through these with the R1 on USB:
 
 1. **Voice, keyboard closed.** Hold the button, ask something, let go. Hermes's answer appears and
-   is read aloud. The screen turns off about 15 s after it finishes.
+   is read aloud. The normal screen timeout still applies during remote work and playback.
 2. **A follow-up** keeps the context (Hermes keeps the conversation). While Hermes uses a tool, the
    status line shows it ("Using …").
-3. **The press that wakes the screen.** Let the screen go off and wait a minute (or run
-   `adb shell dumpsys deviceidle force-idle`). Then hold the button and speak right away: nothing
-   you said should be lost.
+3. **Wake and recovery verification.** Let the screen turn off. Wake it and wait for the paired
+   device to verify its status with the hub, then hold the button and speak. While verification is
+   pending, saved content and normal actions must stay restricted. Verify that network setup and
+   **Check recovery status** remain available during an outage.
 4. **Dictation.** Tap the text field so the keyboard opens. Hold and speak: the words appear dimmed
    at the cursor as you talk, and on release they turn into the final text. Nothing is sent. A tap of the button sends it, and the reply is read aloud.
 5. **Taps.** A tap with the screen on turns it off. A tap while it's talking stops it. A double-tap
    shows "New conversation".
-6. **Scroll wheel.** It changes the volume (a slider appears), in any screen state.
+6. **Scroll wheel.** It scrolls the visible page; during speech or with a volume slider selected,
+   it adjusts volume. It must never approve an action.
 7. **Wi-Fi cut.** After 3 minutes with the screen off, `adb shell cmd wifi status` shows Wi-Fi
-   disabled. The next hold shows "Connecting to Wi-Fi…" and then works. `tools/wifi-wake-test.sh`
-   times how long that reconnect takes.
+   disabled. Wake the R1 and verify that Wi-Fi reconnects and the recovery check completes before
+   normal actions resume. `tools/wifi-wake-test.sh` times the radio reconnect only; it does not prove
+   recovery verification or acceptance of a spoken turn.
 8. **Battery.** Unplug the R1 overnight, then plug it in and run `tools/battery-report.sh`. See
    [BATTERY.md](BATTERY.md).
 

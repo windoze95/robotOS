@@ -72,8 +72,12 @@ class ConfigStore(ctx: Context) {
         return next
     }
 
-    /** Applies a (partial) JSON document; throws on malformed JSON so a bad import changes nothing. */
-    fun import(json: String): Config = update { ConfigJson.merge(it, JSONObject(json)) }
+    /** Validation runs under the write lock; a rejected or malformed import changes nothing. */
+    fun import(json: String, validate: (JSONObject) -> Unit = {}): Config = update {
+        val patch = JSONObject(json)
+        validate(patch)
+        ConfigJson.merge(it, patch)
+    }
 
     private companion object {
         const val KEY = "config"

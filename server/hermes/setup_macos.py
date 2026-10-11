@@ -62,7 +62,9 @@ def read_env(path):
         for line in path.read_text().splitlines():
             if "=" in line and not line.lstrip().startswith("#"):
                 key, value = line.split("=", 1)
-                values[key.strip()] = value.strip()
+                # Recognize shared-workspace markers even in exported/quoted dotenv keys.
+                key = re.sub(r"^export\s+", "", key.strip()).strip().strip("'\"")
+                values[key] = value.strip()
     return values
 
 
@@ -168,6 +170,7 @@ def introduce(status, ask):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--direct", action="store_true", help="Explicitly select legacy single-device setup; shared workspaces use hub-setup")
     parser.add_argument("--r1", required=True, help="the R1's tailnet address (its 100.x IP or MagicDNS name)")
     parser.add_argument("--owner", help="your own phone number; its texts to the R1 go to Hermes (+1XXXXXXXXXX)")
     parser.add_argument("--source", default=str(Path(__file__).resolve().parents[1]),
@@ -180,10 +183,16 @@ def main(argv=None):
     parser.add_argument("--introduce", action="store_true",
                         help="after setup, once the R1 has its settings: ask Hermes to tell the R1 its name")
     args = parser.parse_args(argv)
+    if not args.direct:
+        parser.error("Direct setup requires --direct; use the shared-workspace setup in docs/DEPLOYMENT.md")
     if not re.fullmatch(r"[A-Za-z0-9.:-]+", args.r1):
         raise SystemExit("--r1 must be an IP address or host name")
     if args.owner and not re.fullmatch(r"\+[1-9]\d{6,14}", args.owner):
         raise SystemExit("--owner must be in international form, like +14055550123")
+    existing_keys = read_env(HERMES_HOME / ".env")
+    if ((STATE / "hub/hub.json").exists() or existing_keys.get("ROBOTOS_HUB_MCP_TOKEN") or
+            existing_keys.get("ROBOTOS_HUB_MCP_TOKEN_FILE")):
+        parser.error("This host is configured for a shared workspace; enroll the R1 through its console instead of direct setup")
     if args.introduce:
         keys = read_env(HERMES_HOME / ".env")
         if not keys.get("API_SERVER_KEY") or not keys.get("ROBOTOS_R1_TOKEN"):

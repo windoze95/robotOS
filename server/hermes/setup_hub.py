@@ -1,13 +1,16 @@
-"""Install the persistent robotOS service without touching R1 provisioning or workspace data.
+"""Install the native robotOS workspace and its Hermes connection.
 
-Creates private host configuration, installs a user service, and optionally connects Hermes MCP.
+The default connects an existing local Hermes installation. Use --hub-only for a separate
+Hermes host, or --mcp-only to install just the scoped adapter beside Hermes.
 No credentials are printed. Works on macOS launchd and Linux systemd --user.
 """
 import argparse
+import codecs
 import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import secrets
 import shutil
 import stat
@@ -18,10 +21,89 @@ import time
 import urllib.request
 import urllib.parse
 
-from .setup_macos import merge_env, read_env, config_value
+from .setup_macos import config_value
 
 
 LABEL = "ai.robotos.hub"
+
+
+def environment_assignment(line):
+    match = re.match(r"^\s*(?:export\s+)?(?:'([^']+)'|([A-Za-z_][A-Za-z_0-9]*))\s*=(.*)$", line)
+    return (match.group(1) or match.group(2), match.group(3)) if match else (None, None)
+
+
+def environment_value(raw):
+    """Single-line dotenv values, with dotenv's comment/escape rules rather than shell rules."""
+    value = raw.lstrip()
+    if value.startswith(("'", '"')):
+        quote = value[0]
+        match = re.fullmatch(quote + r"((?:\\.|[^" + quote + r"\\])*)" + quote + r"\s*(?:#.*)?", value)
+        if not match:
+            raise ValueError("An installer-managed Hermes environment setting is malformed or multiline")
+        escapes = r"\\[\\']" if quote == "'" else r'''\\[\\'"abfnrtv]'''
+        value = re.sub(escapes, lambda item: codecs.decode(item.group(), "unicode-escape"), match.group(1))
+    else:
+        if raw[:1].isspace() and value.startswith("#"):
+            # python-dotenv versions disagree about an initial '#' after whitespace.
+            raise ValueError("Quote installer-managed Hermes values beginning with #; whitespace before # is ambiguous")
+        value = re.sub(r"\s+#.*", "", value).rstrip()
+    if "${" in value:
+        raise ValueError("Installer-managed Hermes environment settings must use literal values, not variable interpolation")
+    return value
+
+
+def hermes_environment(path):
+    """Read the few installer-owned dotenv keys, including quoted/export assignments."""
+    result = {}
+    if path.exists():
+        for line in path.read_text().removeprefix("\ufeff").splitlines():
+            key, value = environment_assignment(line)
+            if key in {"API_SERVER_KEY", "API_SERVER_PORT", "OPENAI_API_KEY", "ROBOTOS_HUB_MCP_TOKEN"}:
+                result[key] = environment_value(value)
+    return result
+
+
+def managed_environment(text, settings):
+    """Replace only managed assignments, removing duplicate/export variants."""
+    lines = [line for line in text.removeprefix("\ufeff").splitlines() if environment_assignment(line)[0] not in settings]
+    # JSON double quoting is compatible with dotenv and keeps '#', spaces and quotes literal.
+    lines.extend(key + "=" + json.dumps(value) for key, value in settings.items())
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def hermes_executable():
+    return shutil.which("hermes") or next((str(path) for path in [Path.home() / ".local/bin/hermes"]
+                                          if path.is_file() and os.access(path, os.X_OK)), None)
+
+
+def environment_token(value, label, minimum=1):
+    if (not isinstance(value, str) or len(value) < minimum or "${" in value or
+            any(not 33 <= ord(character) <= 126 for character in value)):
+        raise ValueError(label + " must be a literal ASCII token without whitespace or variable interpolation")
+    return value
+
+
+def local_hermes(config, existing, environment, explicit_token=None, explicit_url=False):
+    """Keep the local API port/key; never turn a split installation into a local one implicitly."""
+    address = config["hermes_url"]
+    parsed = urllib.parse.urlsplit(address)
+    if parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost", "::1") or parsed.path not in ("", "/", "/v1"):
+        raise ValueError("This hub uses a separate Hermes endpoint; use --hub-only to preserve that architecture")
+    try:
+        port = parsed.port or 80
+        if not explicit_url and not existing.get("hermes_url") and environment.get("API_SERVER_PORT"):
+            port = int(environment["API_SERVER_PORT"])
+        if not 1 <= port <= 65535:
+            raise ValueError()
+    except ValueError:
+        raise ValueError("Hermes API port must be between 1 and 65535") from None
+    saved_key = environment.get("API_SERVER_KEY", "")
+    if explicit_token is not None and saved_key and explicit_token != saved_key:
+        raise ValueError("The supplied Hermes token differs from the local API key; existing API credentials are never rotated by setup")
+    key = saved_key or explicit_token or existing.get("hermes_token") or secrets.token_urlsafe(36)
+    environment_token(key, "The local Hermes API key")
+    config.update(hermes_url=f"http://127.0.0.1:{port}", hermes_token=key)
+    return {"API_SERVER_ENABLED": "true", "API_SERVER_HOST": "127.0.0.1", "API_SERVER_PORT": str(port), "API_SERVER_KEY": key}
 
 
 def write_private(path, data):
@@ -145,19 +227,55 @@ def token_file(path):
 
 
 def register_hermes(hermes_home, source, hub_url, token, skill_source):
-    if len(token) < 32:
-        raise ValueError("The scoped hub MCP token must contain at least 32 characters")
-    hermes = shutil.which("hermes")
+    environment_token(token, "The scoped hub MCP token", 32)
+    hermes = hermes_executable()
     if not hermes:
         raise ValueError("Hermes executable was not found; add its bin directory to PATH")
     env_path = hermes_home / ".env"
-    write_private(env_path, merge_env(env_path.read_text() if env_path.exists() else "",
-                                     {"ROBOTOS_HUB_MCP_TOKEN": token}, ["ROBOTOS_HUB_MCP_TOKEN_FILE"]))
+    write_private(env_path, managed_environment(env_path.read_text() if env_path.exists() else "",
+                                               {"ROBOTOS_HUB_MCP_TOKEN": token, "ROBOTOS_HUB_MCP_TOKEN_FILE": ""}))
     for key, value in mcp_entry(sys.executable, source, hub_url=hub_url).items():
         subprocess.run([hermes, "config", "set", "mcp_servers.robotos." + key, config_value(value)],
                        check=True, stdout=subprocess.DEVNULL)
     write_private(hermes_home / "skills/robotos/SKILL.md", skill_source.read_text())
     return hermes
+
+
+def start_hermes(hermes):
+    # Hermes resolves profile-specific service names. --if-missing preserves an existing unit.
+    subprocess.run([hermes, "gateway", "install", "--if-missing", "--start-now", "--start-on-login"],
+                   check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+    subprocess.run([hermes, "gateway", "restart"], check=True, stdout=subprocess.DEVNULL)
+
+
+def preflight_service_manager(platform):
+    command = ["launchctl", "print", f"gui/{os.getuid()}"] if platform == "darwin" else [
+        "systemctl", "--user", "show", "--property=Version"]
+    result = subprocess.run(command, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if result.returncode != 0:
+        raise ValueError("The user service manager is unavailable; sign into the macOS desktop or enable the Linux user service session before installing, or use --no-start")
+
+
+def wait_for_hermes(config, timeout=60):
+    from types import SimpleNamespace
+    from robotos_hub.upstream import Client, UpstreamError
+    from robotos_hub.store import HubError
+    client = Client(SimpleNamespace(**config))
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if not client.capabilities().get("runs"):
+                raise RuntimeError("Hermes does not support the Runs API required by the shared workspace; update Hermes")
+            return
+        except UpstreamError as error:
+            if error.status in (401, 403):
+                raise RuntimeError("Hermes rejected the configured API credential; native setup is incomplete") from None
+            if error.status == 404:
+                raise RuntimeError("Hermes does not expose the required capabilities endpoint; update Hermes") from None
+        except HubError:
+            raise RuntimeError("Hermes returned incompatible API capabilities; native setup is incomplete") from None
+        time.sleep(0.5)
+    raise RuntimeError("Authenticated Hermes API did not become ready; inspect the gateway log before pairing devices")
 
 
 def start_launch_agent(service_file):
@@ -202,9 +320,11 @@ def main(argv=None):
     parser.add_argument("--hermes-token-file", type=Path, help="Read the Hermes API key from a file; never pass credentials in arguments")
     parser.add_argument("--hub-url", help="Hub base URL for the MCP adapter; remote connections require HTTPS")
     parser.add_argument("--mcp-token-file", type=Path, help="Read the scoped hub MCP token from a file")
-    parser.add_argument("--mcp-only", action="store_true", help="Install/register only the adapter on the Hermes machine, without a hub or owner credentials")
-    parser.add_argument("--register-hermes", action="store_true", help="Switch robotOS MCP to the host adapter and restart Hermes")
-    parser.add_argument("--no-start", action="store_true", help="Prepare service files without installing/starting the user service")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--hub-only", action="store_true", help="Install only the hub; do not configure or restart a local Hermes gateway")
+    modes.add_argument("--mcp-only", action="store_true", help="Install/register only the adapter on the Hermes machine, without a hub or owner credentials")
+    parser.add_argument("--register-hermes", action="store_true", help="Compatibility alias for the default complete same-host native installation")
+    parser.add_argument("--no-start", action="store_true", help="Prepare private configuration and service files without starting/restarting services or checking readiness")
     args = parser.parse_args(argv)
     try:
         if args.hermes_url:
@@ -215,12 +335,15 @@ def main(argv=None):
         mcp_token = token_file(args.mcp_token_file) if args.mcp_token_file else None
     except ValueError as error:
         parser.error(str(error))
+    full = not (args.hub_only or args.mcp_only)
+    if args.register_hermes and not full:
+        parser.error("register-hermes selects the complete native installation and cannot be combined with hub-only or mcp-only")
     if args.mcp_only and (not args.hub_url or args.public_origin or args.hermes_url or args.hermes_token_file):
         parser.error("mcp-only requires hub-url and cannot configure a hub service")
-    if args.hub_url and not (args.mcp_only or args.register_hermes):
-        parser.error("hub-url configures the adapter; use register-hermes or mcp-only")
-    if args.mcp_token_file and not (args.mcp_only or args.register_hermes):
-        parser.error("mcp-token-file requires register-hermes or mcp-only")
+    if args.hub_url and not args.mcp_only:
+        parser.error("hub-url configures a separate hub; use mcp-only on the Hermes machine")
+    if args.mcp_token_file and args.hub_only:
+        parser.error("mcp-token-file is not used in hub-only mode")
     if args.public_origin:
         parsed = urllib.parse.urlsplit(args.public_origin)
         if (parsed.scheme != "https" or not parsed.hostname or parsed.path not in ("", "/") or
@@ -228,18 +351,38 @@ def main(argv=None):
             parser.error("public-origin must be a bare HTTPS origin")
         args.public_origin = args.public_origin.rstrip("/")
     state = args.state.expanduser().resolve()
-    state.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(state, 0o700)
     config_path, source = state / "hub.json", state / "service"
-    hermes_home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+    hermes_home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))).expanduser().resolve()
     env_path = hermes_home / ".env"
     skill_source = args.source / "hermes/skills/robotos/SKILL.md"
+    packages = ("robotos_mcp",) if args.mcp_only else ("robotos_hub", "robotos_mcp")
+    if any(not (args.source / package).is_dir() for package in packages):
+        parser.error("The supplied source must contain the required robotOS service packages")
+    if not args.mcp_only and sys.platform != "darwin" and not sys.platform.startswith("linux"):
+        parser.error("Native user services support macOS and Linux; use Docker Compose on other hosts")
+    hermes = hermes_executable() if not args.hub_only else None
+    if not args.hub_only and (not hermes or not skill_source.is_file()):
+        parser.error("Hermes executable and the bundled robotOS skill are required; install Hermes first or use hub-only")
+    if full and not (hermes_home / "config.yaml").is_file():
+        parser.error("Configure Hermes with hermes setup before installing the complete native stack")
+    if not args.no_start and not args.mcp_only:
+        manager = "launchctl" if sys.platform == "darwin" else "systemctl"
+        if not shutil.which(manager):
+            parser.error("Native installation requires " + manager + "; use Docker Compose or prepare files with no-start")
+    try:
+        environment = hermes_environment(env_path)
+    except ValueError as error:
+        parser.error(str(error))
     if args.mcp_only:
-        mcp_token = mcp_token or read_env(env_path).get("ROBOTOS_HUB_MCP_TOKEN", "")
+        mcp_token = mcp_token or environment.get("ROBOTOS_HUB_MCP_TOKEN", "")
         if len(mcp_token) < 32:
             parser.error("mcp-only requires a scoped mcp-token-file on first installation")
-        if not shutil.which("hermes") or not skill_source.is_file():
-            parser.error("Hermes executable and the bundled robotOS skill are required")
+        try:
+            environment_token(mcp_token, "The scoped hub MCP token", 32)
+        except ValueError as error:
+            parser.error(str(error))
+        state.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(state, 0o700)
         install_code(args.source.resolve(), source, packages=("robotos_mcp",))
         hermes = register_hermes(hermes_home, source, args.hub_url, mcp_token, skill_source)
         if not args.no_start:
@@ -249,18 +392,33 @@ def main(argv=None):
         print("Scoped MCP credential saved in the protected Hermes .env; no hub service or owner credentials created.")
         return 0
     existing = json.loads(config_path.read_text()) if config_path.exists() else {}
-    config = configuration(existing, state, args.public_origin, read_env(env_path))
+    config = configuration(existing, state, args.public_origin, environment)
     if args.hermes_url:
         config["hermes_url"] = args.hermes_url
     if hermes_token is not None:
         config["hermes_token"] = hermes_token
-    if args.register_hermes and (not shutil.which("hermes") or not skill_source.is_file()):
-        parser.error("Hermes executable and the bundled robotOS skill are required")
-    if args.register_hermes and args.hub_url and args.hub_url != f"http://127.0.0.1:{config['port']}" and mcp_token is None:
-        parser.error("An explicit hub-url requires mcp-token-file for that hub, or use mcp-only")
-    if (args.register_hermes and mcp_token is not None and
-            (not args.hub_url or args.hub_url == f"http://127.0.0.1:{config['port']}") and mcp_token != config['mcp_token']):
+    if full and urllib.parse.urlsplit(config["public_origin"]).scheme != "https":
+        parser.error("Complete native setup requires --public-origin https://HOST (or an existing HTTPS origin); configure its HTTPS proxy separately")
+    if full and mcp_token is not None and mcp_token != config['mcp_token']:
         parser.error("The supplied MCP token does not match this hub; use mcp-only with the correct remote hub-url")
+    api_settings = None
+    if full:
+        try:
+            api_settings = local_hermes(config, existing, environment, hermes_token, bool(args.hermes_url))
+            if int(api_settings["API_SERVER_PORT"]) == int(config["port"]):
+                raise ValueError("Hermes and robotOS must use different local ports")
+            if not config["mcp_token"]:
+                config["mcp_token"] = secrets.token_urlsafe(36)
+            environment_token(config["mcp_token"], "The scoped hub MCP token", 32)
+        except ValueError as error:
+            parser.error(str(error))
+    if not args.no_start:
+        try:
+            preflight_service_manager(sys.platform)
+        except ValueError as error:
+            parser.error(str(error))
+    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(state, 0o700)
     # Validate the configuration using the exact implementation before mutating installed code.
     sys.path.insert(0, str(args.source.resolve()))
     from robotos_hub.config import Config
@@ -274,13 +432,15 @@ def main(argv=None):
     install_code(args.source.resolve(), source)
     write_private(config_path, json.dumps(config, indent=2) + "\n")
     write_private(state / "owner-password.txt", config["owner_password"] + "\n")
+    if api_settings:
+        write_private(env_path, managed_environment(env_path.read_text() if env_path.exists() else "", api_settings))
     if sys.platform == "darwin":
         service_file = Path.home() / "Library/LaunchAgents" / (LABEL + ".plist")
         write_private(service_file, plistlib.dumps(launch_agent(sys.executable, source, config_path, state)).decode())
         if not args.no_start:
             start_launch_agent(service_file)
     elif sys.platform.startswith("linux"):
-        service_file = Path.home() / ".config/systemd/user/robotos-hub.service"
+        service_file = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "systemd/user/robotos-hub.service"
         write_private(service_file, systemd_unit(sys.executable, source, config_path))
         if not args.no_start:
             subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
@@ -290,16 +450,26 @@ def main(argv=None):
         raise SystemExit("User-service installation supports macOS and Linux; use python -m robotos_hub elsewhere.")
     if not args.no_start:
         wait_for_hub(config)
-    if args.register_hermes:
-        hermes = register_hermes(hermes_home, source, args.hub_url or f"http://127.0.0.1:{config['port']}",
+    if full:
+        hermes = register_hermes(hermes_home, source, f"http://127.0.0.1:{config['port']}",
                                  mcp_token or config["mcp_token"], skill_source)
         if not args.no_start:
-            subprocess.run([hermes, "gateway", "restart"], check=True, stdout=subprocess.DEVNULL)
+            start_hermes(hermes)
+            wait_for_hermes(config)
     print("robotOS service files: " + str(source))
     print("Protected configuration: " + str(config_path))
     print("Owner password saved locally: " + str(state / "owner-password.txt"))
     print("Console origin: " + config["public_origin"])
-    print("Service prepared." if args.no_start else "Service is healthy. Open the console to pair devices.")
+    if args.no_start:
+        print("Configuration prepared. Services were not started and readiness was not checked.")
+    elif full:
+        print("Native hub and authenticated Hermes Runs API are ready.")
+    else:
+        print("Hub is ready. The separate Hermes API and adapter were not configured or checked.")
+    print("HTTPS routing and R1 enrollment are not performed or verified by this installer.")
+    print("Route the exact console HTTPS origin to the hub, then sign in and pair each R1 with its own one-time code.")
+    if sys.platform.startswith("linux"):
+        print("For availability after logout and before login, enable user lingering with loginctl enable-linger USER.")
     return 0
 
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Makes Hermes the agent behind the R1, from this Mac, in one command (docs/HERMES.md):
+# Legacy direct-device setup (docs/HERMES_DIRECT.md). Shared workspaces use Docker Compose
+# or tools/hub-setup.sh; they must never receive Hermes's API key on the R1.
 #
-#   tools/hermes-setup.sh --host user@hermes-host [--owner +1XXXXXXXXXX]
+#   tools/hermes-setup.sh --direct --host user@hermes-host [--owner +1XXXXXXXXXX]
 #
 # Needs: the R1 on USB running robotOS with its Tailscale app signed in to your tailnet; SSH access to
 # the macOS host that runs Hermes Agent (with Homebrew's tailscale). Safe to re-run; keys are kept.
@@ -9,15 +10,20 @@
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
-HOST="" OWNER=""
+HOST="" OWNER="" DIRECT=0
+USAGE="Usage: tools/hermes-setup.sh --direct --host user@hermes-host [--owner +1XXXXXXXXXX]. For shared workspaces, see docs/DEPLOYMENT.md."
 while [ $# -gt 0 ]; do
   case "$1" in
-    --host) HOST="$2"; shift 2 ;;
-    --owner) OWNER="$2"; shift 2 ;;
-    *) die "Usage: tools/hermes-setup.sh --host user@hermes-host [--owner +1XXXXXXXXXX]" ;;
+    --direct) DIRECT=1; shift ;;
+    --host) [ $# -ge 2 ] || die "$USAGE"; HOST="$2"; shift 2 ;;
+    --owner) [ $# -ge 2 ] || die "$USAGE"; OWNER="$2"; shift 2 ;;
+    --help|-h) say "$USAGE"; exit 0 ;;
+    *) die "$USAGE" ;;
   esac
 done
-[ -n "$HOST" ] || die "Usage: tools/hermes-setup.sh --host user@hermes-host [--owner +1XXXXXXXXXX]"
+[ "$DIRECT" = 1 ] || die "Direct setup requires --direct. Use the shared-workspace quickstart in docs/DEPLOYMENT.md."
+[[ "$HOST" =~ ^[A-Za-z0-9_][A-Za-z0-9_.@:-]*$ ]] || die "Use a plain SSH host or user@host. $USAGE"
+[[ -z "$OWNER" || "$OWNER" =~ ^\+[1-9][0-9]{6,14}$ ]] || die "--owner must use international form, like +14055550123"
 need adb; need ssh; need rsync; need jq
 
 say "Finding the R1's tailnet address"
@@ -27,7 +33,7 @@ R1=$(adb shell ip -4 addr 2>/dev/null | awk '/^[0-9]+: tun/{tun=1; next} /^[0-9]
 
 say "Setting up Hermes on $HOST (approve any Tailscale link it prints)"
 STAGE=".robotos-setup"
-SETUP="PY=\$(command -v /opt/homebrew/bin/python3 || command -v python3); \"\$PY\" $STAGE/hermes/setup_macos.py --source $STAGE --r1 $R1"
+SETUP="PY=\$(command -v /opt/homebrew/bin/python3 || command -v python3); \"\$PY\" $STAGE/hermes/setup_macos.py --direct --source $STAGE --r1 $R1"
 rsync -a --delete --exclude __pycache__ --exclude tests "$ROOT/server/robotos_mcp" "$ROOT/server/hermes" "$HOST:$STAGE/"
 trap 'ssh "$HOST" "rm -rf $STAGE" >/dev/null 2>&1 || true' EXIT
 ssh -t "$HOST" "$SETUP ${OWNER:+--owner $OWNER}"

@@ -1,7 +1,7 @@
-# Add with: docker compose -f compose.yaml -f compose.hermes.yaml up -d --build
+# Full stack: docker compose -f compose.yaml -f compose.hermes.yaml up -d --no-build
 services:
   hermes:
-    image: ${ROBOTOS_HERMES_IMAGE:-robotos-hermes:local}
+    image: ${ROBOTOS_HERMES_IMAGE:-ghcr.io/windoze95/robotos-hermes:main}
     build:
       context: ../..
       dockerfile: deploy/hermes/Dockerfile
