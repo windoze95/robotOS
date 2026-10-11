@@ -48,7 +48,7 @@ class QuickControlsActivity : DeviceActivity() {
         wheelVolumeTarget = volume.seek
         toggle(body, "Quiet mode", cfg.quiet) { on -> save { it.copy(quiet = on) }.also { if (it && on) app.turns.stopSpeech() } }
         toggle(body, "Speak replies", cfg.tts.enabled) { on -> save { it.copy(tts = it.tts.copy(enabled = on)) }.also { if (it && !on) app.turns.stopSpeech() } }
-        toggle(body, "Stay reachable", cfg.power.stayReachable) { on -> save(radio = true) { it.copy(power = it.power.copy(stayReachable = on)) } }
+        toggle(body, "Stay reachable", cfg.power.reachableOnBattery) { on -> save(radio = true) { it.copy(power = it.power.withReachability(on)) } }
         body.addView(ui.text("Stay reachable keeps radios on while on battery. Pocket mode lets them sleep.", 14f, true))
         body.addView(ui.row(ui.button("Wi-Fi") {
             runCatching { startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }.onFailure { toast("Wi-Fi settings unavailable") }

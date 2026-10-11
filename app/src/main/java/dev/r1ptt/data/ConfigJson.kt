@@ -26,11 +26,12 @@ object ConfigJson {
             put("instructions", c.tts.instructions)
         })
         put("power", JSONObject().apply {
-            put("wifiIdleMinutes", c.power.wifiIdleMinutes)
-            put("screenTimeoutSec", c.power.screenTimeoutSec)
-            put("brightness", c.power.brightness)
-            put("cellular", c.power.cellular)
-            put("stayReachable", c.power.stayReachable)
+            val power = c.power.normalized()
+            put("wifiIdleMinutes", power.wifiIdleMinutes)
+            put("screenTimeoutSec", power.screenTimeoutSec)
+            put("brightness", power.brightness)
+            put("cellular", power.cellular)
+            put("stayReachable", power.stayReachable)
         })
         put("hermes", JSONObject().apply {
             put("deviceApi", c.hermes.deviceApi); put("token", c.hermes.token); put("port", c.hermes.port)
@@ -78,14 +79,18 @@ object ConfigJson {
                 )
             } ?: base.tts,
             power = power?.let { p ->
-                base.power.copy(
-                    wifiIdleMinutes = p.int("wifiIdleMinutes", base.power.wifiIdleMinutes),
+                val previous = base.power.normalized()
+                val idle = p.int("wifiIdleMinutes", previous.wifiIdleMinutes)
+                previous.copy(
+                    wifiIdleMinutes = idle.takeIf { it > 0 } ?: previous.wifiIdleMinutes,
                     screenTimeoutSec = p.int("screenTimeoutSec", base.power.screenTimeoutSec),
                     brightness = p.int("brightness", base.power.brightness),
                     cellular = p.bool("cellular", base.power.cellular),
-                    stayReachable = p.bool("stayReachable", base.power.stayReachable),
+                    // Zero is the old "never sleep" setting, including files saved before this
+                    // migration with stayReachable=false. Keep that behavior and the prior delay.
+                    stayReachable = idle <= 0 || p.bool("stayReachable", previous.stayReachable),
                 )
-            } ?: base.power,
+            } ?: base.power.normalized(),
             hermes = hermes?.let { h -> base.hermes.copy(
                 deviceApi = h.bool("deviceApi", base.hermes.deviceApi), token = h.str("token", base.hermes.token),
                 port = h.int("port", base.hermes.port), passthrough = h.bool("passthrough", base.hermes.passthrough),

@@ -39,7 +39,7 @@ data class Tts(
 )
 
 data class Power(
-    /** Turn Wi-Fi off after this many minutes with the screen off; 0 keeps it on. */
+    /** Pocket-mode delay. Legacy 0 means stay reachable and is normalized when settings load. */
     val wifiIdleMinutes: Int = 3,
     val screenTimeoutSec: Int = 15,
     /** Manual backlight level, 1..255. */
@@ -48,7 +48,14 @@ data class Power(
     val cellular: Boolean = false,
     /** Keep radios available on battery without discarding the pocket-mode idle interval. */
     val stayReachable: Boolean = false,
-)
+) {
+    val reachableOnBattery: Boolean get() = stayReachable || wifiIdleMinutes <= 0
+    val pocketIdleMinutes: Int get() = wifiIdleMinutes.takeIf { it > 0 } ?: 3
+
+    /** An explicit mode change always leaves a usable, remembered pocket-mode delay. */
+    fun withReachability(enabled: Boolean) = copy(stayReachable = enabled, wifiIdleMinutes = pocketIdleMinutes)
+    fun normalized() = withReachability(reachableOnBattery)
+}
 
 /**
  * Hermes as the agent and this R1 as its remote. Hermes's `robotos` MCP server reaches [port] over

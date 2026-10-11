@@ -2,6 +2,7 @@ package dev.r1ptt.ui
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.app.AlertDialog
 import android.media.AudioManager
 import android.os.Bundle
 import android.os.Looper
@@ -88,6 +89,38 @@ class DeviceUiActivityTest {
         assertTrue(app.store.value.quiet)
         assertTrue(app.store.value.tts.enabled)
         assertTrue(app.store.value.earcons)
+        controller.pause().stop().destroy()
+    }
+
+    @Test fun quickControlsShowsLegacyNeverSleepAsReachableAndTurningItOffWorks() {
+        app.store.update { it.copy(power = it.power.copy(wifiIdleMinutes = 0, stayReachable = false)) }
+        val controller = Robolectric.buildActivity(QuickControlsActivity::class.java).setup()
+        val control = all(controller.get().window.decorView).filterIsInstance<Switch>().single { it.text == "Stay reachable" }
+        assertTrue(control.isChecked)
+        control.isChecked = false
+        assertFalse(app.store.value.power.reachableOnBattery)
+        assertEquals(3, app.store.value.power.wifiIdleMinutes)
+        controller.pause().stop().destroy()
+    }
+
+    @Test fun powerSettingsKeepThePocketDelayWhenReachabilityChanges() {
+        app.store.update { it.copy(power = it.power.copy(wifiIdleMinutes = 7, stayReachable = true)) }
+        val controller = Robolectric.buildActivity(SettingsActivity::class.java).setup()
+        val activity = controller.get()
+        all(activity.window.decorView).first { it.contentDescription?.toString()?.startsWith("Connectivity & power.") == true }.performClick()
+        val control = all(activity.window.decorView).filterIsInstance<Switch>().single { it.text == "Stay reachable on battery" }
+        control.isChecked = false
+        assertEquals(7, app.store.value.power.wifiIdleMinutes)
+        assertFalse(app.store.value.power.reachableOnBattery)
+        control.isChecked = true
+        assertEquals(7, app.store.value.power.wifiIdleMinutes)
+        all(activity.window.decorView).first { it.contentDescription?.toString()?.startsWith("Radio sleep delay.") == true }.performClick()
+        val dialog: AlertDialog = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog()
+        val choices = dialog.listView.adapter
+        assertFalse((0 until choices.count).map { choices.getItem(it).toString() }.contains("Never"))
+        dialog.listView.performItemClick(null, 0, 0)
+        assertEquals(1, app.store.value.power.wifiIdleMinutes)
+        assertTrue(app.store.value.power.reachableOnBattery)
         controller.pause().stop().destroy()
     }
 
