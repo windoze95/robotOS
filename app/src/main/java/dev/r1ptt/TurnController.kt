@@ -332,6 +332,7 @@ class TurnController(private val app: App) : Gestures.Listener {
     fun sendText(text: String) {
         if (!app.updates.allowVoice()) return
         app.store.loadError?.let { fail(it); settle(); return }
+        app.history.errors.value?.let { fail(it); settle(); return }
         pressGeneration++
         stopActive()
         destination = CapturedInput(null)
@@ -443,11 +444,11 @@ class TurnController(private val app: App) : Gestures.Listener {
         val cfg = app.store.value
         // The R1 is never the agent: every turn reaches Hermes as said, and Hermes texts people
         // through its robotos tools.
-        app.history.add(Msg.USER, text)
+        app.history.add(Msg.USER, text, turn.conversation)
         _state.value = TurnState(phase = Phase.THINKING)
         awaitNetwork()
         val req = ChatRequest.build(cfg.copy(systemPrompt = cfg.systemPrompt + HERMES_DEVICE),
-            app.history.messages, app.history.convId)
+            listOf(Msg(Msg.USER, text)), turn.conversation)
         val speaker = if (cfg.tts.enabled && !cfg.quiet) {
             Speaker(tts::call, cfg.tts.sampleRate).also { turn.speaker = it; it.start() }
         } else null
@@ -465,6 +466,7 @@ class TurnController(private val app: App) : Gestures.Listener {
                     }
                 },
                 onStatus = { s -> if (current === turn) _state.update { it.copy(note = s) } },
+                onAccepted = { app.history.confirmDraft(text, turn.conversation) },
             )
         }
 
@@ -473,7 +475,7 @@ class TurnController(private val app: App) : Gestures.Listener {
             note("No reply")
             return
         }
-        app.history.add(Msg.ASSISTANT, reply)
+        app.history.add(Msg.ASSISTANT, reply, turn.conversation)
         turn.replySaved = true
         if (speaker == null) {
             idle()

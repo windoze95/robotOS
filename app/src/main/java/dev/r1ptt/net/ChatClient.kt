@@ -18,6 +18,7 @@ class ChatClient {
         onStatus: (String) -> Unit,
         requireComplete: Boolean = false,
         maxChars: Int = Int.MAX_VALUE,
+        onAccepted: () -> Unit = {},
     ): String {
         val http = Request.Builder().url(req.url)
             .apply { req.headers.forEach { (k, v) -> header(k, v) } }
@@ -28,6 +29,7 @@ class ChatClient {
         calls.add(call)
         call.execute().use { resp ->
             if (!resp.isSuccessful) throw ApiError(resp.code, errorMessage(resp.body?.string().orEmpty()))
+            onAccepted()
             val body = resp.body ?: throw IOException("Empty response")
             val full = StringBuilder()
 
