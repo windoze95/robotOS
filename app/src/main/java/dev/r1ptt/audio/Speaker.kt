@@ -31,6 +31,7 @@ class Speaker(
 
     @Volatile private var rate = sampleRate
     @Volatile private var stopped = false
+    @Volatile private var silenced = false
     @Volatile private var fetching = true
     @Volatile private var call: Call? = null
     @Volatile private var track: AudioTrack? = null
@@ -56,7 +57,7 @@ class Speaker(
         val alreadyDone = synchronized(completion) {
             if (completed) true else { onDone = done; false }
         }
-        if (alreadyDone) { if (!stopped) done(error); return }
+        if (alreadyDone) { if (!stopped || silenced) done(error); return }
         sentences.finish()
     }
 
@@ -70,7 +71,11 @@ class Speaker(
         chunks.offer(END_PCM)
         call?.cancel()
         synchronized(playback) { track?.let { runCatching { it.pause(); it.flush() } } }
+        AudioPlayback.stopped(this)
     }
+
+    /** Stop only speech, allowing the owning turn's completion callback to settle normally. */
+    fun silence() { silenced = true; stop() }
 
     private fun fetchLoop() {
         var first = true
@@ -140,11 +145,17 @@ class Speaker(
                 if (chunk === END_PCM) break
                 if (t == null) {
                     r = rate
-                    t = newTrack(r).also { track = it }
-                    t.play()
+                    t = synchronized(playback) {
+                        if (stopped) null else newTrack(r).also {
+                            track = it
+                            it.play()
+                            AudioPlayback.started(this)
+                        }
+                    }
+                    if (t == null) break
                     // 100 ms of silence first, so the amplifier waking up doesn't clip the first syllable.
                     val pad = ByteArray(r / 10 * 2)
-                    t.write(pad, 0, pad.size)
+                    synchronized(playback) { if (!stopped) t.write(pad, 0, pad.size) }
                     frames += pad.size / 2
                 }
                 var off = 0
@@ -180,8 +191,9 @@ class Speaker(
             call?.cancel()
             track = null
             t?.let { runCatching { it.release() } }
+            AudioPlayback.stopped(this)
             val done = synchronized(completion) { completed = true; onDone.also { onDone = null } }
-            if (!stopped) done?.invoke(error)
+            if (!stopped || silenced) done?.invoke(error)
         }
     }
 

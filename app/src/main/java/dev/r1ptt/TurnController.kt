@@ -214,7 +214,7 @@ class TurnController(private val app: App) : Gestures.Listener {
             return
         }
         noteJob?.cancel()
-        if (cfg.earcons) Earcon.listening()
+        if (cfg.earcons && !cfg.quiet) Earcon.listening()
         if (!dictating) HomeActivity.bringToFront(app)
         _state.value = TurnState(phase = if (dictating) Phase.DICTATING else Phase.LISTENING)
         if (streamTurn) stream?.hold() else Http.warm(transcriptionConfig.stt.baseUrl)
@@ -294,6 +294,38 @@ class TurnController(private val app: App) : Gestures.Listener {
         stopActive()
         noteJob?.cancel()
         settle()
+    }
+
+    /** Stop audio without claiming that remote agent work has ended. */
+    fun stopSpeech() {
+        current?.speaker?.silence()
+    }
+
+    /** Explicit local interruption. Runs-backed cancellation is layered onto this in Hermes controls. */
+    fun cancelTurn() { pressGeneration++; stopActive(); settle() }
+
+    fun newConversation() {
+        cancelTurn()
+        app.history.newConversation()
+        note("New conversation")
+    }
+
+    /** Deliberate read-aloud or a permitted Hermes announcement; shares the interruptible speaker. */
+    fun speakText(text: String): Boolean {
+        val cfg = app.store.value
+        if (text.isBlank() || text.length > 16_384 || busy || dev.r1ptt.audio.AudioPlayback.active ||
+            cfg.quiet || !app.updates.allowVoice() || app.store.loadError != null) return false
+        destination = CapturedInput(null)
+        dictating = false
+        app.radio.onActivity()
+        app.screen.holdAwake()
+        _state.value = TurnState(phase = Phase.SPEAKING)
+        launch { turn ->
+            val speaker = Speaker(tts::call, cfg.tts.sampleRate).also { turn.speaker = it; it.start() }
+            speaker.say(SpeechText.clean(text))
+            finishSpeech(turn, speaker)
+        }
+        return true
     }
 
     /** A message typed into the launcher's text field: Hermes + text-to-speech. */
@@ -416,7 +448,7 @@ class TurnController(private val app: App) : Gestures.Listener {
         awaitNetwork()
         val req = ChatRequest.build(cfg.copy(systemPrompt = cfg.systemPrompt + HERMES_DEVICE),
             app.history.messages, app.history.convId)
-        val speaker = if (cfg.tts.enabled) {
+        val speaker = if (cfg.tts.enabled && !cfg.quiet) {
             Speaker(tts::call, cfg.tts.sampleRate).also { turn.speaker = it; it.start() }
         } else null
         val splitter = SentenceSplitter()
@@ -510,7 +542,7 @@ class TurnController(private val app: App) : Gestures.Listener {
 
     private fun fail(msg: String) {
         _state.value = TurnState(phase = Phase.ERROR, note = msg)
-        if (app.store.value.earcons) Earcon.error()
+        if (app.store.value.earcons && !app.store.value.quiet) Earcon.error()
         clearNoteLater(6000)
     }
 

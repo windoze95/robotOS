@@ -10,6 +10,8 @@ data class Agent(
     val baseUrl: String = "",
     val apiKey: String = "",
     val model: String = "hermes-agent",
+    /** Optional explicit provider paired with [model]; blank keeps the gateway's default. */
+    val provider: String = "",
     /** Extra request headers, e.g. an access proxy's service-token headers. */
     val headers: Map<String, String> = emptyMap(),
     /** Read timeout for the streamed reply; an agent can work for minutes. */
@@ -44,6 +46,8 @@ data class Power(
     val brightness: Int = 60,
     /** Keep the cellular modem on (needs a SIM). Off by default: an idle modem is the biggest drain. */
     val cellular: Boolean = false,
+    /** Keep radios available on battery without discarding the pocket-mode idle interval. */
+    val stayReachable: Boolean = false,
 )
 
 /**
@@ -65,6 +69,10 @@ data class HermesLink(
     val smsSession: String = "robotos-sms",
     /** Texts Hermes may send through this R1 per day (0 = no limit). */
     val dailySendLimit: Int = 100,
+    val allowSpeak: Boolean = false,
+    val allowShow: Boolean = false,
+    val allowVolume: Boolean = false,
+    val allowSaveRecipient: Boolean = false,
 ) {
     fun valid(): Boolean = (!deviceApi || (token.length in 32..256 && port in 1024..65535)) &&
         (!passthrough || dev.r1ptt.messages.SmsAddress.normalize(owner) == owner) && smsSession.length in 1..128
@@ -91,6 +99,8 @@ data class Config(
     val hermes: HermesLink = HermesLink(),
     /** Short beeps when listening starts and on errors. */
     val earcons: Boolean = true,
+    /** Mute speech and feedback sounds; independent of automatic reply playback. */
+    val quiet: Boolean = false,
     val textSizeSp: Int = 17,
     /** Keep each recorded clip under Android/data/dev.r1ptt/files/clips, for tuning the mic. */
     val saveClips: Boolean = false,

@@ -36,7 +36,7 @@ class RadioPolicy(private val ctx: Context, private val store: ConfigStore) {
     private val io = Executors.newSingleThreadExecutor()
     /** Reasons to keep the radios up (external power); the idle cut waits for none. */
     private val holds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-    private val held: Boolean get() = holds.isNotEmpty()
+    private val held: Boolean get() = holds.isNotEmpty() || store.value.power.stayReachable
     val deliberateAirplane: Boolean get() = store.value.power.cellular && (prefs.getBoolean("manual_airplane", false) || !cutByUs) &&
         Settings.Global.getInt(ctx.contentResolver, Settings.Global.AIRPLANE_MODE_ON, 0) != 0
 
@@ -55,6 +55,9 @@ class RadioPolicy(private val ctx: Context, private val store: ConfigStore) {
 
     /** The steady state for the current config: run at service start and after config changes. */
     fun applyBaseline() = io.execute {
+        // A newly selected reachability policy must immediately replace the pending idle alarm.
+        if (held || store.value.power.wifiIdleMinutes <= 0) wake()
+        else if (!ctx.getSystemService(PowerManager::class.java).isInteractive) schedule()
         val cellular = store.value.power.cellular
         val cmds = mutableListOf(
             "settings put global airplane_mode_radios cell,bluetooth,nfc,wimax,uwb",

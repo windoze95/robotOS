@@ -12,6 +12,21 @@ class ConfigJsonTest {
         assertEquals(Config(), ConfigJson.merge(Config(), ConfigJson.toJson(Config())))
     }
 
+    @Test fun newPreferencesPreserveLegacyAccessAndPocketInterval() {
+        val legacy = ConfigJson.merge(Config(), JSONObject("""{"power":{"wifiIdleMinutes":7},"hermes":{"deviceApi":true,"token":"${"x".repeat(32)}"}}"""))
+        assertTrue(legacy.hermes.deviceApi)
+        assertFalse(legacy.hermes.allowSpeak)
+        assertFalse(legacy.hermes.allowShow)
+        assertFalse(legacy.hermes.allowVolume)
+        assertFalse(legacy.hermes.allowSaveRecipient)
+        val reachable = ConfigJson.merge(legacy, JSONObject("""{"power":{"stayReachable":true},"quiet":true,"agent":{"provider":"configured-provider","model":"configured-model"}}"""))
+        assertTrue(reachable.power.stayReachable)
+        assertEquals(7, reachable.power.wifiIdleMinutes)
+        assertTrue(reachable.quiet)
+        assertEquals(reachable, ConfigJson.merge(Config(), ConfigJson.toJson(reachable)))
+        assertEquals(7, ConfigJson.merge(reachable, JSONObject("""{"power":{"stayReachable":false}}""")).power.wifiIdleMinutes)
+    }
+
     @Test
     fun partialImportOnlyTouchesWhatItNames() {
         val c = ConfigJson.merge(Config(), JSONObject("""{"agent":{"apiKey":"k-1"},"power":{"wifiIdleMinutes":0}}"""))

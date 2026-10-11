@@ -37,7 +37,7 @@ import kotlin.math.sqrt
  * The launcher, and the only screen most people will see: status line, conversation, and a text
  * field. When the keyboard is up, the button dictates into the field instead of sending.
  */
-class HomeActivity : Activity(), DictationTarget {
+class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
     private val app get() = application as App
 
     private lateinit var status: TextView
@@ -47,7 +47,7 @@ class HomeActivity : Activity(), DictationTarget {
     private lateinit var live: TextView
     private lateinit var input: EditText
 
-    private var ui: CoroutineScope? = null
+    private var observations: CoroutineScope? = null
     private var imeVisible = false
     private var resumed = false
     private var textSp = 17f
@@ -62,6 +62,7 @@ class HomeActivity : Activity(), DictationTarget {
         status = findViewById(R.id.status)
         meter = findViewById(R.id.meter)
         scroll = findViewById(R.id.scroll)
+        wheelScrollTarget = scroll
         list = findViewById(R.id.list)
         live = findViewById(R.id.live)
         input = findViewById(R.id.input)
@@ -102,7 +103,7 @@ class HomeActivity : Activity(), DictationTarget {
         app.turns.attachTarget(this)
         hideSystemBars()
         if (hasMic()) PttService.start(this) // the microphone service may only start from the foreground
-        ui = MainScope().also { s ->
+        observations = MainScope().also { s ->
             s.launch { app.store.flow.collect(::applyConfig) }
             s.launch { app.history.flow.collect(::renderHistory) }
             s.launch { app.turns.state.collect(::render) }
@@ -113,8 +114,8 @@ class HomeActivity : Activity(), DictationTarget {
         app.turns.detachTarget(this)
         resumed = false
         visible = false
-        ui?.cancel()
-        ui = null
+        observations?.cancel()
+        observations = null
         super.onPause()
     }
 
@@ -125,29 +126,6 @@ class HomeActivity : Activity(), DictationTarget {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         if (hasMic()) PttService.start(this) else status.text = getString(R.string.need_mic)
-    }
-
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        when (event.keyCode) {
-            // The side button, remapped by the Magisk keylayout. The root reader normally handles
-            // it; this path only matters while that reader is down.
-            KeyEvent.KEYCODE_BUTTON_1 -> {
-                if (event.repeatCount == 0) PttService.instance?.frameworkButton(event.action == KeyEvent.ACTION_DOWN)
-                return true
-            }
-            // The scroll wheel, remapped to volume by the Magisk keylayout: always the speech volume.
-            KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN -> {
-                if (event.action == KeyEvent.ACTION_DOWN) {
-                    getSystemService(AudioManager::class.java).adjustStreamVolume(
-                        AudioManager.STREAM_MUSIC,
-                        if (event.keyCode == KeyEvent.KEYCODE_VOLUME_UP) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER,
-                        AudioManager.FLAG_SHOW_UI,
-                    )
-                }
-                return true
-            }
-        }
-        return super.dispatchKeyEvent(event)
     }
 
     @Deprecated("Deprecated in Java")
