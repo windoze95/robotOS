@@ -443,7 +443,10 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
         textSp = c.textSizeSp.coerceIn(14, 24).toFloat()
         live.textSize = textSp
         input.textSize = textSp
-        for (i in 0 until list.childCount) ((list.getChildAt(i) as? LinearLayout)?.getChildAt(1) as? TextView)?.textSize = textSp
+        for (i in 0 until list.childCount) (list.getChildAt(i) as? LinearLayout)?.let { row ->
+            (row.getChildAt(0) as? TextView)?.textSize = 13f * textSp / 17f
+            (row.getChildAt(1) as? TextView)?.textSize = textSp
+        }
     }
 
     private fun scrollToEnd() {

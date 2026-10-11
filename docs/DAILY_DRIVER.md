@@ -93,10 +93,13 @@ Existing chat history survived. Home, Quick controls, Settings, native dialogs, 
 composer and 23 sp text were inspected on the device. A draft survived navigation and a live
 Hermes Runs request returned `Ready on R1.`; its saved result survived the final APK replacement.
 The host's capabilities and model-options endpoints also returned successful authenticated responses.
+The updated robotOS MCP module and skill were deployed to the existing Hermes host. A fresh,
+idle gateway discovered all ten tool schemas; its credentials, configuration and service
+definition were unchanged.
 Text size and Quiet mode were restored after testing. Local screenshots stay under the ignored
 `out/daily-driver-device/` directory; screenshots containing existing personal chats are not published.
 
-That APK's SHA-256 is `c1f23574a2bea9f6e3557a4ff3cd80ce8588166cfa0a4dcd92035e150c354b8b`.
+That APK's SHA-256 is `f3e3cd216060fd1b6a043295136f785bdbd5784c39a7be77e802f1fee5e49211`.
 It is an unpublished acceptance build, not an official tagged release. Its full local Android
 suite passed 234 tests with debug/release build and lint coverage; the MCP/setup suite passed
 15 tests and the Node acceptance/release suite passed 15 tests.
