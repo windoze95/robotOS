@@ -7,11 +7,12 @@
       "extraBody": { "reasoning_effort": "low", "verbosity": "low" }
     },
     "hermes": {
-      "baseUrl": "http://192.168.1.50:8642/v1",
+      "baseUrl": "https://HOST.TAILNET.ts.net/v1",
       "apiKey": "REPLACE-WITH-API_SERVER_KEY",
       "model": "hermes-agent"
     }
   },
+  "hermes": { "deviceApi": false, "token": "REPLACE-WITH-32+-RANDOM-CHARACTERS", "port": 8765, "passthrough": false, "owner": "+14055550123", "dailySendLimit": 100 },
   "stt": { "baseUrl": "https://api.openai.com/v1", "model": "gpt-transcribe", "language": "en", "live": true, "liveModel": "gpt-live-transcribe" },
   "tts": { "enabled": true, "baseUrl": "https://api.openai.com/v1", "model": "gpt-4o-mini-tts-2025-12-15", "voice": "marin" },
   "power": { "wifiIdleMinutes": 3, "screenTimeoutSec": 15, "brightness": 60, "cellular": false }

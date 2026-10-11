@@ -10,20 +10,19 @@ arithmetic:
 
 So the work goes into making idle as close to "everything off" as possible.
 
-The optional [SMS relay](RELAY.md) has an explicit docked exception: while plugged
-in with docked mode enabled, a separate foreground service holds radio availability
-and performs bounded sync. Unplugged screen-off mode has no relay polling timer.
-Ten physical plug cycles, an eight-hour powered soak, and a matched unplugged
-battery comparison remain required; simulated power tests do not prove those.
+On external power (any charger) robotOS skips the idle cut: Wi-Fi and the modem stay up, so texts
+arrive and Hermes can reach the R1 at any time ([HERMES.md](HERMES.md)). Unplugging re-arms the normal
+cut. Plugging in only changes availability; it turns no feature on or off. An eight-hour powered soak
+and a matched unplugged battery comparison remain to be measured.
 
 ## What robotOS does
 
 | Drain | Approach |
 |---|---|
 | Cellular modem | Kept off permanently (airplane mode set up to leave Wi-Fi alone). `power.cellular: true` turns it back on if a SIM is in. |
-| Wi-Fi | Off after `power.wifiIdleMinutes` (default 3) with the screen dark; on again at the next press or screen-on. Reconnection overlaps speaking; its latency on the current build still needs the read-only acceptance workflow in [ACCEPTANCE.md](ACCEPTANCE.md). While connecting, words are buffered within a bounded queue and failures are surfaced. |
+| Wi-Fi | Off after `power.wifiIdleMinutes` (default 3) with the screen dark, never while on external power; on again at the next press or screen-on. Reconnection overlaps speaking; its latency on the current build still needs the read-only acceptance workflow in [ACCEPTANCE.md](ACCEPTANCE.md). While connecting, words are buffered within a bounded queue and failures are surfaced. |
 | Bluetooth, location, scanning | Off: no Wi-Fi or BLE "always scanning", no Wi-Fi auto-wakeup, no network recommendations. |
-| Background apps | Rabbit's product partition is removed and LineageOS extras are disabled (`tools/debloat.txt`). Screen-off pocket mode has no relay polling; optional docked sync is described above. VPN clients have their own power behavior. |
+| Background apps | Rabbit's product partition is removed and LineageOS extras are disabled (`tools/debloat.txt`). Screen-off pocket mode has no polling. VPN clients (Tailscale) have their own power behavior. |
 | Doze | Enters light idle immediately and deep idle about 30 s after screen-off (module `service.sh`). |
 | Screen | On only while a turn is active, then a 15 s timeout at brightness 60/255. No ambient display or lift/tap-to-wake. |
 | Button | Read by a root `dd` blocked on the input device: zero CPU until a press. The kernel's key interrupt wakes the SoC. |

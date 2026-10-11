@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.os.BatteryManager
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -18,6 +19,13 @@ import android.util.Log
 import dev.r1ptt.input.Gestures
 import dev.r1ptt.input.SideButton
 import dev.r1ptt.power.DeviceSettings
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 
 /**
  * Always-on foreground service (type microphone). It owns the side-button reader and keeps the
@@ -30,6 +38,14 @@ class PttService : Service() {
     private lateinit var gestures: Gestures
     private lateinit var button: SideButton
     private var receiverRegistered = false
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    /** On external power the radios stay up, so texts and Hermes reach the R1; this enables nothing else. */
+    private val powerEvents = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, i: Intent) {
+            (application as App).radio.hold("power", i.action == Intent.ACTION_POWER_CONNECTED)
+        }
+    }
 
     private val screenEvents = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
@@ -46,7 +62,6 @@ class PttService : Service() {
                     app.radio.onScreenOn()
                     app.battery.record(c, "screen_on")
                     app.turns.screenOn()
-                    dev.r1ptt.bridge.RelayService.start(app)
                 }
             }
         }
@@ -81,7 +96,15 @@ class PttService : Service() {
             },
             RECEIVER_NOT_EXPORTED,
         )
+        registerReceiver(powerEvents, IntentFilter().apply {
+            addAction(Intent.ACTION_POWER_CONNECTED)
+            addAction(Intent.ACTION_POWER_DISCONNECTED)
+        }, RECEIVER_NOT_EXPORTED)
         receiverRegistered = true
+        val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        app.radio.hold("power", (battery?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0)
+        scope.launch { app.store.flow.map { it.hermes }.distinctUntilChanged().collect { app.deviceApi.apply(it) } }
+        app.hermesTexts.resume()
         app.radio.applyBaseline()
         DeviceSettings.apply(app.store.value)
         app.battery.record(this, "service_start")
@@ -109,7 +132,9 @@ class PttService : Service() {
         val owned = instance === this
         if (owned) instance = null
         if (::button.isInitialized) button.stop()
-        if (receiverRegistered) unregisterReceiver(screenEvents)
+        scope.cancel()
+        if (receiverRegistered) { unregisterReceiver(screenEvents); unregisterReceiver(powerEvents) }
+        if (owned) (application as App).deviceApi.stop()
         if (owned) {
             (application as App).turns.shutdown()
             TurnMetrics.event("service_stopped")

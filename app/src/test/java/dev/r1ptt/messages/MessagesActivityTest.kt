@@ -48,16 +48,7 @@ class MessagesActivityTest {
         @Suppress("UNCHECKED_CAST")
         val state = app.store.javaClass.getDeclaredField("state").apply { isAccessible = true }.get(app.store) as MutableStateFlow<AppConfig>
         state.value = state.value.copy(tts = state.value.tts.copy(enabled = false))
-        val fixtures = mapOf(
-            "Text Yana that I’m on my way" to SmsComposeAction("Yana", "I’m on my way"),
-            "Text +15551234567: Synthetic only" to SmsComposeAction("+15551234567", "Synthetic only"),
-            "Text Yana that Synthetic only" to SmsComposeAction("Yana", "Synthetic only"),
-        )
-        app.turns.shutdown()
-        turns = TurnController(app, app.smsAssistant) { _, input, _ ->
-            SmsIntent.Send(requireNotNull(fixtures[input]) { "Unexpected synthetic UI resolver input" })
-        }
-        App::class.java.getDeclaredField("turns").apply { isAccessible = true }.set(app, turns)
+        turns = app.turns
     }
     @After fun cleanup() { turns.shutdown() }
     private fun views(root: View): List<View> = listOf(root) + if (root is ViewGroup) (0 until root.childCount).flatMap { views(root.getChildAt(it)) } else emptyList()
@@ -88,64 +79,10 @@ class MessagesActivityTest {
         c.stop().destroy()
     }
 
-    @Test fun unknownAssistantRecipientOpensBodyWithEmptyPhoneAndNoSend() {
-        val intent = Intent(app, MessagesActivity::class.java).putExtra(SmsAssistant.RECIPIENT, "Yana")
-            .putExtra(SmsAssistant.BODY, "Synthetic draft only")
-        val c = Robolectric.buildActivity(MessagesActivity::class.java, intent).setup()
-        val a = c.get()
-        await { views(a.window.decorView).filterIsInstance<EditText>().any { it.contentDescription == "SMS draft" && it.text.toString() == "Synthetic draft only" } }
-        val phone = views(a.window.decorView).filterIsInstance<EditText>().single { it.contentDescription == "Recipient phone number" }
-        assertEquals("", phone.text.toString())
-        assertTrue(a.sendTyped())
-        assertNull(shadowOf(a).lastRequestedPermission)
-        assertTrue(app.history.messages.isEmpty())
-        SmsStore(app).use { assertTrue(it.threads().isEmpty()) }
-        c.pause().stop().destroy()
-    }
-
-    @Test fun unknownAssistantRecipientKeepsTheExplanationVisibleOnHomeAfterTheNoticeClears() {
-        shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS)
-        app.smsAssistant.enabled = true
-        val home = Robolectric.buildActivity(HomeActivity::class.java).setup()
-        app.turns.sendText("Text Yana that I’m on my way")
-        await { app.history.messages.any { it.text.contains("full phone number") } }
-        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(4))
-        assertNull(shadowOf(app).nextStartedActivity)
-        assertTrue(views(home.get().window.decorView).filterIsInstance<TextView>().any { it.text.contains("full phone number") })
-        assertFalse(app.history.messages.toString().contains("Yana"))
-        assertFalse(app.history.messages.toString().contains("I’m on my way"))
-        SmsStore(app).use { assertTrue(it.threads().isEmpty()) }
-        home.pause().stop().destroy()
-    }
-
-    @Test fun completedTypedCommandReachesSmsPreparationAfterTurnSettles() {
-        app.smsAssistant.enabled = true
-        // No SMS permission: real controller preparation must fail before any transport call.
-        app.turns.sendText("Text +15551234567: Synthetic only")
-        await { app.turns.state.value.note.contains("No text was sent") }
-        assertTrue(app.turns.state.value.note.contains("Enable SMS sending"))
-        assertFalse(app.turns.busy)
-        assertNull(shadowOf(app).nextStartedActivity)
-        assertEquals(listOf("Enable SMS sending first. No text was sent."), app.history.messages.map { it.text })
-        SmsStore(app).use { assertTrue(it.threads().isEmpty()) }
-    }
-
-    @Test fun newPressCancelsTypedCommandWhileRecipientLookupIsPending() {
-        app.smsAssistant.enabled = true
-        app.turns.sendText("Text Yana that Synthetic only")
-        app.turns.onDoubleTap()
-        // Queue a read after lookup so all prior worker callbacks have arrived.
-        var drained = false
-        app.sms.recipients { _, _ -> drained = true }
-        await { drained }
-        assertNull(shadowOf(app).nextStartedActivity)
-        SmsStore(app).use { assertTrue(it.threads().isEmpty()) }
-    }
-
     @Test @GraphicsMode(GraphicsMode.Mode.NATIVE)
     fun composeFitsSmallScreenAndProducesSyntheticPreview() {
-        val intent = Intent(app, MessagesActivity::class.java).putExtra(SmsAssistant.RECIPIENT, "+15551234567")
-            .putExtra(SmsAssistant.BODY, "I’m on my way. See you soon!")
+        val intent = Intent(app, MessagesActivity::class.java).putExtra(SmsExternalDraft.PEER, "+15551234567")
+            .putExtra(SmsExternalDraft.BODY, "I’m on my way. See you soon!")
         val c = Robolectric.buildActivity(MessagesActivity::class.java, intent).setup()
         val a = c.get()
         await { views(a.window.decorView).filterIsInstance<EditText>().any { it.contentDescription == "SMS draft" } }

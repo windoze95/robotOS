@@ -60,34 +60,6 @@ class SmsControllerTest {
     }
     private fun status(review: SmsReview): SmsRecord = SmsStore(app).use { it.conversation(review.record.peer).single() }
 
-    @Test fun bridgeGrantReachesTheExistingNativeTransportOnceAndKeepsDispatchEvidence() {
-        val cfg = dev.r1ptt.data.BridgeConfig(enabled = true, baseUrl = "https://bridge.example",
-            deviceId = java.util.UUID.randomUUID().toString(), token = "a".repeat(48))
-        @Suppress("UNCHECKED_CAST")
-        val state = app.store.javaClass.getDeclaredField("state").apply { isAccessible = true }.get(app.store) as kotlinx.coroutines.flow.MutableStateFlow<dev.r1ptt.data.Config>
-        state.value = state.value.copy(bridge = cfg)
-        app.smsAssistant.enabled = true
-        val journal = app.bridge.journal
-        val key = java.util.UUID.randomUUID().toString()
-        val payload = org.json.JSONObject().put("id", key).put("expires", System.currentTimeMillis() / 1000 + 300)
-        journal.enqueue(payload, null, dev.r1ptt.bridge.BridgeController.enrollment(cfg))
-        journal.update(key, "ready")
-        val prepared = review()
-        val review = SmsReview(prepared.draft, prepared.record, prepared.texts, prepared.simLabel, key)
-        val digest = dev.r1ptt.bridge.BridgePolicy.digest(dev.r1ptt.bridge.BridgeController.frozen(review.record))
-        journal.freeze(key, review.record, digest); journal.grant(key, digest, System.currentTimeMillis() / 1000 + 30)
-        @Suppress("UNCHECKED_CAST")
-        val leases = app.bridge.javaClass.getDeclaredField("leases").apply { isAccessible = true }.get(app.bridge) as MutableMap<String, Long>
-        leases[key] = android.os.SystemClock.elapsedRealtime() + 25_000
-        app.bridge.availability(true, "test")
-        assertTrue(send(review).first)
-        assertEquals(1, transport.records.size)
-        assertEquals("handoff", journal.get(key)?.state)
-        assertNotNull(transport.records.single().sendEvidence)
-        assertFalse(send(review).first)
-        assertEquals(1, transport.records.size)
-    }
-
     @Test fun preparationDoesNotSendAndReplayingOneReviewCannotSendTwice() {
         val review = review()
         assertTrue(transport.records.isEmpty())
@@ -144,7 +116,6 @@ class SmsControllerTest {
     @Test fun incomingOptInDefaultsOffEvenWhenAndroidPermissionExists() {
         shadowOf(app).grantPermissions(Manifest.permission.RECEIVE_SMS)
         assertFalse(controller.receiveEnabled)
-        assertFalse(app.smsAssistant.enabled)
     }
 
     @Test fun manifestProtectsDeliveryAndHasNoExportedSendAction() {

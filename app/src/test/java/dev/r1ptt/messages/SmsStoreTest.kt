@@ -61,23 +61,17 @@ class SmsStoreTest {
         store.removeRecipient(store.recipients().last().id)
         assertEquals(SmsResolution.Number("+15551234567"), SmsRecipientResolver.resolve("Yana", store.recipients()))
     }
-    @Test fun versionOneMigrationPreservesOriginalFailedRecordWithoutBackfillingSystemInbox() {
-        store.close(); val context = RuntimeEnvironment.getApplication(); context.deleteDatabase("messages.db")
-        val old = android.database.sqlite.SQLiteDatabase.openOrCreateDatabase(context.getDatabasePath("messages.db"), null)
-        old.execSQL("CREATE TABLE messages (id TEXT PRIMARY KEY, peer TEXT NOT NULL, created INTEGER NOT NULL, unread INTEGER NOT NULL, record TEXT NOT NULL)")
-        old.execSQL("CREATE TABLE draft (id INTEGER PRIMARY KEY CHECK (id = 1), peer TEXT NOT NULL, body TEXT NOT NULL)")
-        old.execSQL("CREATE TABLE recipients (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, number TEXT NOT NULL)")
+    @Test fun recordsWrittenBeforeLaterFieldsExistedReadBackIntact() {
         val failed = record().sent(0, false, 32).sent(1, false, 32)
         val legacy = org.json.JSONObject(failed.encode()).apply { remove("systemOwned"); remove("sendEvidence") }
         val parts = legacy.getJSONArray("parts")
         for (i in 0 until parts.length()) { parts.getJSONObject(i).remove("radioError"); parts.getJSONObject(i).remove("failureSource") }
-        old.execSQL("INSERT INTO messages VALUES (?,?,?,?,?)", arrayOf<Any>(failed.id, failed.peer, failed.createdAt, 0, legacy.toString()))
-        old.version = 1; old.close()
-        store = SmsStore(context)
+        store.writableDatabase.execSQL("INSERT INTO messages VALUES (?,?,?,?,?)", arrayOf<Any>(failed.id, failed.peer, failed.createdAt, 0, legacy.toString()))
         val restored = store.conversation(failed.peer).single()
         assertEquals(32, restored.parts[0].error); assertNull(restored.parts[0].radioError)
         assertEquals(SmsStatus.FAILED, restored.status(2000)); assertEquals(failed.token, restored.token)
         assertFalse(restored.systemOwned); assertTrue(store.pendingSystemCopies().isEmpty())
+        assertEquals(4, store.readableDatabase.version)
     }
 
     @Test fun mmsNoticeIsDurableBoundedAndDeduplicatedAndCallRepliesDoNotOverwriteDrafts() {

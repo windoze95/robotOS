@@ -1,40 +1,19 @@
 # Using Hermes Agent as the backend
 
-For the isolated, per-device **SMS relay**, follow [docs/RELAY.md](../docs/RELAY.md).
-Its restricted Runs API profile and device credential are separate from the
-general chat setup below; do not put its full Hermes API key on the phone.
+Run `tools/hermes-setup.sh --host you@hermes-host` ([docs/HERMES.md](../docs/HERMES.md)). It makes Hermes the agent: every push-to-talk turn goes to
+Hermes, Hermes texts people through the R1 with its `robotos` MCP tools, and texts from your own number
+reach Hermes. It connects the R1 and Hermes over Tailscale (tailnet-only HTTPS through Tailscale Serve)
+and keeps Hermes's API server bound to `127.0.0.1`.
 
-The R1 talks to Hermes through its API server's OpenAI-compatible `/v1/chat/completions` endpoint.
-
-## 1. Turn on the API server
-
-In `~/.hermes/.env` on the machine running Hermes:
-
-```sh
-API_SERVER_ENABLED=true
-API_SERVER_KEY=a-long-random-key
-API_SERVER_HOST=0.0.0.0        # default 127.0.0.1 only accepts local connections
-API_SERVER_PORT=8642
-```
-
-Start it with `hermes gateway`, then check it from another machine:
-
-```sh
-curl -sS http://<hermes-ip>:8642/v1/chat/completions \
-  -H 'Authorization: Bearer a-long-random-key' -H 'Content-Type: application/json' \
-  -d '{"model":"hermes-agent","messages":[{"role":"user","content":"hi"}]}'
-```
-
-## 2. Point the R1 at it
-
-In `tools/r1ptt.json`, then `tools/provision.sh --config tools/r1ptt.json`:
+The R1 talks to Hermes through its API server's OpenAI-compatible `/v1/chat/completions` endpoint, with
+the active provider set to `hermes`:
 
 ```json
 {
   "activeProvider": "hermes",
   "providers": {
     "openai": { "apiKey": "sk-..." },
-    "hermes": { "baseUrl": "http://<hermes-ip>:8642/v1", "apiKey": "a-long-random-key", "model": "hermes-agent" }
+    "hermes": { "baseUrl": "https://HOST.TAILNET.ts.net/v1", "apiKey": "<API_SERVER_KEY>", "model": "hermes-agent" }
   }
 }
 ```
@@ -57,12 +36,13 @@ Set `"session": "history"` on the hermes provider, and the R1 will send the rece
 
 ## Security
 
-The API key gives full control of your agent. Keep the server on your LAN or tailnet. For use away
-from home, connect through a VPN or an HTTPS reverse proxy that checks a credential. For example,
-an access proxy's service-token headers can be set on the provider:
+The API key gives the R1 your agent's full toolset; that is the point of the design. Never expose the
+API server as plain HTTP on a LAN or the internet: keep it on `127.0.0.1` and reach it through
+Tailscale Serve (or an HTTPS reverse proxy that checks a credential, set as provider headers):
 
 ```json
 "headers": { "CF-Access-Client-Id": "...", "CF-Access-Client-Secret": "..." }
 ```
 
-Keep the API server private, and rotate its API key if the R1 is lost.
+Rotate the API key and the R1 device token if the R1 is lost. More in
+[docs/HERMES.md](../docs/HERMES.md#security-notes).

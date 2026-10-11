@@ -25,7 +25,7 @@ jobs:
           packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
       - name: Test, build and lint
         run: |
-          python3 -m unittest discover -s server/bridge/tests -v
+          python3 -m unittest server.robotos_mcp.tests.test_robotos_mcp server.hermes.tests.test_setup_macos -v
           node --test tools/acceptance.test.mjs tools/release/*.test.mjs
           ./gradlew --no-daemon --console=plain :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease :app:lintDebug
           node tools/release/manifest.mjs inspect app/build/outputs/apk/release/app-release.apk

@@ -5,7 +5,6 @@ import dev.r1ptt.data.BatteryLog
 import dev.r1ptt.data.ConfigStore
 import dev.r1ptt.data.History
 import dev.r1ptt.messages.SmsController
-import dev.r1ptt.messages.SmsAssistant
 import dev.r1ptt.power.RadioPolicy
 import dev.r1ptt.power.ScreenPolicy
 import dev.r1ptt.update.UpdateManager
@@ -18,9 +17,10 @@ class App : Application() {
     private val smsInstance = lazy { SmsController(this) }
     val sms: SmsController get() = smsInstance.value
     val smsBusy: Boolean get() = smsInstance.isInitialized() && smsInstance.value.busy
-    val smsAssistant by lazy { SmsAssistant(this) }
-    val bridge by lazy { dev.r1ptt.bridge.BridgeController(this) }
-    val outcomes by lazy { OutcomeStore(this) }
+    /** Hermes's way into the R1 (texts, status) over the tailnet. */
+    val deviceApi by lazy { dev.r1ptt.hermes.DeviceApi(this) }
+    /** The owner's texts to the R1's number, passed through to Hermes. */
+    val hermesTexts by lazy { dev.r1ptt.hermes.HermesTexts(this) }
     lateinit var store: ConfigStore
         private set
     lateinit var history: History

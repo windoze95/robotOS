@@ -19,8 +19,6 @@ import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
 import dev.r1ptt.App
 import dev.r1ptt.R
-import dev.r1ptt.OutcomeStatus
-import dev.r1ptt.OutcomeReason
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.security.MessageDigest
@@ -31,7 +29,6 @@ class SmsReview internal constructor(
     val record: SmsRecord,
     val texts: List<String>,
     val simLabel: String,
-    val bridgeCommand: String? = null,
 )
 data class MessagesSnapshot(val draft: SmsDraft, val threads: List<SmsThread>, val messages: List<SmsRecord>,
     val mmsNotices: Int = 0, val replyRequests: List<Pair<String, SmsDraft>> = emptyList())
@@ -73,6 +70,12 @@ class SmsController(
     fun saveDraft(draft: SmsDraft, failed: () -> Unit = {}) = worker.execute {
         try { db.saveDraft(draft) } catch (_: Exception) { main.post { failed() } }
     }
+
+    // Synchronous reads for the device API's own threads. SQLiteOpenHelper serializes access.
+    fun record(id: String): SmsRecord? = db.record(id)
+    fun conversation(peer: String): List<SmsRecord> = db.conversation(peer)
+    fun threads(): List<SmsThread> = db.threads()
+    fun savedRecipients(): List<SmsRecipient> = db.recipients()
 
     fun recipients(done: (List<SmsRecipient>?, String?) -> Unit) = worker.execute {
         try { val saved = db.recipients(); main.post { done(saved, null) } }
@@ -121,7 +124,7 @@ class SmsController(
     }
 
     /** Preparation is local. The only transport call is in send(). */
-    fun prepare(draft: SmsDraft, outcomeId: String? = null): SmsReview {
+    fun prepare(draft: SmsDraft): SmsReview {
         check(canSend) { "Enable SMS sending first." }
         check(cellularEnabled()) { "Turn on Use cellular data (SIM) in robotOS settings first." }
         val peer = requireNotNull(SmsAddress.normalize(draft.peer)) { "Enter one phone number, including its country code when needed." }
@@ -135,15 +138,15 @@ class SmsController(
         val carrier = runCatching { app.getSystemService(TelephonyManager::class.java).createForSubscriptionId(sub).networkOperatorName }
             .getOrNull().orEmpty()
         val label = listOfNotNull("Default SMS SIM", if (slot >= 0) "slot ${slot + 1}" else null, carrier.takeIf { it.isNotBlank() }).joinToString(" · ")
-        return SmsReview(draft, SmsRecord.outgoing(peer, body, sub, texts.size, System.currentTimeMillis()).copy(assistantOutcomeId = outcomeId), texts, label)
+        return SmsReview(draft, SmsRecord.outgoing(peer, body, sub, texts.size, System.currentTimeMillis()), texts, label)
     }
 
-    /** Consumes one explicit attempt (review button or assistant command). Never automatically retries. */
-    fun send(review: SmsReview, clearDraft: Boolean = true, done: (Boolean, String) -> Unit) {
-        if (review.bridgeCommand != null && !app.bridge.canDispatch(review.bridgeCommand)) {
-            done(false, "Relay sending is paused or the command expired. Nothing was sent."); return
-        }
-        if (dispatching || app.updates.installing || app.turns.busy) {
+    /**
+     * Consumes one explicit attempt (review button, assistant command, or Hermes through the device
+     * API). Never automatically retries. An [agent] send runs while a voice turn waits on Hermes.
+     */
+    fun send(review: SmsReview, clearDraft: Boolean = true, agent: Boolean = false, done: (Boolean, String) -> Unit) {
+        if (dispatching || app.updates.installing || (!agent && app.turns.busy)) {
             done(false, "Finish the current action before sending."); return
         }
         if (!canSend || !cellularEnabled() || SubscriptionManager.getDefaultSmsSubscriptionId() != review.record.subscriptionId) {
@@ -158,10 +161,9 @@ class SmsController(
             try {
                 check(canSend && !app.updates.installing && cellularEnabled())
                 check(SubscriptionManager.getDefaultSmsSubscriptionId() == review.record.subscriptionId)
-                if (review.bridgeCommand != null) check(app.bridge.canDispatch(review.bridgeCommand))
                 val record = review.record.copy(createdAt = System.currentTimeMillis(), systemOwned = SmsRole.held(app),
                     sendEvidence = SmsDiagnostics.current(app, cellularEnabled()))
-                db.outgoing(record, review.draft.takeIf { clearDraft }, review.bridgeCommand)
+                db.outgoing(record, review.draft.takeIf { clearDraft })
                 persisted = true
                 syncSystem(record)
                 pending.entries.removeAll { it.value <= SystemClock.elapsedRealtime() }
@@ -170,7 +172,6 @@ class SmsController(
                 val sent = ArrayList(record.parts.indices.map { callback(record, it, false) })
                 val delivered = ArrayList(record.parts.indices.map { callback(record, it, true) })
                 transport.send(record, review.texts, sent, delivered)
-                record.assistantOutcomeId?.let { app.outcomes.update(it, OutcomeStatus.HANDOFF) }
                 changed()
                 main.post { done(true, "Sending…") }
             } catch (_: SecurityException) {
@@ -183,7 +184,6 @@ class SmsController(
                 // A binder/transport exception after persistence may have happened after handoff.
                 // Leave that attempt uncertain; never report it as safely retryable.
                 changed()
-                review.record.assistantOutcomeId?.let { app.outcomes.update(it, if (persisted) OutcomeStatus.SMS_UNKNOWN else OutcomeStatus.FAILED, OutcomeReason.UNAVAILABLE) }
                 main.post { done(persisted, if (persisted) "Send status is uncertain. Check with the recipient before trying again." else "The text could not be saved, so it was not sent.") }
             } finally { dispatching = false }
         }
@@ -191,7 +191,7 @@ class SmsController(
 
     private fun failBeforeSend(record: SmsRecord, source: String) {
         record.parts.indices.forEach { part -> db.update(SmsCallback(record.id, record.token, part, false)) { it.sent(part, false, SmsManager.RESULT_ERROR_GENERIC_FAILURE, source = source) } }
-        db.record(record.id)?.let { syncSystem(it); outcome(it) }
+        db.record(record.id)?.let(::syncSystem)
         pending.remove(record.id)
         pendingUntil = pending.values.maxOrNull() ?: 0L
         changed()
@@ -220,7 +220,7 @@ class SmsController(
                 pending.remove(callback.id)
                 pendingUntil = pending.values.maxOrNull() ?: 0L
             }
-            if (updated) { db.record(callback.id)?.let { syncSystem(it); outcome(it) }; changed() }
+            if (updated) { db.record(callback.id)?.let(::syncSystem); changed() }
         } catch (_: Exception) { notifyPrivate("A text status could not be saved. Check Messages before retrying.") }
         finally { finished() }
     }
@@ -253,27 +253,14 @@ class SmsController(
             if (db.insert(record)) {
                 syncSystem(record)
                 changed()
-                notifyPrivate("New text in Messages")
+                // The owner's own texts go to Hermes, which answers by text; everyone else stays local.
+                if (!app.hermesTexts.received(record)) notifyPrivate("New text in Messages")
             }
         } catch (_: Exception) { notifyPrivate("An incoming text could not be saved. Check available storage.") }
         finally { finished() }
     }
 
     private fun changed() { _revision.value += 1 }
-
-    private fun outcome(record: SmsRecord) {
-        val id = record.assistantOutcomeId ?: return
-        val status = when (record.status(System.currentTimeMillis())) {
-            SmsStatus.SENT -> OutcomeStatus.SMS_SENT
-            SmsStatus.DELIVERED -> OutcomeStatus.SMS_DELIVERED
-            SmsStatus.FAILED -> OutcomeStatus.SMS_FAILED
-            SmsStatus.PARTLY_SENT -> OutcomeStatus.SMS_PARTLY_SENT
-            SmsStatus.DELIVERY_FAILED -> OutcomeStatus.SMS_DELIVERY_FAILED
-            SmsStatus.UNKNOWN -> OutcomeStatus.SMS_UNKNOWN
-            else -> OutcomeStatus.HANDOFF
-        }
-        app.outcomes.update(id, status, code = record.parts.firstNotNullOfOrNull { it.error })
-    }
 
     private fun notifyPrivate(message: String) {
         if (!permitted(Manifest.permission.POST_NOTIFICATIONS)) return

@@ -75,7 +75,7 @@ class SettingsActivity : Activity() {
             })
         }
 
-        root.addView(button("SMS relay") { startActivity(Intent(this, dev.r1ptt.bridge.BridgeActivity::class.java)) })
+        root.addView(button("Hermes") { startActivity(Intent(this, dev.r1ptt.hermes.HermesActivity::class.java)) })
         header("Backend")
         val group = RadioGroup(this)
         cfg.availableProviders.values.forEach { p ->

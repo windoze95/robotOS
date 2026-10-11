@@ -15,9 +15,9 @@ import org.json.JSONObject
 object ChatRequest {
     class Built(val url: String, val headers: Map<String, String>, val body: JSONObject, val timeoutSec: Int)
 
-    fun build(cfg: Config, messages: List<Msg>, convId: String): Built {
+    /** [session] overrides the Hermes transcript, e.g. the owner's SMS conversation. */
+    fun build(cfg: Config, messages: List<Msg>, convId: String, session: String = "r1ptt-$convId"): Built {
         val p = cfg.provider
-        val session = "r1ptt-$convId"
 
         val headers = linkedMapOf<String, String>()
         if (p.apiKey.isNotBlank()) headers["Authorization"] = "Bearer ${p.apiKey}"

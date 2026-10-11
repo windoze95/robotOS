@@ -19,10 +19,6 @@ import dev.r1ptt.net.Http
 import dev.r1ptt.net.SttClient
 import dev.r1ptt.net.TtsClient
 import dev.r1ptt.net.friendly
-import dev.r1ptt.messages.SmsAssistant
-import dev.r1ptt.messages.SmsComposeAction
-import dev.r1ptt.messages.SmsIntent
-import dev.r1ptt.messages.SmsIntentClient
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -96,11 +92,7 @@ interface DictationTarget {
  * A new press always interrupts whatever is going on. Gesture callbacks arrive on the main thread;
  * network work runs on a small pool and is cancelled with its turn.
  */
-class TurnController(
-    private val app: App,
-    private val assistant: SmsAssistant = app.smsAssistant,
-    private val resolveIntent: (Config, String, CallRegistry) -> SmsIntent = SmsIntentClient()::resolve,
-) : Gestures.Listener {
+class TurnController(private val app: App) : Gestures.Listener {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val pool = Executors.newCachedThreadPool()
     private val stt = SttClient()
@@ -155,13 +147,11 @@ class TurnController(
     private var destination = CapturedInput<DictationTarget>(null)
     private var transcriptionConfig = app.store.value
 
-    private class Turn(val id: Long, val conversation: String, val input: CapturedInput<DictationTarget>, val sttConfig: Config, val outcome: String) {
+    private class Turn(val id: Long, val conversation: String, val input: CapturedInput<DictationTarget>, val sttConfig: Config) {
         var job: Job? = null
         var speaker: Speaker? = null
         val reply = StringBuffer()
         var replySaved = false
-        var sms: SmsAssistant.Request? = null
-        var bridgeCommand: String? = null
     }
 
     init {
@@ -191,7 +181,7 @@ class TurnController(
         if (dictationBlockedPress) { settle(); return }
         transcriptionConfig = cfg // a mid-press settings change cannot redirect private audio
         // Keyboard closed → speech-to-speech (if available); keyboard open → dictation via transcription.
-        liveTurn = !dictating && useLiveVoice(cfg, assistant.enabled)
+        liveTurn = !dictating && cfg.liveVoice
         // Dictation (and agent voice turns) stream through live transcription when it's on OpenAI.
         streamTurn = !liveTurn && cfg.liveStt
         app.radio.onActivity()
@@ -266,7 +256,7 @@ class TurnController(
                 destination.target?.takeIf { it === target }?.clearPartial()
                 note("Didn't hear anything")
             } else {
-                launch(id = s.turnId, emitStart = false, outcomeId = s.outcomeId) { turn -> transcribeStream(turn, s) }
+                launch(id = s.turnId, emitStart = false) { turn -> transcribeStream(turn, s) }
             }
             settle()
             return
@@ -327,13 +317,10 @@ class TurnController(
     /** Screen on: with the keyboard closed, the next thing is probably a voice turn. */
     fun screenOn() {
         if (app.updates.installing) return
-        if (!assistant.enabled && !privateInputScreen && target?.isActive() != true) live.warm()
+        if (!privateInputScreen && target?.isActive() != true) live.warm()
     }
 
     fun screenOff() = live.screenOff()
-
-    /** Refresh opt-in local capabilities on the next voice connection, without interrupting speech. */
-    fun refreshVoiceContext() { if (!busy) live.reset() }
 
     /** Service termination is terminal for microphone, sockets, playback and the wake lock. */
     fun shutdown() {
@@ -356,7 +343,7 @@ class TurnController(
         dictationBlockedPress = false
         app.radio.onActivity()
         app.screen.holdAwake()
-        launch(source = OutcomeSource.TYPED) { turn -> ask(turn, text) }
+        launch { turn -> ask(turn, text) }
     }
 
     // ---- the turn ----
@@ -368,21 +355,16 @@ class TurnController(
         return true
     }
 
-    private fun launch(id: Long = TurnMetrics.next(), emitStart: Boolean = true, source: OutcomeSource = OutcomeSource.VOICE, outcomeId: String? = null, block: suspend (Turn) -> Unit) {
-        val turn = Turn(id, app.history.convId, destination, transcriptionConfig, outcomeId ?: app.outcomes.begin(source))
+    private fun launch(id: Long = TurnMetrics.next(), emitStart: Boolean = true, block: suspend (Turn) -> Unit) {
+        val turn = Turn(id, app.history.convId, destination, transcriptionConfig)
         if (emitStart) TurnMetrics.event("turn_start", id, "mode" to 2L, "warm" to 0L, "ready" to 0L, "connection" to 0L)
         current = turn
         turn.job = scope.launch {
-            var completed = false
             try {
                 block(turn)
-                completed = true
             } catch (e: CancellationException) {
-                turn.bridgeCommand?.let { withContext(NonCancellable) { app.bridge.cancel(it) } }
-                app.outcomes.finishIfOpen(turn.outcome, OutcomeStatus.CANCELLED)
                 throw e
             } catch (e: Throwable) {
-                app.outcomes.update(turn.outcome, OutcomeStatus.FAILED, OutcomeStore.reason(e), (e as? dev.r1ptt.net.ApiError)?.code)
                 if (turn.input.target?.privateDictation() == true) Log.w(TAG, "Private dictation failed")
                 else Log.w(TAG, "turn failed", e)
                 TurnMetrics.event("session_failed", turn.id)
@@ -395,10 +377,6 @@ class TurnController(
                     current = null
                     TurnMetrics.event("exchange_complete", turn.id)
                     settle()
-                    if (completed) {
-                        if (turn.sms != null) sendSms(turn.sms!!)
-                        else if (turn.bridgeCommand == null) app.outcomes.finishIfOpen(turn.outcome, OutcomeStatus.COMPLETED)
-                    }
                 }
             }
         }
@@ -469,51 +447,13 @@ class TurnController(
 
     private suspend fun ask(turn: Turn, text: String) {
         val cfg = app.store.value
-        if (assistant.enabled && cfg.bridge.enabled && dev.r1ptt.bridge.BridgePolicy.request(text)) {
-            try {
-                turn.bridgeCommand = turn.outcome
-                app.bridge.enqueueOwner(text, turn.outcome)
-                replyLocally(turn, "Request saved. SMS relay will prepare it and show the result in Messages.")
-            } catch (e: CancellationException) { throw e }
-            catch (e: Exception) {
-                app.outcomes.update(turn.outcome, OutcomeStatus.FAILED, OutcomeReason.UNAVAILABLE)
-                replyLocally(turn, e.message ?: "The request could not be saved. No text was sent.")
-            }
-            return
-        }
-        if (assistant.enabled) {
-            val decision = try {
-                _state.value = TurnState(phase = Phase.THINKING, note = "Checking the requested action…")
-                awaitNetwork()
-                io { calls -> resolveIntent(cfg, text, calls) }
-            } catch (e: CancellationException) { throw e }
-            catch (e: Exception) {
-                app.outcomes.update(turn.outcome, OutcomeStatus.FAILED, OutcomeStore.reason(e), (e as? dev.r1ptt.net.ApiError)?.code)
-                replyLocally(turn, "Couldn't prepare that request. No text was sent. Check the assistant connection and try again.")
-                return
-            }
-            when (decision) {
-                is SmsIntent.Send -> {
-                    turn.sms = assistant.request(decision.action, turn.outcome)
-                    note("Preparing text…")
-                    return
-                }
-                SmsIntent.Clarify -> {
-                    app.outcomes.update(turn.outcome, OutcomeStatus.CLARIFY, OutcomeReason.REQUEST)
-                    replyLocally(turn, "I need one clear recipient and a request to send now. I can write the message for you. No text was sent.")
-                    return
-                }
-                SmsIntent.Chat -> {}
-            }
-        } else if (SmsComposeAction.parse(text) != null) {
-            app.outcomes.update(turn.outcome, OutcomeStatus.DISABLED)
-            replyLocally(turn, "Assistant SMS sending is off. Enable it in Messages → Options. No text was sent.")
-            return
-        }
+        // The R1 is never the agent: every turn reaches the backend as said. Hermes texts people
+        // through its robotos tools; other backends can't act on the device at all.
         app.history.add(Msg.USER, text)
         _state.value = TurnState(phase = Phase.THINKING)
         awaitNetwork()
-        val req = ChatRequest.build(cfg.copy(systemPrompt = cfg.systemPrompt + assistant.instructions()), app.history.messages, app.history.convId)
+        val req = ChatRequest.build(cfg.copy(systemPrompt = cfg.systemPrompt + if (cfg.hermesAgent) HERMES_DEVICE else NO_DEVICE_ACTIONS),
+            app.history.messages, app.history.convId)
         val speaker = if (cfg.tts.enabled) {
             Speaker(tts::call, cfg.tts.sampleRate).also { turn.speaker = it; it.start() }
         } else null
@@ -546,21 +486,6 @@ class TurnController(
             return
         }
         splitter.flush().forEach { speaker.say(SpeechText.clean(it)) }
-        finishSpeech(turn, speaker)
-    }
-
-    /** Retain only the generic explanation, never the intercepted SMS text or recipient. */
-    private suspend fun replyLocally(turn: Turn, message: String) {
-        app.history.add(Msg.ASSISTANT, message)
-        turn.replySaved = true
-        val cfg = app.store.value
-        // A network failure must still leave a readable explanation without another network wait.
-        if (!cfg.tts.enabled || !app.radio.isOnline()) {
-            note(message)
-            return
-        }
-        val speaker = Speaker(tts::call, cfg.tts.sampleRate).also { turn.speaker = it; it.start() }
-        speaker.say(SpeechText.clean(message))
         finishSpeech(turn, speaker)
     }
 
@@ -612,21 +537,6 @@ class TurnController(
 
     // ---- state helpers ----
 
-    private fun sendSms(request: SmsAssistant.Request) {
-        val generation = pressGeneration
-        assistant.execute(request, current = { generation == pressGeneration && !busy }, report = { message ->
-            if (generation == pressGeneration) {
-                // Dispatch must finish with the original turn idle; only then speak its outcome.
-                // Reuse its outcome ID so feedback cannot create or replay an SMS request.
-                stopActive()
-                app.screen.holdAwake()
-                launch(emitStart = false, source = OutcomeSource.SMS, outcomeId = request.outcomeId) { turn ->
-                    replyLocally(turn, message)
-                }
-            }
-        })
-    }
-
     private fun idle() {
         _state.value = TurnState()
     }
@@ -668,12 +578,15 @@ class TurnController(
     }
 
     companion object {
-        /** Live speech has no native action bridge. Enabled texting uses completed STT → intent → executor. */
-        internal fun useLiveVoice(cfg: Config, assistantSms: Boolean) = cfg.liveVoice && !assistantSms
         private const val TAG = "r1ptt"
         private const val MIN_CLIP_MS = 400L
         /** Peak 100 ms RMS below this is silence (the button was held but nobody spoke). */
         private const val SILENCE = 0.002f
         private const val NET_WAIT_MS = 30_000L
+        /** What Hermes is told about this device on every push-to-talk turn. */
+        private const val HERMES_DEVICE = " You are the agent behind this Rabbit R1 (robotOS); it relays what the user says and speaks your reply. " +
+            "Act on it with your robotos tools, for example to text someone: do what was asked, then say briefly what happened."
+        /** Every other backend talks only; it must never claim to have done something on the device. */
+        internal const val NO_DEVICE_ACTIONS = " You can't send texts or do anything on this device; if asked to, say so plainly."
     }
 }

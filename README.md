@@ -14,6 +14,11 @@ talk; on release, it either sends what you said or types it into the text field:
 The backends are ChatGPT (an OpenAI API key, the default), **Hermes Agent**, or any
 other OpenAI-compatible server.
 
+With **Hermes Agent**, the R1 is a remote for your agent: every push-to-talk turn goes to Hermes as
+said, Hermes texts people through the R1 with its `robotos` MCP tools, and texts from your own number
+to the R1 go to Hermes, which texts back. Plugged in, the radios stay up so it is always reachable.
+See [docs/HERMES.md](docs/HERMES.md).
+
 robotOS was previously called R1 PTT. Its repository is
 [windoze95/robotOS](https://github.com/windoze95/robotOS). The Android package (`dev.r1ptt`),
 Magisk module ID (`r1ptt_system`), and existing configuration and build filenames retain their
@@ -50,30 +55,16 @@ The R1 is an Android 13 phone underneath (MediaTek MT6765). The firmware is four
 
 Tap the text field on the touchscreen to bring up the keyboard. The gear icon opens settings.
 
-The message icon opens **Messages**, a one-to-one SMS handler. Type a draft, or opt in
-to dictation and assistant requests such as “Tell Sam I’m on my way” or “Send a text to NUMBER.” Saved names resolve
-locally; unknown or ambiguous recipients need your input. With **assistant SMS sending** enabled,
-explicit completed commands send directly without review. The assistant writes a natural message
-from your intent, or a short greeting when no message is supplied. Say “Text Sam exactly: MESSAGE”
-for verbatim wording. Manual drafts still use **Review text**
-and **Send SMS**. Sending, new incoming texts, and assistant commands each have
-explicit controls in Messages → Options. No SMS permission is requested merely by opening it. Options can request Android’s default SMS
-role. MMS is explicitly unsupported; incoming MMS notices are retained locally and shown as warnings.
-Message details exposes native failure codes without retrying a failed or uncertain attempt.
-With assistant sending enabled, voice uses completed transcription and the selected chat provider
-to interpret every completed request and compose messages before sending. Unclear or unsupported requests leave a readable reply on Home
-and speak it when voice replies and the network are available. Only the generic explanation is kept
-in the conversation; the intercepted SMS request stays out of chat history.
-Options → **Recent assistant outcomes** distinguishes missing request details from unresolved saved
-recipients and retains brief result categories, including failures; it contains no message text or
-recipient numbers.
+The message icon opens **Messages**, a one-to-one SMS handler for texts you write yourself: drafts,
+**Review text** and **Send SMS**, incoming texts, and Android's real send and delivery status. The
+R1 never decides to send a text on its own; with Hermes, Hermes does (above). No SMS permission is
+requested merely by opening Messages; Options can request Android's default SMS role. MMS is
+explicitly unsupported; incoming MMS notices are retained locally and shown as warnings. Message
+details exposes native failure codes without retrying a failed or uncertain attempt.
 MMS, RCS, old inbox import, and live carrier acceptance are not included. See [docs/MESSAGES.md](docs/MESSAGES.md).
 
-An optional [Hermes SMS relay](docs/RELAY.md) adds durable owner commands, unsent
-drafts, selected-message explanations, and opt-in availability while plugged in.
-It starts disabled and uses Tailscale first, with a manually selected WireGuard
-fallback. Its device, VPN, carrier, and overnight power acceptance must be recorded
-separately from automated checks.
+**Settings → Hermes** (also Messages → Options → Hermes) shows whether Hermes can reach the R1,
+how many texts it has sent today, and turns texting Hermes from your own number on or off.
 
 ## Battery
 
@@ -83,17 +74,17 @@ Idle time is where a 1000 mAh battery goes.
   data (SIM)** enabled, it wakes with the device and returns to airplane mode at the normal idle cut.
 - **Wi-Fi switches off** after 3 minutes with the screen dark. The next button press turns it back
   on, and it reconnects while you're still talking.
+- **Plugged in, the radios stay up.** On any external power the idle cut is skipped, so incoming texts
+  and Hermes reach the R1 anytime. Unplugged, the normal cut applies again.
 - **No continuous background polling in pocket mode:**
   - no polling, scanning, location or Bluetooth;
   - Rabbit's apps are removed;
   - Doze starts within seconds.
   - Optional incoming SMS use Android broadcasts while the modem is reachable. Messages does not
     keep it awake; carrier-queued delivery after wake is not guaranteed.
-  - The optional docked relay keeps radios available only while externally powered
-    and its power guards allow it; see [docs/RELAY.md](docs/RELAY.md).
 - **The screen stays on only during a turn**, then times out after 15 s at low brightness.
-- **The network is used only during a turn:** voice streams only while you hold the button, and the
-  live session closes 20 s after a reply.
+- **The network is used only when there's work:** a turn (voice streams only while you hold the
+  button, and the live session closes 20 s after a reply), a text to Hermes, or a request from Hermes.
 
 [docs/BATTERY.md](docs/BATTERY.md) covers the design and how to measure the idle drain.
 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) defines current-build latency, interruption, reconnect,
@@ -110,8 +101,8 @@ the read-only capture and offline analyzer include synthetic fixtures, not hardw
 2. **Follow [docs/INSTALL.md](docs/INSTALL.md):** unlock (Rabbit's developer mode) → stock baseline →
    LineageOS GSI → Magisk → `tools/provision.sh --config tools/r1ptt.json`.
 
-For other backends, see [server/hermes.md](server/hermes.md), and [server/speaches.md](server/speaches.md) for
-self-hosted speech.
+To make Hermes the agent, run `tools/hermes-setup.sh --host you@hermes-host` ([docs/HERMES.md](docs/HERMES.md));
+for self-hosted speech, see [server/speaches.md](server/speaches.md).
 
 ## Repo layout
 
@@ -119,13 +110,14 @@ self-hosted speech.
 app/                    native Android app (Kotlin, OkHttp + coroutines; Robolectric tests)
 magisk/r1ptt-system/    Magisk module: keylayout + boot-time power settings
 tools/                  build, smoke-test, flash, provision, battery-report scripts
-server/                 backend setup notes (Hermes, Speaches)
-docs/                   install guide, battery notes
+server/                 Hermes's robotos MCP server, skill and setup script; backend notes (Hermes, Speaches)
+docs/                   install guide, Hermes remote, messages, battery notes
 ```
 
 Build: `tools/build.sh` (JDK 17+ and the Android SDK; writes `out/r1ptt.apk` and
 `out/r1ptt-system.zip`).
-Tests: `./gradlew :app:testDebugUnitTest`.
+Tests: `./gradlew :app:testDebugUnitTest` and
+`python3 -m unittest server.robotos_mcp.tests.test_robotos_mcp server.hermes.tests.test_setup_macos`.
 
 App updates: **Settings → App updates** checks for signed APK releases when requested. The
 release workflow is disabled until signing continuity and owner-controlled bootstrap are set up.

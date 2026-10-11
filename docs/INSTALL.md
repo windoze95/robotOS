@@ -15,7 +15,7 @@ This takes about an hour of hands-on time once Rabbit has approved developer mod
   - `uv` (for `tools/fastboot-entry.py`)
   - Google Chrome (for Rabbit's flash tool)
 - A USB-C data cable.
-- An OpenAI API key, or a Hermes server (see `server/`).
+- An OpenAI API key (it also powers speech). To make your Hermes agent the brain, see [HERMES.md](HERMES.md).
 - Downloads, all saved into `firmware/` (git-ignores it):
   - **Stock rabbitOS v0.8.293**: `rabbit_OS_v0.8.293.zip` from
     https://github.com/rabbit-hmi-oss/firmware/releases. Unzip it to `firmware/stock/`.
@@ -125,6 +125,9 @@ The script makes these changes:
 
 It's safe to re-run, e.g. after editing the config or rebuilding. `--undo-debloat` re-enables the
 disabled apps.
+
+To make the R1 a remote for your Hermes agent, run `tools/hermes-setup.sh --host you@hermes-host`
+next ([HERMES.md](HERMES.md)): it sets up Hermes's side and pushes the R1's `hermes` settings.
 
 ## 6. Check that it works
 

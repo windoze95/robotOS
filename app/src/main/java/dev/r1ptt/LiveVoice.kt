@@ -42,7 +42,6 @@ class LiveVoice(
     @Volatile private var level = 0f
     private var waitingForNet = false
     private var firstReply = false
-    private var outcomeId: String? = null
     private val ticker = object : Runnable {
         override fun run() { tick(); if (active) main.postDelayed(this, 200) }
     }
@@ -63,7 +62,6 @@ class LiveVoice(
     fun startCapture(): Boolean {
         main.removeCallbacks(closer)
         stopCapture()
-        outcomeId = app.outcomes.begin(OutcomeSource.LIVE_VOICE)
         turnId = TurnMetrics.next()
         val warm = session?.takeIf { !it.gone }
         TurnMetrics.event("turn_start", turnId, "mode" to 0L, "warm" to if (warm != null) 1L else 0L,
@@ -74,7 +72,7 @@ class LiveVoice(
             { captureFailed(generation, "Microphone unavailable; input may be partial") },
         ) { if (synchronized(micLock) { capture.accepts(generation) }) level = it }
         mic = if (m.start()) m else null
-        if (mic == null) { stopCapture(); outcomeId?.let { app.outcomes.update(it, OutcomeStatus.FAILED, OutcomeReason.UNAVAILABLE) }; TurnMetrics.event("session_failed", turnId); settled() }
+        if (mic == null) { stopCapture(); TurnMetrics.event("session_failed", turnId); settled() }
         return mic != null
     }
 
@@ -290,11 +288,9 @@ class LiveVoice(
         publish(TurnState())
         scheduleClose()
         settled()
-        outcomeId?.let { app.outcomes.finishIfOpen(it, OutcomeStatus.COMPLETED) }
     }
 
     private fun failExchange(message: String) {
-        outcomeId?.let { app.outcomes.update(it, OutcomeStatus.FAILED, OutcomeStore.reason(message)) }
         TurnMetrics.event("session_failed", turnId)
         stopExchange(save = false, close = true)
         fail(message)
@@ -302,7 +298,6 @@ class LiveVoice(
     }
 
     private fun stopExchange(save: Boolean, close: Boolean) {
-        outcomeId?.let { app.outcomes.finishIfOpen(it, OutcomeStatus.CANCELLED) }
         scope.end() // invalidate posted transcript/backend callbacks before changing state
         stopCapture()
         if (close) closeSession()
@@ -345,7 +340,7 @@ class LiveVoice(
         }.takeLast(2000)
         return buildString {
             append(cfg.systemPrompt)
-            append(app.smsAssistant.instructions())
+            append(TurnController.NO_DEVICE_ACTIONS)
             append(" The user holds a button while talking and lets go when finished.")
             if (recent.isNotBlank()) append("\n\nEarlier in this conversation:\n").append(recent)
         }

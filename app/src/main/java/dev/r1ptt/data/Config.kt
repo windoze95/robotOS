@@ -81,29 +81,28 @@ data class Power(
     val cellular: Boolean = false,
 )
 
-/** Only this per-device credential crosses to the R1; the Hermes key stays on the bridge. */
-data class BridgeConfig(
-    val enabled: Boolean = false,
-    val baseUrl: String = "",
-    val deviceId: String = "",
+/**
+ * Hermes as the agent and this R1 as its remote. Hermes's `robotos` MCP server reaches [port] over
+ * the tailnet with [token] to send texts and read device state; texts from [owner] pass through to
+ * Hermes and its reply is texted back. Power state never changes any of this; it only keeps radios up.
+ */
+data class HermesLink(
+    /** Serve the device API to Hermes. */
+    val deviceApi: Boolean = false,
+    /** The bearer token Hermes's MCP server presents (32–256 characters). */
     val token: String = "",
-    val docked: Boolean = false,
-    val paused: Boolean = false,
-    val wireguardUrl: String = "",
-    val useWireguard: Boolean = false,
-    val wireguardAddress: String = "",
+    val port: Int = 8765,
+    /** Forward texts from [owner] to Hermes and text back its reply. */
+    val passthrough: Boolean = false,
+    /** The owner's own phone number; only its texts reach Hermes. */
+    val owner: String = "",
+    /** The Hermes session that holds the SMS conversation. */
+    val smsSession: String = "robotos-sms",
+    /** Texts Hermes may send through this R1 per day (0 = no limit). */
+    val dailySendLimit: Int = 100,
 ) {
-    val activeUrl: String get() = if (useWireguard) wireguardUrl else baseUrl
-    private fun https(value: String): Boolean {
-        val uri = URI(value)
-        return uri.scheme == "https" && !uri.host.isNullOrBlank() && uri.rawUserInfo == null &&
-            uri.rawQuery == null && uri.rawFragment == null && uri.path.orEmpty() in setOf("", "/")
-    }
-    fun valid(): Boolean = runCatching {
-        https(baseUrl) && (wireguardUrl.isBlank() || https(wireguardUrl)) && https(activeUrl) &&
-            (wireguardAddress.isBlank() || wireguardAddress.split('.').let { parts -> parts.size == 4 && parts.all { it.toIntOrNull() in 0..255 } }) &&
-            java.util.UUID.fromString(deviceId).toString() == deviceId && token.length in 32..256
-    }.getOrDefault(false)
+    fun valid(): Boolean = (!deviceApi || (token.length in 32..256 && port in 1024..65535)) &&
+        (!passthrough || dev.r1ptt.messages.SmsAddress.normalize(owner) == owner) && smsSession.length in 1..128
 }
 
 data class Config(
@@ -125,7 +124,7 @@ data class Config(
     val tts: Tts = Tts(),
     val live: Live = Live(),
     val power: Power = Power(),
-    val bridge: BridgeConfig = BridgeConfig(),
+    val hermes: HermesLink = HermesLink(),
     /** Short beeps when listening starts and on errors. */
     val earcons: Boolean = true,
     val textSizeSp: Int = 17,
@@ -138,6 +137,12 @@ data class Config(
     val availableProviders: Map<String, Provider> get() = providers.filterKeys { it !in RETIRED_PROVIDER_IDS }
     val provider: Provider get() = availableProviders[activeProvider] ?: availableProviders.values.firstOrNull()
         ?: Presets.providers.getValue("openai")
+
+    /**
+     * Hermes is the agent: every turn goes to it unchanged, and it performs device actions (texts)
+     * through its robotos tools. The R1 does no SMS interpretation of its own.
+     */
+    val hermesAgent: Boolean get() = provider.session == SessionMode.HERMES_SESSION
 
     /** Voice turns go speech-to-speech only on OpenAI; agent backends need their own pipeline. */
     val liveVoice: Boolean get() = live.enabled && provider.id == "openai" && keyFor(liveEndpoint).isNotBlank()

@@ -34,17 +34,19 @@ class RadioPolicy(private val ctx: Context, private val store: ConfigStore) {
     private val cm = ctx.getSystemService(ConnectivityManager::class.java)
     private val alarms = ctx.getSystemService(AlarmManager::class.java)
     private val io = Executors.newSingleThreadExecutor()
-    @Volatile private var relayHold = false
+    /** Reasons to keep the radios up (external power); the idle cut waits for none. */
+    private val holds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val held: Boolean get() = holds.isNotEmpty()
     val deliberateAirplane: Boolean get() = store.value.power.cellular && (prefs.getBoolean("manual_airplane", false) || !cutByUs) &&
         Settings.Global.getInt(ctx.contentResolver, Settings.Global.AIRPLANE_MODE_ON, 0) != 0
 
     /** One power exception shared with the existing policy; never a competing radio loop. */
-    fun relay(active: Boolean) {
-        val changed = relayHold != active
-        relayHold = active
+    fun hold(reason: String, active: Boolean) {
+        val changed = if (active) holds.add(reason) else holds.remove(reason)
         if (active) wake()
-        else if (changed && !ctx.getSystemService(PowerManager::class.java).isInteractive) schedule()
+        else if (changed && !held && !ctx.getSystemService(PowerManager::class.java).isInteractive) schedule()
     }
+
 
     /** Whether Wi-Fi is off because we turned it off (so we know to turn it back on). */
     private var cutByUs: Boolean
@@ -72,12 +74,12 @@ class RadioPolicy(private val ctx: Context, private val store: ConfigStore) {
     /** A button press: the radios must be on by the time the user lets go. */
     fun onActivity() {
         wake()
-        if (!ctx.getSystemService(PowerManager::class.java).isInteractive && !relayHold) schedule()
+        if (!ctx.getSystemService(PowerManager::class.java).isInteractive && !held) schedule()
     }
 
     /** The idle alarm fired. Called off the main thread. */
     fun onIdleAlarm(screenOn: Boolean, busy: Boolean) {
-        if (screenOn || relayHold || store.value.power.wifiIdleMinutes <= 0) return
+        if (screenOn || held || store.value.power.wifiIdleMinutes <= 0) return
         if (busy) { schedule(); return }
         prefs.edit().putBoolean("manual_airplane", deliberateAirplane).apply()
         val cmd = if (store.value.power.cellular) "$WIFI_OFF; $AIRPLANE_ON" else WIFI_OFF
@@ -86,7 +88,7 @@ class RadioPolicy(private val ctx: Context, private val store: ConfigStore) {
         if (Root.run(cmd, 10_000) == 0) {
             Log.i(TAG, "idle: radios off")
         } else cutByUs = previous
-        if (relayHold) wake() // A cable event may have raced the root call.
+        if (held) wake() // A cable event may have raced the root call.
     }
 
     fun isOnline(): Boolean {
@@ -128,7 +130,7 @@ class RadioPolicy(private val ctx: Context, private val store: ConfigStore) {
     }
 
     private fun schedule() {
-        if (relayHold) { cancel(); return }
+        if (held) { cancel(); return }
         val minutes = store.value.power.wifiIdleMinutes
         if (minutes <= 0) return
         val at = SystemClock.elapsedRealtime() + minutes * 60_000L

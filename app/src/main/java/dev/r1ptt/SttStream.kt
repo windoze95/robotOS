@@ -25,7 +25,6 @@ class SttStream(
 ) {
     private val main = Handler(Looper.getMainLooper())
     val turnId = TurnMetrics.next()
-    val outcomeId = app.outcomes.begin(OutcomeSource.VOICE)
     private val buffer = CaptureBuffer(MAX_BYTES, TranscribeProtocol.SAMPLE_RATE * 2 * 10) { chunk ->
         transcriber?.send(TranscribeProtocol.append(chunk)) == true
     }
@@ -162,7 +161,6 @@ class SttStream(
     }
 
     fun cancel() {
-        if (!done) app.outcomes.finishIfOpen(outcomeId, OutcomeStatus.CANCELLED)
         done = true
         buffer.stop()
         main.removeCallbacks(captureDeadline)
@@ -173,7 +171,6 @@ class SttStream(
 
     private fun terminalFailure(message: String) {
         if (done) return
-        app.outcomes.update(outcomeId, OutcomeStatus.FAILED, OutcomeStore.reason(message))
         done = true
         if (!released || buffer.failed()) interruptedInput = true
         buffer.stop() // fence the capture thread before stopping AudioRecord
