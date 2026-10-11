@@ -1,6 +1,9 @@
 package dev.r1ptt.data
 
+import android.database.sqlite.SQLiteDatabase
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -66,6 +69,45 @@ class HistoryTest {
             it.saveDraft("Edited while submitting")
             it.confirmDraft("Original")
             assertEquals("Edited while submitting", it.draft)
+        }
+    }
+
+    @Test fun editsDuringAnInFlightWriteAreSavedWithoutAnotherEditOrFlush() {
+        val firstWrite = CountDownLatch(1)
+        val releaseWrite = CountDownLatch(1)
+        val latestWrite = CountDownLatch(1)
+        History(directory()).useHistory { history ->
+            // Hold the real INSERT after its snapshot has been captured, as slow disk I/O can.
+            val db = History::class.java.getDeclaredField("database").apply { isAccessible = true }
+                .get(history) as SQLiteDatabase
+            db.setCustomScalarFunction("pause_draft_write") { draft ->
+                if (draft == "First draft") {
+                    firstWrite.countDown()
+                    check(releaseWrite.await(5, TimeUnit.SECONDS))
+                } else if (draft == "Latest draft") latestWrite.countDown()
+                draft
+            }
+            db.execSQL("CREATE TEMP TRIGGER pause_draft_write BEFORE INSERT ON conversations BEGIN SELECT pause_draft_write(NEW.draft); END")
+            try {
+                history.saveDraft("First draft")
+                assertTrue("Initial autosave did not start", firstWrite.await(5, TimeUnit.SECONDS))
+                history.saveDraft("Latest draft")
+                history.savePosition(321, false)
+                releaseWrite.countDown()
+                assertTrue("An edit during the write was never autosaved", latestWrite.await(5, TimeUnit.SECONDS))
+
+                // Acquiring the writer transaction waits for the follow-up INSERT to commit.
+                // Do not use awaitWrites/close here: both explicitly persist the current state.
+                db.beginTransaction()
+                try {
+                    db.rawQuery("SELECT draft,scroll_y,follow_latest FROM conversations WHERE id=?", arrayOf(history.convId)).use {
+                        assertTrue(it.moveToFirst())
+                        assertEquals("Latest draft", it.getString(0))
+                        assertEquals(321, it.getInt(1))
+                        assertEquals(0, it.getInt(2))
+                    }
+                } finally { db.endTransaction() }
+            } finally { releaseWrite.countDown() }
         }
     }
 

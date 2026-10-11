@@ -74,17 +74,71 @@ class TurnHermesTest {
     @Test fun hermesGetsTheRequestUnchangedInItsSessionAndActsThroughItsTools() {
         MockWebServer().use { server ->
             server.start(); hermes(server)
+            server.enqueue(MockResponse().setResponseCode(404))
             reply(server, "Texted Sam.")
             completedVoice(request)
             await { app.history.messages.lastOrNull()?.text == "Texted Sam." && !turns.busy }
+            assertEquals("/v1/capabilities", server.takeRequest(2, TimeUnit.SECONDS)!!.path)
             val sent = server.takeRequest(2, TimeUnit.SECONDS)!!
             assertEquals("/v1/chat/completions", sent.path)
             assertEquals("r1ptt-${app.history.convId}", sent.getHeader("X-Hermes-Session-Id"))
             val messages = JSONObject(sent.body.readUtf8()).getJSONArray("messages")
             assertEquals(request, messages.getJSONObject(messages.length() - 1).getString("content"))
             assertTrue(messages.getJSONObject(0).getString("content").contains("robotos tools"))
-            assertEquals(1, server.requestCount)
+            assertEquals(2, server.requestCount)
             SmsStore(app).use { assertTrue(it.threads().isEmpty()) }
+        }
+    }
+
+    @Test fun approvalPausesTheLocalTurnAndKeepsItsRemoteIdentity() {
+        MockWebServer().use { server ->
+            server.start(); hermes(server)
+            server.enqueue(MockResponse().setBody(dev.r1ptt.hermes.HermesClientTest.CAPABILITIES))
+            server.enqueue(MockResponse().setResponseCode(202).setBody("{\"run_id\":\"run_approval\"}"))
+            server.enqueue(MockResponse().setHeader("Content-Type", "text/event-stream").setBody(
+                "data: {\"event\":\"approval.request\",\"run_id\":\"run_approval\",\"seq\":1,\"request_id\":\"decision\",\"choices\":[\"once\",\"deny\"]}\n\n"))
+            completedVoice(request)
+            await { app.hermesRuns.state.value.run?.status == "waiting_for_approval" && !turns.busy }
+            assertEquals("decision", app.hermesRuns.state.value.run!!.approval!!.requestId)
+            assertEquals("", app.history.draft)
+            assertEquals(3, server.requestCount)
+            val before = app.history.convId
+            turns.newConversation()
+            assertNotEquals(before, app.history.convId)
+            assertEquals("waiting_for_approval", app.hermesRuns.state.value.run!!.status)
+            assertEquals(3, server.requestCount)
+        }
+    }
+
+    @Test fun anApprovalReviewPressCannotRecordSendOrStartAnotherConversation() {
+        val before = app.history.convId
+        var backs = 0
+        turns.guardApprovalReview { backs++ }
+        turns.onPress(0)
+        turns.guardApprovalReview(null) // navigation during the press must retain its original context
+        turns.onHoldStart(); turns.onHoldEnd(); turns.onShortRelease(); turns.onDoubleTap()
+        assertFalse(turns.busy)
+        assertEquals(before, app.history.convId)
+        assertTrue(app.history.messages.isEmpty())
+        assertEquals(0, backs)
+    }
+
+    @Test fun browsingAnotherConversationDoesNotRedirectTheReply() {
+        MockWebServer().use { server ->
+            server.start(); hermes(server)
+            server.enqueue(MockResponse().setResponseCode(404))
+            server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBodyDelay(200, TimeUnit.MILLISECONDS)
+                .setBody("{\"choices\":[{\"message\":{\"content\":\"Original reply\"},\"finish_reason\":\"stop\"}]}"))
+            val original = app.history.convId
+            completedVoice("Original question")
+            await { server.requestCount == 2 }
+            app.history.newConversation()
+            app.history.saveDraft("Different draft")
+            await { !turns.busy }
+            assertTrue(app.history.messages.isEmpty())
+            assertEquals("Different draft", app.history.draft)
+            assertTrue(app.history.select(original))
+            assertEquals("Original reply", app.history.messages.last().text)
         }
     }
 }

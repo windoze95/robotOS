@@ -87,4 +87,19 @@ class HermesActivityTest {
         assertFalse(activity.isFinishing)
         assertEquals(HermesLink(), app.store.value.hermes)
     }
+
+    @Test fun savePreservesUntouchedSettingsChangedWhileTheFormWasOpen() {
+        val (activity, root) = screen()
+        app.store.update { it.copy(hermes = it.hermes.copy(deviceApi = false, token = "n".repeat(40),
+            owner = "+14055550199", dailySendLimit = 25, allowShow = true)) }
+        views<Switch>(root).first { it.text == "Speak announcements" }.isChecked = true
+        views<Button>(root).first { it.text == "Save" }.performClick()
+        assertTrue(activity.isFinishing)
+        val link = app.store.value.hermes
+        assertFalse(link.deviceApi)
+        assertTrue(link.allowSpeak && link.allowShow)
+        assertEquals("n".repeat(40), link.token)
+        assertEquals("+14055550199", link.owner)
+        assertEquals(25, link.dailySendLimit)
+    }
 }

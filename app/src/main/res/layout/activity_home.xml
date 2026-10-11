@@ -23,6 +23,10 @@
             android:gravity="center" android:text="Stop" android:textColor="@color/accent" android:textSize="15sp"
             android:clickable="true" android:focusable="true" android:visibility="gone" />
     </LinearLayout>
+    <TextView android:id="@+id/hermes_task" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:minHeight="48dp" android:gravity="center_vertical" android:paddingVertical="8dp"
+        android:textSize="14sp" android:textColor="@color/accent" android:clickable="true" android:focusable="true"
+        android:visibility="gone" android:maxLines="2" android:ellipsize="end" />
     <ProgressBar android:id="@+id/meter" style="?android:attr/progressBarStyleHorizontal"
         android:layout_width="match_parent" android:layout_height="3dp" android:max="100"
         android:progressTint="@color/accent" android:visibility="invisible" />

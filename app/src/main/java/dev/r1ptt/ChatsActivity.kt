@@ -37,9 +37,7 @@ class ChatsActivity : DeviceActivity() {
         snapshot.chats.forEach { chat ->
             val title = chat.title + if (chat.id == snapshot.convId) "  •" else ""
             val row = ui.actionRow(title, chat.preview.ifEmpty { "No messages yet" }) {
-                if (app.turns.busy && chat.id != snapshot.convId) {
-                    Toast.makeText(this, "Finish or stop the current request before switching chats", Toast.LENGTH_LONG).show()
-                } else { app.history.select(chat.id); finish() }
+                app.history.select(chat.id); finish()
             }
             row.setOnLongClickListener { actions(chat); true }
             row.contentDescription = "${chat.title}. ${if (chat.id == snapshot.convId) "Current chat. " else ""}Long press for chat options"
@@ -60,7 +58,8 @@ class ChatsActivity : DeviceActivity() {
                     .setPositiveButton("Save") { _, _ -> app.history.rename(chat.id, name.text.toString()) }
                     .setNegativeButton("Cancel", null))
             } else {
-                if (app.turns.busy) {
+                val run = app.hermesRuns.state.value.run
+                if (app.turns.busy || (run != null && run.sessionId.removePrefix("r1ptt-") == chat.id && (run.active || !run.delivered))) {
                     Toast.makeText(this, "Finish or stop the current task before removing a chat", Toast.LENGTH_LONG).show()
                     return@setItems
                 }

@@ -107,6 +107,12 @@ class TurnController(private val app: App) : Gestures.Listener {
     // Keep the private-screen boundary during sleep/pause, when no Activity is resumed yet.
     // Attaching Home explicitly restores ordinary voice behavior.
     private var privateInputScreen = false
+    private var approvalReviewBack: (() -> Unit)? = null
+    private var approvalPressBack: (() -> Unit)? = null
+    private var approvalBlockedPress = false
+
+    /** Approval is touch-only. Capture the review boundary before any microphone/stop work. */
+    fun guardApprovalReview(back: (() -> Unit)?) { approvalReviewBack = back }
 
     fun attachTarget(value: DictationTarget) {
         target?.takeIf { it !== value }?.let(::detachTarget)
@@ -133,6 +139,7 @@ class TurnController(private val app: App) : Gestures.Listener {
     /** Live transcription for this press (gpt-live-transcribe), when transcription is on OpenAI. */
     @Volatile private var stream: SttStream? = null
     @Volatile private var current: Turn? = null
+    val activeConversation: String? get() = current?.conversation
     private var dictating = false
     private var streamTurn = false
     private var interrupted = false
@@ -148,6 +155,8 @@ class TurnController(private val app: App) : Gestures.Listener {
         var speaker: Speaker? = null
         val reply = StringBuffer()
         var replySaved = false
+        @Volatile var remoteOperation: String? = null
+        @Volatile var remoteStopRequested = false
     }
 
     init {
@@ -157,6 +166,9 @@ class TurnController(private val app: App) : Gestures.Listener {
     // ---- gestures (main thread) ----
 
     override fun onPress(atMs: Long) {
+        approvalPressBack = approvalReviewBack
+        approvalBlockedPress = approvalPressBack != null
+        if (approvalBlockedPress) { app.screen.notePress(); return }
         updateBlockedPress = !app.updates.allowVoice()
         if (updateBlockedPress) return
         pressGeneration++
@@ -203,6 +215,7 @@ class TurnController(private val app: App) : Gestures.Listener {
     }
 
     override fun onHoldStart() {
+        if (approvalBlockedPress) { note("Resolve the pending request first"); return }
         if (updateBlockedPress || app.updates.installing) return
         if (dictationBlockedPress) { target?.dictationUnavailable(); return }
         app.store.loadError?.let { fail(it); settle(); return }
@@ -221,6 +234,7 @@ class TurnController(private val app: App) : Gestures.Listener {
     }
 
     override fun onHoldEnd() {
+        if (approvalBlockedPress) return
         if (updateBlockedPress || app.updates.installing) return
         if (dictationBlockedPress) return
         if (app.store.loadError != null) return settle()
@@ -252,6 +266,7 @@ class TurnController(private val app: App) : Gestures.Listener {
     }
 
     override fun onShortRelease() {
+        if (approvalBlockedPress) return
         if (updateBlockedPress || app.updates.installing) return
         if (dictationBlockedPress) return
         stream?.cancel()
@@ -262,6 +277,10 @@ class TurnController(private val app: App) : Gestures.Listener {
     }
 
     override fun onTap() {
+        if (approvalBlockedPress) {
+            if (!app.screen.tapWasWake()) approvalPressBack?.invoke()
+            return
+        }
         if (updateBlockedPress || app.updates.installing) return
         val t = target
         when {
@@ -274,6 +293,7 @@ class TurnController(private val app: App) : Gestures.Listener {
     }
 
     override fun onDoubleTap() {
+        if (approvalBlockedPress || approvalReviewBack != null) return
         if (updateBlockedPress || app.updates.installing) return
         if (privateInputScreen || target?.takeIf { it.isActive() }?.consumeDoubleTap() == true) {
             pressGeneration++
@@ -281,17 +301,13 @@ class TurnController(private val app: App) : Gestures.Listener {
             settle()
             return
         }
-        pressGeneration++
-        interrupted = false
-        stopActive()
-        app.history.newConversation()
-        note("New conversation")
+        newConversation()
     }
 
     /** Service termination is terminal for microphone, sockets, playback and the wake lock. */
     fun shutdown() {
         pressGeneration++
-        stopActive()
+        stopActive(cancelRemote = false)
         noteJob?.cancel()
         settle()
     }
@@ -305,23 +321,28 @@ class TurnController(private val app: App) : Gestures.Listener {
     fun cancelTurn() { pressGeneration++; stopActive(); settle() }
 
     fun newConversation() {
-        cancelTurn()
+        pressGeneration++
+        interrupted = false
+        stopActive(cancelRemote = false)
+        settle()
         app.history.newConversation()
         note("New conversation")
     }
 
     /** Deliberate read-aloud or a permitted Hermes announcement; shares the interruptible speaker. */
-    fun speakText(text: String): Boolean {
+    fun speakText(text: String, permitted: () -> Boolean = { true }): Boolean {
         val cfg = app.store.value
         if (text.isBlank() || text.length > 16_384 || busy || dev.r1ptt.audio.AudioPlayback.active ||
-            cfg.quiet || !app.updates.allowVoice() || app.store.loadError != null) return false
+            cfg.quiet || !permitted() || !app.updates.allowVoice() || app.store.loadError != null) return false
         destination = CapturedInput(null)
         dictating = false
         app.radio.onActivity()
         app.screen.holdAwake()
         _state.value = TurnState(phase = Phase.SPEAKING)
         launch { turn ->
-            val speaker = Speaker(tts::call, cfg.tts.sampleRate).also { turn.speaker = it; it.start() }
+            val latest = app.store.value
+            if (latest.quiet || !permitted()) return@launch
+            val speaker = Speaker(tts::call, latest.tts.sampleRate).also { turn.speaker = it; it.start() }
             speaker.say(SpeechText.clean(text))
             finishSpeech(turn, speaker)
         }
@@ -332,7 +353,6 @@ class TurnController(private val app: App) : Gestures.Listener {
     fun sendText(text: String) {
         if (!app.updates.allowVoice()) return
         app.store.loadError?.let { fail(it); settle(); return }
-        app.history.errors.value?.let { fail(it); settle(); return }
         pressGeneration++
         stopActive()
         destination = CapturedInput(null)
@@ -359,6 +379,8 @@ class TurnController(private val app: App) : Gestures.Listener {
                 block(turn)
             } catch (e: CancellationException) {
                 throw e
+            } catch (_: dev.r1ptt.hermes.HermesTaskPaused) {
+                if (current === turn) note("Hermes needs your decision")
             } catch (e: Throwable) {
                 if (turn.input.target?.privateDictation() == true) Log.w(TAG, "Private dictation failed")
                 else Log.w(TAG, "turn failed", e)
@@ -367,7 +389,8 @@ class TurnController(private val app: App) : Gestures.Listener {
             } finally {
                 turn.speaker?.stop()
                 // Interrupted mid-reply: keep what arrived so the screen and the context match.
-                if (!turn.replySaved && turn.reply.isNotBlank() && app.history.convId == turn.conversation) app.history.add(Msg.ASSISTANT, turn.reply.toString().trim() + " …")
+                if (turn.remoteOperation == null && !turn.replySaved && turn.reply.isNotBlank())
+                    app.history.add(Msg.ASSISTANT, turn.reply.toString().trim() + " …", conversation = turn.conversation)
                 if (current === turn) {
                     current = null
                     TurnMetrics.event("exchange_complete", turn.id)
@@ -442,27 +465,51 @@ class TurnController(private val app: App) : Gestures.Listener {
 
     private suspend fun ask(turn: Turn, text: String) {
         val cfg = app.store.value
+        app.history.errors.value?.let { throw IOException(it) }
         // The R1 is never the agent: every turn reaches Hermes as said, and Hermes texts people
         // through its robotos tools.
-        app.history.add(Msg.USER, text, turn.conversation)
+        app.history.add(Msg.USER, text, conversation = turn.conversation)
+        app.history.saveDraft(text, conversation = turn.conversation)
         _state.value = TurnState(phase = Phase.THINKING)
         awaitNetwork()
         val req = ChatRequest.build(cfg.copy(systemPrompt = cfg.systemPrompt + HERMES_DEVICE),
             listOf(Msg(Msg.USER, text)), turn.conversation)
-        val speaker = if (cfg.tts.enabled && !cfg.quiet) {
-            Speaker(tts::call, cfg.tts.sampleRate).also { turn.speaker = it; it.start() }
+        val speechConfig = app.store.value
+        val speaker = if (speechConfig.tts.enabled && !speechConfig.quiet) {
+            Speaker(tts::call, speechConfig.tts.sampleRate).also { turn.speaker = it; it.start() }
         } else null
         val splitter = SentenceSplitter()
 
-        io { calls ->
-            chat.stream(
+        val finalReply = io { calls ->
+            val runsReply = app.hermesRuns.execute(cfg.copy(systemPrompt = cfg.systemPrompt + HERMES_DEVICE), text,
+                "r1ptt-${turn.conversation}", calls,
+                onDelta = { d ->
+                    if (current === turn) {
+                        if (turn.reply.isEmpty()) TurnMetrics.event("first_reply", turn.id)
+                        turn.reply.append(d)
+                        _state.update { it.copy(phase = Phase.ANSWERING, reply = it.reply + d, note = "") }
+                    }
+                },
+                onStatus = { s -> if (current === turn) _state.update { it.copy(note = s) } },
+                onAdmitted = {
+                    turn.remoteOperation = app.hermesRuns.state.value.run?.operationId
+                    app.history.confirmDraft(text, turn.conversation)
+                    if (turn.remoteStopRequested) app.hermesRuns.stop()
+                })
+            if (runsReply != null) {
+                // Hermes deltas may include commentary. Speak its authoritative final answer once.
+                if (current === turn && !app.store.value.quiet && app.store.value.tts.enabled)
+                    speaker?.let { s -> splitter.feed(runsReply).forEach { s.say(SpeechText.clean(it)) } }
+                runsReply
+            } else chat.stream(
                 req, calls,
                 onDelta = { d ->
                     if (current === turn) {
                         if (turn.reply.isEmpty()) TurnMetrics.event("first_reply", turn.id)
                         turn.reply.append(d)
                         _state.update { it.copy(phase = Phase.ANSWERING, reply = it.reply + d, note = "") }
-                        speaker?.let { s -> splitter.feed(d).forEach { s.say(SpeechText.clean(it)) } }
+                        if (!app.store.value.quiet && app.store.value.tts.enabled)
+                            speaker?.let { s -> splitter.feed(d).forEach { s.say(SpeechText.clean(it)) } }
                     }
                 },
                 onStatus = { s -> if (current === turn) _state.update { it.copy(note = s) } },
@@ -470,18 +517,26 @@ class TurnController(private val app: App) : Gestures.Listener {
             )
         }
 
-        val reply = turn.reply.toString().trim()
+        val reply = finalReply.trim()
+        turn.reply.setLength(0); turn.reply.append(reply)
         if (reply.isEmpty()) {
+            turn.remoteOperation?.let { operation ->
+                io { app.history.awaitWrites(); app.hermesRuns.markDelivered(operation) }
+            }
             note("No reply")
             return
         }
-        app.history.add(Msg.ASSISTANT, reply, turn.conversation)
+        app.history.add(Msg.ASSISTANT, reply, conversation = turn.conversation, deliveryKey = turn.remoteOperation.orEmpty())
+        turn.remoteOperation?.let { operation ->
+            io { app.history.awaitWrites(); app.hermesRuns.markDelivered(operation) }
+        }
         turn.replySaved = true
         if (speaker == null) {
             idle()
             return
         }
-        splitter.flush().forEach { speaker.say(SpeechText.clean(it)) }
+        if (app.store.value.quiet || !app.store.value.tts.enabled) speaker.silence()
+        else splitter.flush().forEach { speaker.say(SpeechText.clean(it)) }
         finishSpeech(turn, speaker)
     }
 
@@ -514,12 +569,16 @@ class TurnController(private val app: App) : Gestures.Listener {
     }
 
     /** Stops whatever is in progress (reply, speech, recording). True if something was. */
-    private fun stopActive(): Boolean {
+    private fun stopActive(cancelRemote: Boolean = true): Boolean {
         val t = current
         current = null
+        if (cancelRemote) t?.remoteStopRequested = true
         val wasActive = t != null || _state.value.phase.active
         if (t != null) TurnMetrics.event("interrupt_start", t.id)
         t?.speaker?.stop()
+        t?.remoteOperation?.takeIf { cancelRemote }?.let { operation ->
+            app.hermesRuns.state.value.run?.takeIf { it.operationId == operation && it.active }?.let { app.hermesRuns.stop() }
+        }
         if (t != null) TurnMetrics.event("playback_flushed", t.id)
         t?.job?.cancel()
         recorder?.cancel()

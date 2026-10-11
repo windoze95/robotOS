@@ -38,6 +38,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import dev.r1ptt.hermes.HermesRunState
 import dev.r1ptt.audio.AudioPlayback
 import kotlin.math.sqrt
 
@@ -69,6 +70,10 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
     private var connectionRegistered = false
     private val batteryEvents = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == Intent.ACTION_SCREEN_OFF || intent.action == Intent.ACTION_SCREEN_ON) {
+                app.hermesRuns.setVisible(this@HomeActivity, intent.action == Intent.ACTION_SCREEN_ON)
+                return
+            }
             val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
             batteryLevel = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1).takeIf { it >= 0 }?.let { it * 100 / scale.coerceAtLeast(1) }
             renderConnectivity()
@@ -110,6 +115,7 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
         findViewById<View>(R.id.controls).setOnClickListener { startActivity(Intent(this, QuickControlsActivity::class.java)) }
         findViewById<View>(R.id.menu).setOnClickListener { openMenu() }
         findViewById<View>(R.id.stop).setOnClickListener { app.turns.cancelTurn() }
+        findViewById<View>(R.id.hermes_task).setOnClickListener { startActivity(Intent(this, dev.r1ptt.hermes.HermesActivity::class.java)) }
         findViewById<View>(R.id.latest).setOnClickListener { followLatest = true; scrollToEnd() }
         scroll.setOnScrollChangeListener { _, _, y, _, _ ->
             val bottom = scroll.getChildAt(0)?.height ?: 0
@@ -153,14 +159,19 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
             s.launch { app.turns.state.collect { render(it); kotlinx.coroutines.delay(50) } }
             s.launch { AudioPlayback.flow.collect { render(app.turns.state.value) } }
             s.launch { app.history.errors.collect { if (it != null) status.text = it } }
+            s.launch { app.hermesRuns.state.collect { renderTask(it) } }
         }
         render(app.turns.state.value)
-        registerReceiver(batteryEvents, IntentFilter(Intent.ACTION_BATTERY_CHANGED), RECEIVER_NOT_EXPORTED)
+        registerReceiver(batteryEvents, IntentFilter(Intent.ACTION_BATTERY_CHANGED).apply {
+            addAction(Intent.ACTION_SCREEN_ON); addAction(Intent.ACTION_SCREEN_OFF)
+        }, RECEIVER_NOT_EXPORTED)
+        app.hermesRuns.setVisible(this, getSystemService(android.os.PowerManager::class.java).isInteractive)
         runCatching { getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(connectionEvents) }
             .onSuccess { connectionRegistered = true }
     }
 
     override fun onPause() {
+        app.hermesRuns.setVisible(this, false)
         app.history.savePosition(scroll.scrollY, followLatest)
         app.history.flush()
         unregisterReceiver(batteryEvents)
@@ -259,11 +270,13 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
 
     // ---- rendering ----
 
-    private fun render(s: TurnState) {
+    private fun render(global: TurnState) {
+        val active = app.turns.activeConversation
+        val s = if (active != null && active != app.history.convId) TurnState() else global
         status.setTextColor(getColor(if (s.phase == Phase.ERROR) R.color.error else R.color.dim))
         val stop = findViewById<TextView>(R.id.stop)
         stop.visibility = if (s.phase.active) View.VISIBLE else View.GONE
-        stop.text = if (AudioPlayback.active) "Stop speech" else "Disconnect"
+        stop.text = if (AudioPlayback.active) "Stop speech" else if (app.hermesRuns.state.value.run?.active == true) "Stop task" else "Disconnect"
         stop.setOnClickListener { if (AudioPlayback.active) app.turns.stopSpeech() else app.turns.cancelTurn() }
         if (!s.phase.active) submittedDraft = null
         status.text = when (s.phase) {
@@ -334,6 +347,7 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
             changingDraft = false
         }
         if (switched) {
+            render(app.turns.state.value)
             followLatest = snap.followLatest
             scroll.post { if (renderedConv == snap.convId) { if (followLatest) scrollToEnd() else scroll.scrollTo(0, snap.scrollY) } }
         } else if (msgs.size > start && followLatest) scrollToEnd()
@@ -371,6 +385,15 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
                 5 -> startActivity(Intent(this, SettingsActivity::class.java))
             }
         })
+    }
+
+    private fun renderTask(state: HermesRunState) {
+        val line = findViewById<TextView>(R.id.hermes_task)
+        val run = state.run
+        line.visibility = if (run != null && (run.active || !run.delivered)) View.VISIBLE else View.GONE
+        line.text = state.message.ifBlank { run?.label.orEmpty() }
+        app.hermesRuns.confirmAdmittedDraft(app.history)
+        app.hermesRuns.reconcile(app.history)
     }
 
     private fun renderConnectivity() {
