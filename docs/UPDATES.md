@@ -5,6 +5,11 @@ firmware partitions or the `r1ptt_system` Magisk module. Package/data identities
 configuration stay the same. There is no root installer, automatic uninstall, data reset,
 background update polling, boot download or silent installation.
 
+Release-specific changes and upgrade requirements are recorded in
+[the v0.4.0 notes](releases/v0.4.0.md). The release tag supplies the APK version; ordinary local
+builds keep their development version. When `docs/releases/vMAJOR.MINOR.PATCH.md` exists at the
+tagged commit, the signed release workflow includes it in the published release notes.
+
 The initial implementation has offline tests and local build/lint coverage. An R1 was not
 attached during implementation. Installed-certificate verification, first bootstrap, Android's
 installer UI and device recovery acceptance still need the explicit steps below. A passing CI
