@@ -54,6 +54,8 @@ data class TurnState(
     val reply: String = "",
     /** A short status line: errors, "New conversation", agent progress. */
     val note: String = "",
+    /** The orange stage was tapped: this voice turn's words go to the text field, not to Hermes. */
+    val editing: Boolean = false,
 )
 
 /** Foreground chat or private-draft context: where dictation and button gestures go. */
@@ -81,6 +83,9 @@ interface DictationTarget {
     /** Handles a tap: chat sends; Messages opens review. False if there is nothing to do. */
     fun sendTyped(): Boolean
     fun hideKeyboard()
+
+    /** A voice turn kept to edit has landed in this chat's draft: open the text field on it. */
+    fun editDraft() {}
 }
 
 /**
@@ -141,6 +146,8 @@ class TurnController(private val app: App) : Gestures.Listener {
     @Volatile private var current: Turn? = null
     val activeConversation: String? get() = current?.conversation
     private var dictating = false
+    /** This press's words were kept to edit (the orange stage was tapped before release). */
+    private var editingPress = false
     private var streamTurn = false
     private var interrupted = false
     private var noteJob: Job? = null
@@ -155,6 +162,8 @@ class TurnController(private val app: App) : Gestures.Listener {
         var speaker: Speaker? = null
         val reply = StringBuffer()
         var replySaved = false
+        /** Its words go to the chat's draft instead of Hermes. */
+        var editing = false
         @Volatile var remoteOperation: String? = null
         @Volatile var remoteStopRequested = false
     }
@@ -183,6 +192,7 @@ class TurnController(private val app: App) : Gestures.Listener {
         val cfg = app.store.value
         destination = CapturedInput(target?.takeIf { it.isActive() })
         dictating = destination.target != null
+        editingPress = false
         dictationBlockedPress = (destination.target == null && privateInputScreen) || destination.target?.canDictate() == false
         if (dictationBlockedPress) { settle(); return }
         transcriptionConfig = cfg // a mid-press settings change cannot redirect private audio
@@ -246,7 +256,7 @@ class TurnController(private val app: App) : Gestures.Listener {
                 destination.target?.takeIf { it === target }?.clearPartial()
                 note("Didn't hear anything")
             } else {
-                launch(id = s.turnId, emitStart = false) { turn -> transcribeStream(turn, s) }
+                launch(id = s.turnId, emitStart = false) { turn -> turn.editing = editingPress; transcribeStream(turn, s) }
             }
             settle()
             return
@@ -260,7 +270,7 @@ class TurnController(private val app: App) : Gestures.Listener {
                 discard(clip, destination.target?.privateDictation() == true)
                 note("Didn't hear anything")
             }
-            else -> launch { turn -> transcribe(turn, clip) }
+            else -> launch { turn -> turn.editing = editingPress; transcribe(turn, clip) }
         }
         settle()
     }
@@ -319,6 +329,36 @@ class TurnController(private val app: App) : Gestures.Listener {
 
     /** Explicit local interruption. Runs-backed cancellation is layered onto this in Hermes controls. */
     fun cancelTurn() { pressGeneration++; stopActive(); settle() }
+
+    /**
+     * The orange stage was swiped away: the voice turn ends before its words reach Hermes, and
+     * the microphone closes now rather than at release. False once the words have been handed on.
+     */
+    fun cancelVoiceTurn(): Boolean {
+        if (!voicePending()) return false
+        cancelTurn() // the release that follows finds no capture and sends nothing
+        note("Cancelled")
+        return true
+    }
+
+    /**
+     * The orange stage was tapped: the words go to the chat's text field to edit instead of to
+     * Hermes. There is no way back to sending; a tap of the button sends the edited text.
+     */
+    fun editVoiceTurn(): Boolean {
+        if (!voicePending()) return false
+        editingPress = true
+        current?.editing = true
+        _state.update { it.copy(editing = true) }
+        return true
+    }
+
+    /** A voice turn for Hermes, held or just released, whose words have not been handed on yet. */
+    private fun voicePending(): Boolean = !dictating && when (_state.value.phase) {
+        Phase.LISTENING -> stream != null || recorder != null
+        Phase.TRANSCRIBING -> current != null
+        else -> false
+    }
 
     fun newConversation() {
         pressGeneration++
@@ -402,7 +442,7 @@ class TurnController(private val app: App) : Gestures.Listener {
 
     private suspend fun transcribe(turn: Turn, clip: Clip) {
         val cfg = turn.sttConfig
-        _state.value = TurnState(phase = Phase.TRANSCRIBING)
+        _state.value = TurnState(phase = Phase.TRANSCRIBING, editing = turn.editing)
         val text = try {
             awaitNetwork()
             io { calls -> stt.transcribe(cfg, clip, calls) }
@@ -436,7 +476,7 @@ class TurnController(private val app: App) : Gestures.Listener {
         }
     }
 
-    /** Dictation goes into the text field; anything else is a question for Hermes. */
+    /** Dictation goes into the text field; anything else is a question for Hermes unless kept to edit. */
     private suspend fun handleTranscript(turn: Turn, transcript: String) {
         val text = transcript.trim()
         val route = turn.input.route(target, target?.isActive() == true)
@@ -445,11 +485,22 @@ class TurnController(private val app: App) : Gestures.Listener {
             note("Didn't catch that")
             return
         }
+        if (turn.editing) return keepToEdit(turn, text)
         when (route) {
             InputRoute.CHAT -> ask(turn, text)
             InputRoute.DRAFT -> { turn.input.target?.insert(text); idle() }
             InputRoute.DISCARDED -> idle() // leaving a draft never sends its words to Hermes
         }
+    }
+
+    /**
+     * Words kept to edit wait at the end of their chat's draft, and the text field opens on them.
+     * They go to the draft directly, not through dictation, which needs the keyboard already up.
+     */
+    private fun keepToEdit(turn: Turn, text: String) {
+        app.history.appendDraft(text, conversation = turn.conversation)
+        idle()
+        if (turn.conversation == app.history.convId) target?.editDraft()
     }
 
     /** Words so far from live transcription: in the text field when dictating, else on screen. */

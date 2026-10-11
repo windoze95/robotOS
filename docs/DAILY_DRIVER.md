@@ -21,6 +21,11 @@ replies remain selectable. The palette is a readability choice, not a measured b
   place; **Latest** returns to the newest text.
 - Holding the button for Hermes floods the screen orange: your words as they are heard, a level
   meter, a timer and an arrow toward the button. It clears when you let go.
+- Until those words are sent, including the moment just after you let go, the orange screen
+  takes two gestures. A quick tap keeps the words for editing: they join the end of the draft and
+  the keyboard opens, so a tap of the button sends them. A swipe throws the turn away: the screen
+  follows your finger, the microphone closes and nothing reaches Hermes. A short swipe springs
+  back. A long touch or a second finger does neither, so a thumb resting on the glass is ignored.
 - While Hermes works or speaks, the text field becomes one large **Stop speech**, **Stop task** or
   **Disconnect** button. The keyboard button beside it still lets you type.
 - A line above the text field says what the R1 is doing: dictation, speech, errors and setup.
@@ -99,7 +104,8 @@ shows the next applicable action and progress. [MESSAGES.md](MESSAGES.md) and
 ## Acceptance evidence
 
 Local automated tests cover conversation persistence, navigation, settings, contextual input,
-task recovery, approvals, cancellation, device permissions, request receipts and SMS limits.
+listening-screen gestures, task recovery, approvals, cancellation, device permissions, request
+receipts and SMS limits.
 These use Robolectric and mock servers. The Android CI workflow also runs debug/release builds,
 lint, Python MCP/setup tests and the Node acceptance/release tests. Each PR's checks are the
 record of its hosted CI result.
@@ -128,10 +134,10 @@ signing certificate; existing chats survived, and Home, the menu, Quick controls
 rendered as in the snapshots. Button holds, playback and the keyboard have not yet been exercised
 with this build.
 
-Actual wheel/button handling, audible interruption, reboot/reconnect recovery, approval review
-and carrier behavior still need physical acceptance. Automated recovery and input tests do not
-establish those hardware results. The R1 was powered during this check; no standby-drain claim
-is based on it.
+Actual wheel/button handling, tapping or swiping the listening screen while the button is held,
+audible interruption, reboot/reconnect recovery, approval review and carrier behavior still need
+physical acceptance. Automated recovery and input tests do not establish those hardware results.
+The R1 was powered during this check; no standby-drain claim is based on it.
 
 Battery acceptance requires three matched unplugged nights for both baseline and candidate.
 The pocket-mode target remains **less than 0.5% per hour**. It is a target, not a measurement.

@@ -145,12 +145,9 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
             if (stoppable(shown())) { if (AudioPlayback.active) app.turns.stopSpeech() else app.turns.cancelTurn() }
             else if (!sendTyped()) showKeyboard()
         }
-        findViewById<View>(R.id.type).setOnClickListener {
-            input.visibility = View.VISIBLE
-            input.requestFocus()
-            renderAction(shown())
-            input.post { showKeyboard() }
-        }
+        findViewById<View>(R.id.type).setOnClickListener { openComposer() }
+        stage.onCancel = { app.turns.cancelVoiceTurn() }
+        stage.onEdit = { app.turns.editVoiceTurn() }
         findViewById<View>(R.id.chat_title).setOnClickListener { startActivity(Intent(this, ChatsActivity::class.java)) }
         findViewById<View>(R.id.controls).setOnClickListener { startActivity(Intent(this, QuickControlsActivity::class.java)) }
         findViewById<View>(R.id.menu).setOnClickListener { openMenu() }
@@ -312,6 +309,19 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
         input.clearFocus()
     }
 
+    /** Words kept from the orange stage are in the draft; the button's tap sends them once edited. */
+    override fun editDraft() {
+        if (resumed) openComposer()
+    }
+
+    /** The text field, even where a wide Stop button had taken its place, focused with the keyboard up. */
+    private fun openComposer() {
+        input.visibility = View.VISIBLE
+        input.requestFocus()
+        renderAction(shown())
+        input.post { showKeyboard() }
+    }
+
     private fun showKeyboard() {
         input.requestFocus()
         getSystemService(InputMethodManager::class.java).showSoftInput(input, 0)
@@ -350,7 +360,7 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
             stage.show()
         }
         if (s.phase == Phase.LISTENING) listenedMs = SystemClock.elapsedRealtime() - listeningSince
-        stage.update(s.heard, s.level, sending = s.phase == Phase.TRANSCRIBING, elapsedMs = listenedMs)
+        stage.update(s.heard, s.level, sending = s.phase == Phase.TRANSCRIBING, editing = s.editing, elapsedMs = listenedMs)
     }
 
     /** The exchange in progress: Hermes working, then the reply as it streams in. */

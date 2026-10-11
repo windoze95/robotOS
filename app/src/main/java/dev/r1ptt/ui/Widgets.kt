@@ -15,8 +15,10 @@ import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.util.AttributeSet
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewAnimationUtils
+import android.view.ViewConfiguration
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.LinearInterpolator
 import android.widget.CheckBox
@@ -318,17 +320,32 @@ class EdgeArrow @JvmOverloads constructor(context: Context, attrs: AttributeSet?
 
 /**
  * Full-screen orange while the button is held for Hermes: live words, a level meter, and an arrow
- * toward the side button. It floods in from the right edge, where the button is.
+ * toward the side button. It floods in from the right edge, where the button is. Until the words
+ * are handed on, a tap keeps them to edit instead and a swipe throws the turn away.
  */
 class VoiceStage @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : FrameLayout(context, attrs) {
     private val ink = context.getColor(R.color.on_accent)
     private val title = TextView(context)
     private val timer = TextView(context)
+    private val gestures = TextView(context)
     private val words = TextView(context)
     private val meter = LevelBars(context)
     private val hint = TextView(context)
+    private val dot = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(ink); setBounds(0, 0, px(10f).toInt(), px(10f).toInt()) }
+    private val keyboard = context.getDrawable(R.drawable.ic_keyboard)!!.mutate().apply { setTint(ink); setBounds(0, 0, px(16f).toInt(), px(16f).toInt()) }
+    private var shownEditing = false
     var showing = false
         private set
+    /** A swipe throws the turn away. Returns false once that is too late; the stage settles back. */
+    var onCancel: (() -> Boolean)? = null
+    /** A tap keeps the words to edit instead of sending them. Returns false once that is too late. */
+    var onEdit: (() -> Boolean)? = null
+    private val slop = ViewConfiguration.get(context).scaledTouchSlop
+    private var downX = 0f
+    private var downY = 0f
+    private var downAt = 0L
+    private var tracking = false
+    private var dragging = false
 
     init {
         setBackgroundColor(context.getColor(R.color.accent))
@@ -339,19 +356,20 @@ class VoiceStage @JvmOverloads constructor(context: Context, attrs: AttributeSet
             setPadding(px(20f).toInt(), px(18f).toInt(), px(20f).toInt(), px(18f).toInt())
         }
         val top = LinearLayout(context).apply { gravity = Gravity.CENTER_VERTICAL }
-        listOf(title, timer, hint).forEach {
+        listOf(title, timer, hint, gestures).forEach {
             it.typeface = Fonts.mono(context, 800)
             it.textSize = 13f
             it.letterSpacing = .1f
             it.setTextColor(ink)
             it.isAllCaps = true
         }
-        val dot = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(ink); setSize(px(10f).toInt(), px(10f).toInt()) }
-        title.setCompoundDrawablesRelativeWithIntrinsicBounds(dot, null, null, null)
+        title.setCompoundDrawablesRelative(dot, null, null, null)
         title.compoundDrawablePadding = px(8f).toInt()
         top.addView(title, LinearLayout.LayoutParams(0, -2, 1f))
         top.addView(timer)
         column.addView(top)
+        gestures.apply { typeface = Fonts.mono(context, 700); textSize = 11f; alpha = .7f }
+        column.addView(gestures, LinearLayout.LayoutParams(-2, -2).apply { topMargin = px(6f).toInt() })
         words.apply {
             typeface = Fonts.display(context, 600)
             textSize = 27f
@@ -375,8 +393,11 @@ class VoiceStage @JvmOverloads constructor(context: Context, attrs: AttributeSet
     fun show() {
         if (showing) return
         showing = true
+        tracking = false
         meter.reset()
         animate().cancel()
+        translationX = 0f
+        translationY = 0f
         alpha = 1f
         visibility = VISIBLE
         if (isAttachedToWindow && width > 0) runCatching {
@@ -388,12 +409,18 @@ class VoiceStage @JvmOverloads constructor(context: Context, attrs: AttributeSet
     fun hide() {
         if (!showing) return
         showing = false
+        tracking = false
         animate().alpha(0f).setDuration(180).withEndAction { if (!showing) visibility = GONE }.start()
     }
 
-    fun update(heard: String, level: Float, sending: Boolean, elapsedMs: Long) {
-        title.setIfChanged(if (sending) "Sending" else "Listening")
-        hint.setIfChanged(if (sending) "Transcribing" else "Release to send")
+    fun update(heard: String, level: Float, sending: Boolean, editing: Boolean, elapsedMs: Long) {
+        title.setIfChanged(when { editing -> "Dictating"; sending -> "Sending"; else -> "Listening" })
+        hint.setIfChanged(when { sending -> "Transcribing"; editing -> "Release to edit"; else -> "Release to send" })
+        gestures.setIfChanged(if (editing) "Swipe to cancel" else "Tap to edit · swipe to cancel")
+        if (editing != shownEditing) {
+            shownEditing = editing
+            title.setCompoundDrawablesRelative(if (editing) keyboard else dot, null, null, null)
+        }
         val seconds = (elapsedMs / 1000).coerceAtLeast(0)
         timer.setIfChanged("%d:%02d".format(seconds / 60, seconds % 60))
         val said = heard.trim()
@@ -404,6 +431,72 @@ class VoiceStage @JvmOverloads constructor(context: Context, attrs: AttributeSet
             else -> said
         })
         if (!sending) meter.push(level)
+    }
+
+    /**
+     * The side button is held throughout, so a touch here is a second contact, and a thumb resting
+     * on the glass is the likely accident. A quick tap edits, which one button tap undoes; only a
+     * deliberate swipe cancels. A long touch or a second finger does neither.
+     */
+    override fun onTouchEvent(e: MotionEvent): Boolean {
+        if (!showing) return true // still swallowed while it fades out
+        val dx = e.rawX - downX
+        val dy = e.rawY - downY
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                downX = e.rawX
+                downY = e.rawY
+                downAt = e.eventTime
+                tracking = true
+                dragging = false
+            }
+            MotionEvent.ACTION_MOVE -> if (tracking) {
+                if (!dragging && hypot(dx, dy) > slop) dragging = true
+                if (dragging) follow(dx, dy)
+            }
+            MotionEvent.ACTION_UP -> if (tracking) {
+                tracking = false
+                if (hypot(dx, dy) > slop) dragging = true
+                when {
+                    !dragging -> if (e.eventTime - downAt < ViewConfiguration.getLongPressTimeout()) performClick()
+                    hypot(dx, dy) >= reach() && onCancel?.invoke() == true -> throwAway(dx, dy)
+                    else -> snapBack()
+                }
+            }
+            MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_CANCEL -> if (tracking) {
+                tracking = false
+                snapBack()
+            }
+        }
+        return true
+    }
+
+    /** A tap, or an accessibility click: keep the words to edit. */
+    override fun performClick(): Boolean {
+        super.performClick()
+        return onEdit?.invoke() == true
+    }
+
+    /** How far a swipe must go to cancel: about a third of the screen. */
+    private fun reach() = max(min(width, height) * .3f, slop * 4f)
+
+    /** The sheet follows the finger, fading as it nears the distance that cancels. */
+    private fun follow(dx: Float, dy: Float) {
+        translationX = dx
+        translationY = dy
+        alpha = 1f - .5f * min(hypot(dx, dy) / reach(), 1f)
+    }
+
+    private fun snapBack() {
+        animate().translationX(0f).translationY(0f).alpha(1f).setDuration(160).start()
+    }
+
+    /** Off the screen the way it was swiped. */
+    private fun throwAway(dx: Float, dy: Float) {
+        showing = false
+        val far = hypot(width.toFloat(), height.toFloat()) / hypot(dx, dy)
+        animate().translationX(dx * far).translationY(dy * far).alpha(0f).setDuration(200)
+            .withEndAction { if (!showing) visibility = GONE }.start()
     }
 
     /** Level updates arrive many times a second; only real text changes should cost a layout. */
