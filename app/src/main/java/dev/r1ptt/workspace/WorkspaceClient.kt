@@ -100,7 +100,7 @@ class WorkspaceClient(private val app: App) {
         }
         store.resumeAfterEnrollment()
         app.store.update { it.copy(agent = it.agent.copy(apiKey = "", headers = emptyMap()),
-            hermes = if (it.hermes.deviceApi) it.hermes.copy(token = newId().replace("-", "") + newId().replace("-", "")) else it.hermes) }
+            hermes = it.hermes.copy(token = newId().replace("-", "") + newId().replace("-", ""))) }
         requireRecovery(); start(); sync()
     }
     internal fun api(method: String, path: String, body: JSONObject? = null, recovery: Boolean = false): JSONObject {

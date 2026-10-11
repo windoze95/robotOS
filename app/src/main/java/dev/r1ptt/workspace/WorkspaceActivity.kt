@@ -44,7 +44,7 @@ class WorkspaceActivity : DeviceActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        index(); hub.refresh()
+        landingPage(); hub.refresh()
     }
     override fun onResume() {
         super.onResume()
@@ -65,7 +65,7 @@ class WorkspaceActivity : DeviceActivity() {
         statusJob = scope.launch { hub.status.collect { value ->
             status?.text = value
             if (hub.quarantined && screen != "restricted") restricted()
-            else if (!hub.blocked && screen == "restricted") index()
+            else if (!hub.blocked && screen == "restricted") landingPage()
             else if (!hub.blocked && value != "Syncing…" && screen in setOf("index", "notes", "prompts", "runs")) {
                 val y = wheelScrollTarget?.scrollY ?: 0
                 when (screen) { "index" -> index(); "notes" -> notes(); "prompts" -> prompts(); "runs" -> runs() }
@@ -102,7 +102,13 @@ class WorkspaceActivity : DeviceActivity() {
         body.addView(ui.note((hub.store.loadError ?: identity.optString("lost_message")).ifBlank { "This R1 was marked lost or its shared access was revoked. Use your host console to restore access." }))
         identity.optString("return_message").takeIf(String::isNotBlank)?.let { body.addView(ui.text(it)) }
         body.addView(ui.button("Stop ringing") { hub.management.stopRinging() })
-        body.addView(ui.button("Check recovery status") { task { hub.sync(); if (!hub.blocked) index() } })
+        body.addView(ui.button("Check recovery status") { task { hub.sync(); if (!hub.blocked) landingPage() } })
+    }
+    private fun landingPage() {
+        if (hub.blocked) { restricted(); return }
+        val openRuns = intent.getBooleanExtra(EXTRA_RUNS, false)
+        intent.removeExtra(EXTRA_RUNS)
+        if (openRuns) runs() else index()
     }
     private fun index() {
         if (hub.blocked) { restricted(); return }
@@ -396,6 +402,7 @@ class WorkspaceActivity : DeviceActivity() {
         }
     }
     private fun runs() {
+        if (hub.blocked) { restricted(); return }
         page("Runs", "runs")
         body.addView(ui.button("Refresh") { task { hub.sync(); runs() } })
         hub.store.items("runs").sortedByDescending { it.optLong("created_at") }.forEach { run ->
@@ -456,6 +463,8 @@ class WorkspaceActivity : DeviceActivity() {
         else -> "The host could not be reached. Your local work is preserved."
     }
     companion object {
+        private const val EXTRA_RUNS = "dev.r1ptt.workspace.RUNS"
+        fun runsIntent(context: android.content.Context) = Intent(context, WorkspaceActivity::class.java).putExtra(EXTRA_RUNS, true)
         var button: ((Boolean) -> Unit)? = null
         private var active: java.lang.ref.WeakReference<WorkspaceActivity>? = null
         fun pauseForRecovery() { active?.get()?.let {

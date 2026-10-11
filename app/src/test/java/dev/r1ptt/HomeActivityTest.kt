@@ -99,4 +99,93 @@ class HomeActivityTest {
         assertTrue(controller.get().findViewById<ScrollView>(R.id.scroll).height > 200)
         controller.pause().stop().destroy()
     }
+    @Test fun pairedHomeHidesTheOldDirectTaskWithoutErasingItsRecord() {
+        val old = dev.r1ptt.hermes.HermesRun("old-operation", "direct-connection", "old-session", "{}", 1,
+            true, 60, true, true, runId = "old-run", status = "running")
+        val ledger = dev.r1ptt.hermes.HermesRunLedger(File(app.filesDir, "hermes-run.json"))
+        ledger.write(old)
+        @Suppress("UNCHECKED_CAST")
+        val state = app.hermesRuns.javaClass.getDeclaredField("mutable").apply { isAccessible = true }.get(app.hermesRuns)
+            as kotlinx.coroutines.flow.MutableStateFlow<dev.r1ptt.hermes.HermesRunState>
+        state.value = dev.r1ptt.hermes.HermesRunState(run = old)
+        val controller = Robolectric.buildActivity(HomeActivity::class.java).create()
+        val home = controller.get()
+        val draw = home.javaClass.getDeclaredMethod("drawTask", dev.r1ptt.hermes.HermesRunState::class.java).apply { isAccessible = true }
+        val stop = home.javaClass.getDeclaredMethod("stopLabel").apply { isAccessible = true }
+        draw.invoke(home, state.value)
+        assertEquals(View.VISIBLE, home.findViewById<View>(R.id.hermes_task).visibility)
+        assertEquals("Stop task", stop.invoke(home))
+        pairForHomeUi(); draw.invoke(home, state.value)
+        assertEquals(View.GONE, home.findViewById<View>(R.id.hermes_task).visibility)
+        assertEquals("Disconnect", stop.invoke(home))
+        assertEquals(old, ledger.read())
+        controller.destroy()
+    }
+    private fun pairForHomeUi() {
+        val identity = org.json.JSONObject().put("device_id", "paired-r1").put("base_url", "https://hub.example")
+        val disk = object : dev.r1ptt.data.ConfigBlobStorage {
+            var value: String? = null
+            override fun read() = value
+            override fun write(blob: String) { value = blob }
+        }
+        val cipher = object : dev.r1ptt.data.ConfigCipher {
+            override fun seal(plain: String, allowKeyCreation: Boolean) = plain
+            override fun open(blob: String) = blob
+        }
+        val codec = object : dev.r1ptt.data.ConfigCodec<org.json.JSONObject> {
+            override fun encode(value: org.json.JSONObject) = value.toString()
+            override fun decode(plain: String) = org.json.JSONObject(plain)
+        }
+        app.workspace.identity.javaClass.getDeclaredField("persistence").apply { isAccessible = true }
+            .set(app.workspace.identity, dev.r1ptt.data.EncryptedConfigPersistence(identity, disk, cipher, codec))
+    }
+    @Suppress("UNCHECKED_CAST")
+    private fun configureHome(update: (dev.r1ptt.data.Config) -> dev.r1ptt.data.Config) {
+        val state = app.store.javaClass.getDeclaredField("state").apply { isAccessible = true }.get(app.store)
+            as kotlinx.coroutines.flow.MutableStateFlow<dev.r1ptt.data.Config>
+        state.value = update(state.value)
+    }
+    private fun renderHomePrerequisites(activity: HomeActivity, empty: Boolean) {
+        // Exercise both actual Home surfaces without starting microphone or network services.
+        if (empty) activity.javaClass.getDeclaredMethod("renderEmpty").apply { isAccessible = true }.invoke(activity)
+        else {
+            activity.findViewById<View>(R.id.empty).visibility = View.GONE
+            activity.javaClass.getDeclaredMethod("renderStrip", TurnState::class.java).apply { isAccessible = true }.invoke(activity, TurnState())
+        }
+    }
+    @Test fun pairedHomeDoesNotAskForTheDirectHermesCredentialRemovedByPairing() {
+        shadowOf(app).grantPermissions(android.Manifest.permission.RECORD_AUDIO)
+        pairForHomeUi()
+        configureHome { it.copy(agent = it.agent.copy(baseUrl = "", apiKey = ""), openaiKey = "test-speech-key") }
+        val controller = Robolectric.buildActivity(HomeActivity::class.java).create()
+        val home = controller.get()
+        renderHomePrerequisites(home, empty = true)
+        assertEquals("Release to send it to Hermes.", home.findViewById<android.widget.TextView>(R.id.empty_body).text.toString())
+        assertNull(home.findViewById<LinearLayout>(R.id.empty).findViewWithTag<View>("setup"))
+        renderHomePrerequisites(home, empty = false)
+        assertNotEquals(app.getString(R.string.need_hermes), home.findViewById<android.widget.TextView>(R.id.status).text.toString())
+        assertNotEquals(app.getString(R.string.need_key), home.findViewById<android.widget.TextView>(R.id.status).text.toString())
+        controller.destroy()
+    }
+    @Test fun unpairedHomeNeedsHermesAndPairedHomeStillNeedsItsLocalSpeechConfiguration() {
+        shadowOf(app).grantPermissions(android.Manifest.permission.RECORD_AUDIO)
+        configureHome { it.copy(agent = it.agent.copy(baseUrl = "", apiKey = ""), openaiKey = "test-speech-key") }
+        val controller = Robolectric.buildActivity(HomeActivity::class.java).create()
+        val home = controller.get()
+        renderHomePrerequisites(home, empty = true)
+        assertEquals("Connect Hermes to start.", home.findViewById<android.widget.TextView>(R.id.empty_body).text.toString())
+        renderHomePrerequisites(home, empty = false)
+        assertEquals(app.getString(R.string.need_hermes), home.findViewById<android.widget.TextView>(R.id.status).text.toString())
+        pairForHomeUi()
+        configureHome { it.copy(openaiKey = "") }
+        renderHomePrerequisites(home, empty = true)
+        assertEquals("Add a speech key to start.", home.findViewById<android.widget.TextView>(R.id.empty_body).text.toString())
+        renderHomePrerequisites(home, empty = false)
+        assertEquals(app.getString(R.string.need_key), home.findViewById<android.widget.TextView>(R.id.status).text.toString())
+        configureHome { it.copy(stt = it.stt.copy(baseUrl = "https://speech.example/v1"), tts = it.tts.copy(enabled = false)) }
+        renderHomePrerequisites(home, empty = true)
+        assertEquals("Release to send it to Hermes.", home.findViewById<android.widget.TextView>(R.id.empty_body).text.toString())
+        controller.destroy()
+    }
+
 }

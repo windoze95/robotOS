@@ -26,6 +26,8 @@ import dev.r1ptt.data.HermesLink
 import dev.r1ptt.messages.SmsRecipientText
 import dev.r1ptt.net.friendly
 import dev.r1ptt.ui.DeviceActivity
+import dev.r1ptt.workspace.HubSettingsActivity
+import dev.r1ptt.workspace.WorkspaceActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -37,6 +39,7 @@ import kotlinx.coroutines.withContext
 /** Local device access and explicit, capability-aware Hermes task controls. */
 class HermesActivity : DeviceActivity() {
     private val app get() = application as App
+    private val paired get() = app.workspace.identity.paired
     private val work = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var observe: Job? = null
     private lateinit var status: TextView
@@ -60,7 +63,7 @@ class HermesActivity : DeviceActivity() {
     private var registered = false
     private val battery = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            if (intent.action == Intent.ACTION_SCREEN_OFF || intent.action == Intent.ACTION_SCREEN_ON)
+            if (!paired && (intent.action == Intent.ACTION_SCREEN_OFF || intent.action == Intent.ACTION_SCREEN_ON))
                 app.hermesRuns.setVisible(this@HermesActivity, intent.action == Intent.ACTION_SCREEN_ON)
             if (::status.isInitialized) status.text = describe()
         }
@@ -77,10 +80,10 @@ class HermesActivity : DeviceActivity() {
         setContentView(page.root); wheelScrollTarget = page.scroll
         val body = page.body
         body.addView(ui.card().apply {
-            addView(ui.mono("Server", R.color.accent))
+            addView(ui.mono(if (paired) "Workspace host" else "Server", R.color.accent))
             connection = ui.text(host(), 17f).apply { typeface = dev.r1ptt.ui.Fonts.display(context, 600); setPadding(0, ui.dp(4), 0, ui.dp(10)) }
             addView(connection)
-            addView(ui.button("Check connection") { checkConnection() }.apply { (layoutParams as LinearLayout.LayoutParams).bottomMargin = 0 })
+            addView(ui.button(if (paired) "Host & devices" else "Check connection") { checkConnection() }.apply { (layoutParams as LinearLayout.LayoutParams).bottomMargin = 0 })
         })
         tasks = ui.column(); body.addView(tasks)
         body.addView(ui.section("Name"))
@@ -92,13 +95,16 @@ class HermesActivity : DeviceActivity() {
         body.addView(ui.note("What robotOS calls your agent in chats, hints and notes. Left empty, Hermes can set its own name once, during setup."))
         body.addView(ui.section("Model"))
         modelSummary = ui.text(modelLabel(), 16f).apply { setPadding(ui.dp(4), 0, ui.dp(4), ui.dp(10)) }; body.addView(modelSummary)
-        body.addView(ui.button("Choose model") { chooseModel() })
-        body.addView(ui.note("A Hermes session may have its own model setting. Completed tasks show the model actually used."))
+        if (paired) body.addView(ui.note("Your workspace host manages the Hermes connection and model. Change them on the host."))
+        else {
+            body.addView(ui.button("Choose model") { chooseModel() })
+            body.addView(ui.note("A Hermes session may have its own model setting. Completed tasks show the model actually used."))
+        }
         body.addView(ui.section("This R1"))
         status = ui.mono(describe(), R.color.dim, 12f, 500).apply { setLineSpacing(ui.dp(4).toFloat(), 1f); setPadding(ui.dp(4), 0, ui.dp(4), ui.dp(12)) }
         body.addView(status)
         act = ui.toggle("Let $agent access this R1", cfg.hermes.deviceApi); body.addView(act)
-        if (cfg.hermes.token.length < 32) {
+        if (!paired && cfg.hermes.token.length < 32) {
             act.isEnabled = false
             body.addView(ui.note("Set up the device connection from your computer first."))
         }
@@ -127,8 +133,11 @@ class HermesActivity : DeviceActivity() {
         registerReceiver(battery, IntentFilter(Intent.ACTION_BATTERY_CHANGED).apply {
             addAction(Intent.ACTION_SCREEN_ON); addAction(Intent.ACTION_SCREEN_OFF)
         }); registered = true
-        app.hermesRuns.setVisible(this, getSystemService(android.os.PowerManager::class.java).isInteractive)
-        observe = work.launch { app.hermesRuns.state.collect { renderTask(it) } }
+        if (paired) renderTask(app.hermesRuns.state.value)
+        else {
+            app.hermesRuns.setVisible(this, getSystemService(android.os.PowerManager::class.java).isInteractive)
+            observe = work.launch { app.hermesRuns.state.collect { renderTask(it) } }
+        }
     }
 
     override fun onPause() {
@@ -143,6 +152,11 @@ class HermesActivity : DeviceActivity() {
     override fun onDestroy() { work.cancel(); super.onDestroy() }
 
     private fun renderTask(state: HermesRunState) {
+        if (paired) {
+            tasks.removeAllViews()
+            tasks.addView(ui.button("Workspace runs") { startActivity(WorkspaceActivity.runsIntent(this)) })
+            return
+        }
         // Do not rebuild the form or steal wheel position for every streamed token.
         val important = state.copy(run = state.run?.copy(output = "", lastSequence = -1))
         if (important == lastTask) return
@@ -238,6 +252,7 @@ class HermesActivity : DeviceActivity() {
     }
 
     private fun checkConnection() {
+        if (paired) { startActivity(Intent(this, HubSettingsActivity::class.java)); return }
         connection.text = "Checking ${host()}…"
         work.launch {
             try {
@@ -254,6 +269,7 @@ class HermesActivity : DeviceActivity() {
     }
 
     private fun chooseModel() {
+        if (paired) return
         work.launch {
             try {
                 app.radio.onActivity()
@@ -277,6 +293,7 @@ class HermesActivity : DeviceActivity() {
     }
 
     private fun selectModel(model: HermesModel?) {
+        if (paired) return
         try {
             app.store.update { it.copy(agent = it.agent.copy(provider = model?.provider.orEmpty(), model = model?.model ?: "hermes-agent")) }
             modelSummary.text = modelLabel()
@@ -284,10 +301,11 @@ class HermesActivity : DeviceActivity() {
         } catch (e: ConfigPersistenceException) { toast(e.message.orEmpty()) }
     }
 
-    private fun modelLabel(): String = app.store.value.agent.let { a ->
+    private fun modelLabel(): String = if (paired) "Managed by your host" else app.store.value.agent.let { a ->
         if (a.provider.isBlank() && a.model == "hermes-agent") "Use Hermes default" else listOf(a.provider, a.model).filter { it.isNotBlank() }.joinToString(" · ")
     }
-    private fun host() = app.store.value.agent.baseUrl.let { runCatching { java.net.URI(it).host }.getOrNull() }.orEmpty().ifBlank { "Not connected" }
+    private fun host() = (if (paired) app.workspace.identity.value.optString("base_url") else app.store.value.agent.baseUrl)
+        .let { runCatching { java.net.URI(it).host }.getOrNull() }.orEmpty().ifBlank { "Not connected" }
     private fun describe(): String {
         val cfg = app.store.value
         val plugged = (registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
@@ -314,6 +332,8 @@ class HermesActivity : DeviceActivity() {
             app.store.update { cfg ->
                 val current = cfg.hermes
                 cfg.copy(agent = if (newName != initialName) cfg.agent.copy(name = newName) else cfg.agent, hermes = current.copy(
+                    token = if (paired && current.token.length < 32 && act.isChecked && act.isEnabled)
+                        dev.r1ptt.workspace.newId().replace("-", "") + dev.r1ptt.workspace.newId().replace("-", "") else current.token,
                     deviceApi = if (act.isChecked != initialLink.deviceApi) act.isChecked && act.isEnabled else current.deviceApi,
                     passthrough = if (passthrough.isChecked != initialLink.passthrough) passthrough.isChecked else current.passthrough,
                     owner = if (owner.text.toString() != initialLink.owner) number else current.owner,

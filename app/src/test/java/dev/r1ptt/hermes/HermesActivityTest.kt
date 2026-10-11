@@ -21,6 +21,7 @@ import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config as RobolectricConfig
 
 @RunWith(RobolectricTestRunner::class)
@@ -61,6 +62,64 @@ class HermesActivityTest {
     private inline fun <reified T> views(group: ViewGroup): List<T> = all(group).filterIsInstance<T>()
 
     private fun screen() = Robolectric.buildActivity(HermesActivity::class.java).setup().get().let { it to (it.window.decorView as ViewGroup) }
+
+    private fun identity(value: JSONObject) {
+        val disk = object : ConfigBlobStorage { var stored: String? = null; override fun read() = stored; override fun write(blob: String) { stored = blob } }
+        val cipher = object : ConfigCipher { override fun seal(plain: String, allowKeyCreation: Boolean) = plain; override fun open(blob: String) = blob }
+        val codec = object : ConfigCodec<JSONObject> { override fun encode(value: JSONObject) = value.toString(); override fun decode(plain: String) = JSONObject(plain) }
+        app.workspace.identity.javaClass.getDeclaredField("persistence").apply { isAccessible = true }
+            .set(app.workspace.identity, EncryptedConfigPersistence(value, disk, cipher, codec))
+    }
+
+    @Test fun anOlderPairedDeviceCanExplicitlyEnableAccessWithoutComputerProvisioning() {
+        app.store.update { it.copy(hermes = HermesLink()) }
+        identity(JSONObject().put("device_id", "paired-r1"))
+        val unchanged = Robolectric.buildActivity(HermesActivity::class.java).create()
+        val root = unchanged.get().window.decorView as ViewGroup
+        val access = views<Switch>(root).first()
+        assertTrue(access.isEnabled); assertFalse(access.isChecked)
+        views<Button>(root).single { it.text == "Save" }.performClick()
+        assertEquals(HermesLink(), app.store.value.hermes)
+        unchanged.destroy()
+        val optedIn = Robolectric.buildActivity(HermesActivity::class.java).create()
+        val controls = optedIn.get().window.decorView as ViewGroup
+        views<Switch>(controls).first().isChecked = true
+        views<Button>(controls).single { it.text == "Save" }.performClick()
+        assertTrue(optedIn.get().isFinishing)
+        assertTrue(app.store.value.hermes.deviceApi)
+        assertEquals(64, app.store.value.hermes.token.length)
+        assertEquals(HermesLink(), app.store.value.hermes.copy(deviceApi = false, token = ""))
+        optedIn.destroy()
+    }
+
+    @Test fun freshEnrollmentProvisionsAPrivateTokenWithoutEnablingDevicePermissions() {
+        app.store.update { it.copy(hermes = HermesLink(), agent = it.agent.copy(apiKey = "old-direct-key")) }
+        identity(JSONObject())
+        okhttp3.mockwebserver.MockWebServer().use { server ->
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest) =
+                    if (request.path!!.endsWith("/enrollments/claim")) okhttp3.mockwebserver.MockResponse().setBody(
+                        """{"device_id":"fresh-r1","device_token":"content-token","recovery_token":"recovery-token"}""")
+                    else okhttp3.mockwebserver.MockResponse().setResponseCode(503)
+            }
+            server.start()
+            val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+            try {
+                // A later sync outage must not undo the successful enrollment or grant permissions.
+                val paired = executor.submit<Boolean> { kotlinx.coroutines.runBlocking {
+                    runCatching { app.workspace.pair(server.url("/").toString(), "123456", "Second R1") }.isFailure
+                } }
+                val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10)
+                while (!paired.isDone && System.nanoTime() < deadline) { shadowOf(android.os.Looper.getMainLooper()).idle(); Thread.sleep(5) }
+                assertTrue(paired.get(1, java.util.concurrent.TimeUnit.SECONDS))
+                assertEquals("fresh-r1", app.workspace.identity.value.getString("device_id"))
+                assertEquals("", app.store.value.agent.apiKey)
+                assertEquals(64, app.store.value.hermes.token.length)
+                assertEquals(HermesLink(), app.store.value.hermes.copy(token = ""))
+                assertTrue(app.workspace.blocked)
+            } finally { executor.shutdownNow() }
+        }
+    }
 
     @Test fun savesYourNumberAndPassthroughWithoutTouchingTheToken() {
         val (activity, root) = screen()
