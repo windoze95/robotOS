@@ -4,15 +4,17 @@ import org.json.JSONObject
 
 /**
  * Config <-> JSON. [merge] lays a partial document over an existing config, so an import can set a
- * single key (say `providers.openai.apiKey`) without restating everything else.
+ * single key (say `agent.apiKey`) without restating everything else.
  */
 object ConfigJson {
 
     fun toJson(c: Config): JSONObject = JSONObject().apply {
-        put("activeProvider", c.activeProvider.takeUnless { it in Config.RETIRED_PROVIDER_IDS } ?: c.provider.id)
-        put("providers", JSONObject().apply { c.providers.forEach { (id, p) -> put(id, provider(p)) } })
+        put("agent", JSONObject().apply {
+            put("baseUrl", c.agent.baseUrl); put("apiKey", c.agent.apiKey); put("model", c.agent.model)
+            put("headers", JSONObject(c.agent.headers)); put("timeoutSec", c.agent.timeoutSec)
+        })
+        put("openaiKey", c.openaiKey)
         put("systemPrompt", c.systemPrompt)
-        put("historyMessages", c.historyMessages)
         put("stt", endpoint(c.stt).put("language", c.sttLanguage).put("live", c.sttLive).put("liveModel", c.sttLiveModel)
             .put("liveUrl", c.sttLiveUrl).put("delay", c.sttDelay))
         put("tts", endpoint(c.tts.endpoint).apply {
@@ -21,17 +23,6 @@ object ConfigJson {
             put("format", c.tts.format)
             put("sampleRate", c.tts.sampleRate)
             put("instructions", c.tts.instructions)
-        })
-        put("live", JSONObject().apply {
-            put("enabled", c.live.enabled)
-            put("url", c.live.url)
-            put("model", c.live.model)
-            put("voice", c.live.voice)
-            put("backendModel", c.live.backendModel)
-            put("reasoningEffort", c.live.reasoningEffort)
-            put("webSearch", c.live.webSearch)
-            put("warm", c.live.warm)
-            put("idleCloseSec", c.live.idleCloseSec)
         })
         put("power", JSONObject().apply {
             put("wifiIdleMinutes", c.power.wifiIdleMinutes)
@@ -51,25 +42,19 @@ object ConfigJson {
     }
 
     fun merge(base: Config, j: JSONObject): Config {
-        val providers = base.providers.toMutableMap()
-        j.optJSONObject("providers")?.let { all ->
-            for (id in all.keys()) {
-                val o = all.optJSONObject(id) ?: continue
-                val old = providers[id] ?: Provider(id = id, label = id, baseUrl = "", model = "")
-                providers[id] = mergeProvider(old, o)
-            }
-        }
+        val agent = j.optJSONObject("agent")
         val stt = j.optJSONObject("stt")
         val tts = j.optJSONObject("tts")
-        val live = j.optJSONObject("live")
         val power = j.optJSONObject("power")
         val hermes = j.optJSONObject("hermes")
         return base.copy(
-            activeProvider = j.str("activeProvider", base.activeProvider)
-                .takeUnless { it in Config.RETIRED_PROVIDER_IDS } ?: base.provider.id,
-            providers = providers,
+            agent = agent?.let { a -> base.agent.copy(
+                baseUrl = a.str("baseUrl", base.agent.baseUrl), apiKey = a.str("apiKey", base.agent.apiKey),
+                model = a.str("model", base.agent.model), timeoutSec = a.int("timeoutSec", base.agent.timeoutSec),
+                headers = a.optJSONObject("headers")?.let { h -> h.keys().asSequence().associateWith { h.getString(it) } } ?: base.agent.headers,
+            ) } ?: base.agent,
+            openaiKey = j.str("openaiKey", base.openaiKey),
             systemPrompt = j.str("systemPrompt", base.systemPrompt),
-            historyMessages = j.int("historyMessages", base.historyMessages),
             stt = stt?.let { mergeEndpoint(base.stt, it) } ?: base.stt,
             sttLanguage = stt?.str("language", base.sttLanguage) ?: base.sttLanguage,
             sttLive = stt?.bool("live", base.sttLive) ?: base.sttLive,
@@ -86,19 +71,6 @@ object ConfigJson {
                     instructions = t.str("instructions", base.tts.instructions),
                 )
             } ?: base.tts,
-            live = live?.let { l ->
-                base.live.copy(
-                    enabled = l.bool("enabled", base.live.enabled),
-                    url = l.str("url", base.live.url),
-                    model = l.str("model", base.live.model),
-                    voice = l.str("voice", base.live.voice),
-                    backendModel = l.str("backendModel", base.live.backendModel),
-                    reasoningEffort = l.str("reasoningEffort", base.live.reasoningEffort),
-                    webSearch = l.bool("webSearch", base.live.webSearch),
-                    warm = l.bool("warm", base.live.warm),
-                    idleCloseSec = l.int("idleCloseSec", base.live.idleCloseSec),
-                )
-            } ?: base.live,
             power = power?.let { p ->
                 base.power.copy(
                     wifiIdleMinutes = p.int("wifiIdleMinutes", base.power.wifiIdleMinutes),
@@ -118,36 +90,6 @@ object ConfigJson {
             textSizeSp = j.int("textSizeSp", base.textSizeSp),
             saveClips = j.bool("saveClips", base.saveClips),
             buttonDevice = j.str("buttonDevice", base.buttonDevice),
-        )
-    }
-
-    private fun provider(p: Provider) = JSONObject().apply {
-        put("label", p.label)
-        put("baseUrl", p.baseUrl)
-        put("apiKey", p.apiKey)
-        put("model", p.model)
-        put("session", p.session.id)
-        put("headers", JSONObject(p.headers))
-        put("extraBody", runCatching { JSONObject(p.extraBody) }.getOrElse { JSONObject() })
-        put("timeoutSec", p.timeoutSec)
-    }
-
-    private fun mergeProvider(old: Provider, o: JSONObject): Provider {
-        val headers = o.optJSONObject("headers")?.let { h -> h.keys().asSequence().associateWith { h.getString(it) } }
-        val extra = when (val e = o.opt("extraBody")) {
-            is JSONObject -> e.toString()
-            is String -> JSONObject(e.ifBlank { "{}" }).toString() // throws on invalid JSON: reject the import
-            else -> old.extraBody
-        }
-        return old.copy(
-            label = o.str("label", old.label),
-            baseUrl = o.str("baseUrl", old.baseUrl),
-            apiKey = o.str("apiKey", old.apiKey),
-            model = o.str("model", old.model),
-            session = if (o.has("session")) SessionMode.of(o.getString("session")) else old.session,
-            headers = headers ?: old.headers,
-            extraBody = extra,
-            timeoutSec = o.int("timeoutSec", old.timeoutSec),
         )
     }
 

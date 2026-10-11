@@ -33,7 +33,7 @@ run incomplete. Reports can be rerun offline and show whether capture completed.
 
 `--config-label` and `--build-label` are short, manually assigned labels, never paths to config
 files. Record the installed APK/build identity and these safe comparison conditions in a local
-acceptance worksheet: provider category/model, live warm enabled, Wi-Fi idle interval, cellular
+acceptance worksheet: Hermes model, transcription and speech models, Wi-Fi idle interval, cellular
 enabled, screen timeout/brightness, output volume, OS/kernel build, access point placement,
 ambient temperature, and starting battery range. Omit keys, URLs, session identifiers and
 utterance/reply text. Use the same device and conditions for before/after comparisons. If any
@@ -47,31 +47,33 @@ events/fields and pre-capture records are discarded. Avoid adding raw diagnostic
 the evidence folder. Review safe artifacts before sharing them.
 
 The legacy `tools/wifi-wake-test.sh` deliberately toggles Wi-Fi, `tools/smoke-test.sh` reads
-credentials and calls live providers, and `tools/battery-report.sh` uses an implicit ADB target.
+credentials and calls the real speech and Hermes services, and `tools/battery-report.sh` uses an implicit ADB target.
 They are outside this read-only workflow. They were not run to produce acceptance evidence.
 
 ## Telemetry definitions
 
 The app emits `metric event=<token> t_ms=<elapsedRealtime> turn=<integer>` with optional safe
 integer counters. The capture parser adds the numeric PID from `logcat -v brief`. `connection`
-identifies a session within one process; turn IDs are process-wide. `mode` is 0 for voice,
-1 for dictation, and 2 for typed turns. `warm`/`ready` are 0 or 1. A prewarmed session may have
-turn 0. Service starts and clock regressions split lifetimes, so reused connection/turn IDs
-cannot borrow timing from another service lifetime, PID or reboot. A cold `turn_start` may
-have `connection=0` before allocation; the analyzer resolves it only if exactly one positive
-connection ID appears on that same turn. Missing markers stay blank
-in CSV and `null` in JSON; they never count as zero latency.
+identifies a session within one process; turn IDs are process-wide. `mode` is 1 for a transcribed
+press (a voice turn for Hermes, or dictation; reported as `voice`) and 2 for typed turns; 0 appears
+only in captures from the retired live speech-to-speech mode (reported as `live`). `warm`/`ready`
+are 0 or 1; current builds open a fresh transcription connection per press, so `warm` is 0.
+Service starts and clock regressions split lifetimes, so reused connection/turn IDs cannot borrow
+timing from another service lifetime, PID or reboot. A cold `turn_start` may have `connection=0`
+before allocation; the analyzer resolves it only if exactly one positive connection ID appears on
+that same turn. Missing markers stay blank in CSV and `null` in JSON; they never count as zero
+latency.
 
 | Row/metric | Definition | Limit of the evidence |
 |---|---|---|
-| Cold/warm cohort | `turn_start.warm`, split further by `mode` | Check the human workload agrees with the flag; provider/mode cohorts are separate. |
-| Connection | `connect_ready - connect_start` for the same connection and lifetime | A warm row may show the original session's establishment time, not a reconnect on that turn. |
+| Cohort | `turn_start.mode`, split further by `warm` for old captures | Check the human workload agrees with the mode; mode cohorts are separate. |
+| Connection | `connect_ready - connect_start` for the same connection and lifetime | Only transcribed presses open a connection; typed turns have none. |
 | Readiness after turn start | `connect_ready - turn_start`, or zero if `turn_start.ready=1` | Negative or missing pairs remain pending. Socket open alone does not mean protocol readiness. |
 | Queue age | Largest `input_end_sent.max_queue_ms` in that turn | Zero requires an explicit zero counter; missing counters are pending. `queued_bytes` records queued input at input end. |
 | Release gate | `release_gate_closed - release` | Local input admission barrier, before stopping AudioRecord; inspect the release-order flag separately. This does not measure the hardware mic stopping. |
 | Input end | `input_end_sent - release` | Confirms input end is sent after queued audio; this is not server acknowledgment. |
 | Reply receipt | `first_reply - release` | First reply data received; distinct from playback. |
-| First reply playback | `playback_started - release` | AudioTrack head observed advancing past initial silence, polled at up to 25 ms intervals plus callback scheduling delay. Speaker acoustic onset needs external measurement. |
+| First reply playback | `playback_started - release` | Emitted only by the retired live mode; replies read aloud by text-to-speech don't report it, so this stays pending. Speaker acoustic onset needs external measurement. |
 | Local interruption | `playback_flushed - interrupt_start` | Time to complete local player flush; does not prove the speaker was silent at that instant. |
 | Audible interruption | External acoustic/video measurement of physical press to silence | Always pending in the telemetry report. Do not replace it with local flush latency. |
 | Network wait | `network_available - network_wait` for matching turn/connection | Starts when the app notices it needs network; physical outage onset is a human/external observation. |
@@ -98,8 +100,7 @@ their own device authorization; the collector never performs them.
 
 | Scenario | Repeatable human workload | Acceptance evidence |
 |---|---|---|
-| `voice_cold` | Wait until the previous session closes. From screen off, hold, speak for a consistent 2–3 seconds, release, let reply finish. Repeat 20 times. | New connection/readiness/queue age rows; release gate closes; no reply playback before release; all expected replies complete. Separate Wi-Fi already available from wake after the configured Wi-Fi idle cutoff. |
-| `voice_warm` | Wake normally; wait for readiness; make 20 turns within the existing session lifetime. | Ready flag and reused connection; readiness/queue age; release-to-playback p50/p95/max and complete/failure counts. |
+| `voice_cold` | From screen off, hold, speak for a consistent 2–3 seconds, release, let Hermes's reply finish. Repeat 20 times. | New connection/readiness/queue age rows; release gate closes; no reply playback before release; all expected replies complete. Separate Wi-Fi already available from wake after the configured Wi-Fi idle cutoff. |
 | `dictation` | Open keyboard manually. Hold and release 20 times, checking partial/final text is preserved and nothing is submitted until a deliberate send. | Dictation cohort kept separate; release gate/queue metrics; operator records final-text correctness and sends exactly once. Typed paths may have fewer markers and remain pending where absent. |
 | `interruption` | While a reply is audibly playing, press/hold again; repeat during receipt and during playback, including quick tap and rapid successive holds. Use at least 10 audible interruptions. | Local flush latency; old queued/callback audio does not reappear; new turn works. External microphone/video provides physical-press-to-silence latency and detects residual sound. No acoustic result is inferred from telemetry. |
 | `network_loss` | During connection, recording, and reply, manually make the access point unavailable, then restore it. Try a fresh hold after restoration. Repeat each phase three times. | Failure/no-network outcome is visible, no unbounded/stale audio replay; new connection becomes ready and a fresh turn completes. Record outage/restoration times externally; report network-wait and reconnect times separately. |
@@ -117,11 +118,9 @@ or acoustic acceptance is asserted here.
 
 The implementation bounds serialized input across app and OkHttp queues to 2 MiB, with a
 256 KiB send window and 4 KiB reserved control admission. Handshake/no-send-progress deadlines
-are 30 seconds; the oldest app-queued input also expires after 30 seconds even if some sends progress. Playback holds at most eight seconds of PCM including an in-flight chunk;
-the AudioTrack buffer is 250 ms or the device's larger hardware minimum. The voice exchange
-watchdog is two minutes, including a held button or delegation. Check failure behavior at these
-bounds manually; the collector does not synthesize that workload. A failed voice transport is
-not replayed automatically, and warm reuse is permitted after normal completion.
+are 30 seconds; the oldest app-queued input also expires after 30 seconds even if some sends progress.
+Check failure behavior at these bounds manually; the collector does not synthesize that workload.
+A failed voice transport is not replayed automatically.
 
 ## Overnight unplugged standby
 
@@ -164,8 +163,8 @@ matched baseline as well as the target; a configuration change starts a separate
 
 | Check | Required evidence | Current result |
 |---|---|---|
-| Cold/warm connection, readiness, queue age | 20 turns/cohort and failure counts | Pending hardware |
-| Release gate and actual playback head | Per-turn rows plus human release observation | Pending hardware |
+| Connection, readiness, queue age | 20 turns/cohort and failure counts | Pending hardware |
+| Release gate | Per-turn rows plus human release observation | Pending hardware |
 | Local interruption flush | 10 audible interruptions plus stale-audio check | Pending hardware |
 | Acoustic reply onset/interruption silence | External recording/time reference | Pending acoustic test |
 | Loss/reconnect and successful next turn | Three repetitions at each phase | Pending hardware |

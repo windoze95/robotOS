@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Checks the backends from this computer with the same requests the R1 makes, before any flashing:
-# speech-to-text, a streamed chat reply, two-turn memory, and text-to-speech.
+# Checks the services from this computer with the same requests the R1 makes, before any flashing:
+# speech-to-text, a streamed Hermes reply, two-turn memory, and text-to-speech.
 #
 # Usage: tools/smoke-test.sh [config.json] [--play]     (default config: tools/r1ptt.json)
-# Needs: curl, jq; on macOS it records a test question with `say`.
+# Needs: curl, jq; on macOS it records a test question with `say`. Hermes is checked only when
+# `agent.baseUrl` is reachable from this computer (it is often tailnet-only).
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 need curl
@@ -16,31 +17,19 @@ for a in "$@"; do [ "$a" = --play ] && PLAY=1; done
 mkdir -p "$OUT"
 
 # Merge the example's defaults under the real config, like the app does.
-DEFAULTS='{"activeProvider":"openai",
-  "providers":{"openai":{"baseUrl":"https://api.openai.com/v1","model":"gpt-6.1-sol","session":"history"},
-               "hermes":{"model":"hermes-agent","session":"hermes-session"}},
+DEFAULTS='{"agent":{"model":"hermes-agent"},
   "stt":{"baseUrl":"https://api.openai.com/v1","model":"gpt-transcribe"},
   "tts":{"baseUrl":"https://api.openai.com/v1","model":"gpt-4o-mini-tts-2025-12-15","voice":"marin","enabled":true}}'
-# Ignore a retired profile in memory only; never rewrite the owner's config or credentials.
-C=$(jq -s '.[0] * .[1] | .providers |= del(.openclaw) |
-  if .activeProvider == "openclaw" then .activeProvider = "openai" else . end' <(echo "$DEFAULTS") "$CFG")
+C=$(jq -s '.[0] * .[1]' <(echo "$DEFAULTS") "$CFG")
 cfg() { jq -r "$1 // empty" <<<"$C"; }
 
 host() { sed -E 's#^[a-z]+://([^/:]+).*#\1#' <<<"$1"; }
-# Same rule as the app: an endpoint without its own key borrows a provider key on the same host.
-key_for() {
-  local url=$1 own=$2 id
-  [ -n "$own" ] && { echo "$own"; return; }
-  for id in $(jq -r '.providers | keys[]' <<<"$C"); do
-    if [ "$(host "$(cfg ".providers.$id.baseUrl")")" = "$(host "$url")" ] && [ -n "$(cfg ".providers.$id.apiKey")" ]; then
-      cfg ".providers.$id.apiKey"; return
-    fi
-  done
+# Same rule as the app: a speech endpoint without its own key uses openaiKey on api.openai.com.
+key_for() { # key_for <url> <own key>
+  if [ -n "$2" ]; then echo "$2"; elif [ "$(host "$1")" = api.openai.com ]; then cfg .openaiKey; fi
 }
 
 STT_URL=$(cfg .stt.baseUrl)
-STT_KEY=$(key_for "$STT_URL" "$(cfg .stt.apiKey)")
-
 say "1. Speech-to-text ($(cfg .stt.model) at $(host "$STT_URL"))"
 if command -v say >/dev/null && command -v afconvert >/dev/null; then
   say "   recording a test question with macOS speech"
@@ -48,46 +37,34 @@ if command -v say >/dev/null && command -v afconvert >/dev/null; then
   afconvert -f m4af -d aac@16000 -c 1 "$OUT/sample.aiff" "$OUT/sample.m4a"
 fi
 [ -f "$OUT/sample.m4a" ] || die "No $OUT/sample.m4a to transcribe."
-HEARD=$(curl -sS --fail-with-body "$STT_URL/audio/transcriptions" -H "Authorization: Bearer $STT_KEY" \
+HEARD=$(curl -sS --fail-with-body "$STT_URL/audio/transcriptions" -H "Authorization: Bearer $(key_for "$STT_URL" "$(cfg .stt.apiKey)")" \
   -F model="$(cfg .stt.model)" -F response_format=json -F file=@"$OUT/sample.m4a" | jq -r .text)
 echo "   heard: $HEARD"
 
-chat() { # chat <provider id> <session id> <messages json> → prints streamed text
-  local id=$1 sid=$2 msgs=$3 url key model session body
-  url=$(cfg ".providers.$id.baseUrl"); key=$(cfg ".providers.$id.apiKey"); model=$(cfg ".providers.$id.model")
-  session=$(cfg ".providers.$id.session")
-  body=$(jq -n --arg m "$model" --argjson msgs "$msgs" --argjson extra "$(cfg ".providers.$id.extraBody" | grep . || echo '{}')" \
-    '{model:$m, stream:true, messages:$msgs} * $extra')
-  local hdr=()
-  [ "$session" = hermes-session ] && hdr=(-H "X-Hermes-Session-Id: r1ptt-$sid")
-  curl -sSN --fail-with-body "$url/chat/completions" -H "Authorization: Bearer $key" -H 'Content-Type: application/json' \
-    ${hdr[@]+"${hdr[@]}"} -d "$body" |
+AGENT=$(cfg .agent.baseUrl)
+hermes() { # hermes <session id> <message> → prints the streamed reply
+  local body
+  body=$(jq -n --arg m "$(cfg .agent.model)" --arg t "$2" \
+    '{model:$m, stream:true, messages:[{role:"system",content:"Be brief: one short sentence, plain text."},{role:"user",content:$t}]}')
+  curl -sSN --fail-with-body "$AGENT/chat/completions" -H "Authorization: Bearer $(cfg .agent.apiKey)" \
+    -H 'Content-Type: application/json' -H "X-Hermes-Session-Id: r1ptt-$1" -d "$body" |
     sed -n 's/^data: //p' | grep -v '^\[DONE\]' | jq -rj '.choices[0].delta.content // empty' 2>/dev/null
   echo
 }
-
-STYLE='{"role":"system","content":"Be brief: one short sentence, plain text."}'
-for id in $(jq -r '.providers | keys[]' <<<"$C"); do
-  # Test the active provider, plus any other that has a real key filled in.
-  KEY=$(cfg ".providers.$id.apiKey")
-  case "$KEY" in *REPLACE*) KEY="" ;; esac
-  [ "$id" = "$(cfg .activeProvider)" ] || [ -n "$KEY" ] || continue
-  say "2. Chat via $id ($(cfg ".providers.$id.model"))"
+if [ -n "$AGENT" ] && curl -s -m 5 -o /dev/null "${AGENT%/v1}/health"; then
+  say "2. Hermes reply ($(host "$AGENT"))"
   printf '   reply: '
-  chat "$id" "smoke$$" "[$STYLE,{\"role\":\"user\",\"content\":$(jq -Rn --arg t "$HEARD" '$t')}]"
-
-  say "3. Memory via $id"
+  hermes "smoke$$" "$HEARD"
+  say "3. Hermes memory"
   SID="mem$$$RANDOM"
-  if [ "$(cfg ".providers.$id.session")" = history ]; then
-    printf '   reply: '
-    chat "$id" "$SID" "[$STYLE,{\"role\":\"user\",\"content\":\"My name is Sam.\"},{\"role\":\"assistant\",\"content\":\"Nice to meet you, Sam.\"},{\"role\":\"user\",\"content\":\"What is my name?\"}]"
-  else
-    chat "$id" "$SID" "[$STYLE,{\"role\":\"user\",\"content\":\"My name is Sam. Just say ok.\"}]" >/dev/null
-    printf '   reply: '
-    chat "$id" "$SID" "[$STYLE,{\"role\":\"user\",\"content\":\"What is my name?\"}]"
-  fi
+  hermes "$SID" "My name is Sam. Just say ok." >/dev/null
+  printf '   reply: '
+  hermes "$SID" "What is my name?"
   echo "   (the reply should mention Sam)"
-done
+else
+  if [ -z "$AGENT" ]; then warn "2–3. Skipped Hermes: the config has no agent.baseUrl."
+  else warn "2–3. Skipped Hermes: $AGENT is not reachable from here (tools/hermes-setup.sh checks it from the R1)."; fi
+fi
 
 TTS_URL=$(cfg .tts.baseUrl)
 say "4. Text-to-speech ($(cfg .tts.model), voice $(cfg .tts.voice))"

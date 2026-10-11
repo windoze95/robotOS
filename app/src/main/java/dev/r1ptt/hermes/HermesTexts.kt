@@ -41,7 +41,7 @@ class HermesTexts(
     fun received(record: SmsRecord): Boolean {
         val cfg = app.store.value
         val link = cfg.hermes
-        if (!record.incoming || !link.passthrough || !cfg.hermesAgent || record.body.isBlank()) return false
+        if (!record.incoming || !link.passthrough || record.body.isBlank()) return false
         if (!SmsRecipientText.sameNumber(record.peer, link.owner, SmsRecipientText.region(app))) return false
         synchronized(prefs) { prefs.edit().putLong("pending.${record.id}", clock()).commit() }
         Log.i(TAG, "hermes text: received from owner")

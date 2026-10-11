@@ -1,9 +1,8 @@
 # Messages
 
-robotOS never interprets texting requests itself; the R1 is not an agent. With the **Hermes Agent**
-backend, Hermes sends texts through its `robotos` tools and your own texts to the R1 go to Hermes
-([HERMES.md](HERMES.md)). Other backends only talk. Everything below is the R1's own SMS handling:
-drafts you write, Android's sending, receiving and receipts.
+robotOS never interprets texting requests itself; the R1 is not an agent. Hermes sends texts through
+its `robotos` tools, and your own texts to the R1 go to Hermes ([HERMES.md](HERMES.md)). Everything
+below is the R1's own SMS handling: drafts you write, Android's sending, receiving and receipts.
 
 Messages is a personal SMS handler inside the existing robotOS APK. It uses Android’s SMS
 service and your SIM. You can choose robotOS as the default SMS app through Android’s role

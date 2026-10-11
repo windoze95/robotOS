@@ -162,7 +162,7 @@ check. The signature in `update.json` plus the independently trusted certificate
   screen or starting a voice/typed turn cancels network work. Partial files are removed; retry
   starts a new transfer. No wake lock, wake alarm, radio override or background polling is added.
 - Installation is admitted on the main thread only while foreground and the voice controller
-  is idle. An idle warm voice socket closes, then a fence blocks new voice turns until the
+  is idle. A fence then blocks new voice turns until the
   installer completes or is cancelled. Existing recordings/replies are never interrupted to
   start an install. Unsent typed text is retained. A press blocked by the fence stays blocked
   through its release, even if installation ends mid-press.
