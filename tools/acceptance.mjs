@@ -173,7 +173,8 @@ export function analyzeMetrics(metrics) {
     const interrupted = first(events, 'interrupt_start');
     const flush = events.find((event) => event.event === 'playback_flushed' && (!interrupted || event.t_ms >= interrupted.t_ms));
     rows.push({ scope: start.scope, turn: start.turn,
-      mode: ['voice', 'dictation', 'typed'][start.mode] ?? 'unknown',
+      // 0 was the retired live speech-to-speech mode; 1 is any transcribed press (a turn for Hermes or dictation).
+      mode: ['live', 'voice', 'typed'][start.mode] ?? 'unknown',
       connection_state: start.warm === 1 ? 'warm' : start.warm === 0 ? 'cold' : 'unknown',
       connection,
       connection_ms: duration(ready, connectStart),

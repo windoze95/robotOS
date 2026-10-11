@@ -26,7 +26,7 @@ and a matched unplugged battery comparison remain to be measured.
 | Doze | Enters light idle immediately and deep idle about 30 s after screen-off (module `service.sh`). |
 | Screen | On only while a turn is active, then a 15 s timeout at brightness 60/255. No ambient display or lift/tap-to-wake. |
 | Button | Read by a root `dd` blocked on the input device: zero CPU until a press. The kernel's key interrupt wakes the SoC. |
-| Network per turn | Voice turns (speech-to-speech) stream raw 24 kHz audio only while you hold the button, plus the spoken reply. The session opens when the screen wakes (so it's ready by the time you talk) and closes at screen-off or 20 s after an exchange; set `live.warm: false` to connect only on a hold. Dictation streams 24 kHz audio to `gpt-live-transcribe` only while you hold the button (about 64 KB per second of talking); the connection opens at the press and closes once the text is in. Chat and speech share one HTTP/2 connection. |
+| Network per turn | A voice turn streams 24 kHz audio to `gpt-live-transcribe` only while you hold the button (about 64 KB per second of talking); the connection opens at the press and closes once the text is in. Then Hermes gets one request, and the reply is spoken with text-to-speech. Requests to the same host share one HTTP/2 connection. |
 | CPU per turn | No on-device speech models; the cloud (or your server) does the heavy work. |
 
 ## Measuring

@@ -31,7 +31,7 @@ ssh -t "$HOST" "PY=\$(command -v /opt/homebrew/bin/python3 || command -v python3
 
 say "Pointing the R1 at Hermes"
 JSON=$(ssh "$HOST" 'cat "$HOME/Library/Application Support/robotOS/r1-hermes.json"')
-URL=$(jq -r .providers.hermes.baseUrl <<<"$JSON")
+URL=$(jq -r .agent.baseUrl <<<"$JSON")
 B64=$(printf '%s' "$JSON" | base64 | tr -d '\n')
 unset JSON
 RESULT=$(adb shell am broadcast -n dev.r1ptt/.data.ConfigReceiver -a dev.r1ptt.CONFIG --es json_b64 "$B64" | tr -d '\r')

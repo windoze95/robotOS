@@ -18,7 +18,7 @@ data class Msg(val role: String, val text: String, val at: Long = System.current
 
 /**
  * The current conversation, kept small and saved to disk so it survives restarts. [convId] doubles
- * as the session key for agent backends, so a new conversation is a new agent session too.
+ * as Hermes's session key, so a new conversation is a new Hermes session too.
  */
 class History(dir: File) {
     data class Snapshot(val convId: String, val messages: List<Msg>)

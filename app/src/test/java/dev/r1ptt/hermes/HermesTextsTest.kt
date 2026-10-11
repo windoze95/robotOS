@@ -45,7 +45,7 @@ class HermesTextsTest {
         shadowOf(capabilities).addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
         shadowOf(cm).setNetworkCapabilities(cm.activeNetwork, capabilities)
         sms = SmsController(app) { true }
-        configure { it.copy(activeProvider = "hermes", hermes = HermesLink(passthrough = true, owner = owner)) }
+        configure { it.copy(hermes = HermesLink(passthrough = true, owner = owner)) }
     }
 
     @Suppress("UNCHECKED_CAST") private fun configure(update: (Config) -> Config) {
@@ -84,8 +84,6 @@ class HermesTextsTest {
         val texts = texts()
         assertFalse(texts.received(incoming("+14055550199", "Hi")))
         configure { it.copy(hermes = it.hermes.copy(passthrough = false)) }
-        assertFalse(texts.received(incoming(owner, "Hi")))
-        configure { it.copy(activeProvider = "openai", hermes = it.hermes.copy(passthrough = true)) }
         assertFalse(texts.received(incoming(owner, "Hi")))
         Thread.sleep(200)
         assertTrue(asked.isEmpty())

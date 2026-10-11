@@ -15,7 +15,8 @@ This takes about an hour of hands-on time once Rabbit has approved developer mod
   - `uv` (for `tools/fastboot-entry.py`)
   - Google Chrome (for Rabbit's flash tool)
 - A USB-C data cable.
-- An OpenAI API key (it also powers speech). To make your Hermes agent the brain, see [HERMES.md](HERMES.md).
+- An OpenAI API key, for speech (transcription and reading replies aloud).
+- A Mac running [Hermes Agent](https://github.com/NousResearch/hermes-agent), the agent the R1 is a remote for ([HERMES.md](HERMES.md)).
 - Downloads, all saved into `firmware/` (git-ignores it):
   - **Stock rabbitOS v0.8.293**: `rabbit_OS_v0.8.293.zip` from
     https://github.com/rabbit-hmi-oss/firmware/releases. Unzip it to `firmware/stock/`.
@@ -24,16 +25,16 @@ This takes about an hour of hands-on time once Rabbit has approved developer mod
     vanilla `arm64_bvN` file, not `bgN`, `a64` or `vndklite`).
   - **Magisk**: `Magisk-v30.x.apk` from https://github.com/topjohnwu/Magisk/releases.
 
-## 0. Check the backend from your Mac
+## 0. Check speech from your Mac
 
 ```sh
-cp tools/r1ptt.example.json tools/r1ptt.json      # put your OpenAI key in; delete the providers you don't use
+cp tools/r1ptt.example.json tools/r1ptt.json      # set openaiKey; Hermes's fields come later
 tools/build.sh                                     # builds out/r1ptt.apk and out/r1ptt-system.zip
-tools/smoke-test.sh --play                         # speech-to-text, chat, memory, text-to-speech
+tools/smoke-test.sh --play                         # speech-to-text and text-to-speech (and Hermes, if reachable)
 ```
 
-If the smoke test fails, fix the config before touching the R1. For example, if the model name is
-rejected, change `providers.openai.model`.
+If the smoke test fails, fix the config before touching the R1. For example, if a model name is
+rejected, change `stt.model` or `tts.model`.
 
 ## 1. Developer mode and bootloader unlock (Rabbit's official route)
 
@@ -126,18 +127,17 @@ The script makes these changes:
 It's safe to re-run, e.g. after editing the config or rebuilding. `--undo-debloat` re-enables the
 disabled apps.
 
-To make the R1 a remote for your Hermes agent, run `tools/hermes-setup.sh --host you@hermes-host`
-next ([HERMES.md](HERMES.md)): it sets up Hermes's side and pushes the R1's `hermes` settings.
+Then connect Hermes: `tools/hermes-setup.sh --host you@hermes-host` ([HERMES.md](HERMES.md)) sets up
+Hermes's side and pushes the R1's settings. Until then, the R1 can dictate but has no one to answer.
 
 ## 6. Check that it works
 
 Work through these with the R1 on USB:
 
-1. **Voice, keyboard closed.** Hold the button, ask something, let go. It should start answering
-   in voice about a second later, with the text on screen. The screen turns off about 15 s after it
-   finishes.
-2. **A follow-up** within 20 seconds keeps the context. A web question ("weather in …") shows
-   "Searching the web…" while `gpt-6.1-sol` looks it up.
+1. **Voice, keyboard closed.** Hold the button, ask something, let go. Hermes's answer appears and
+   is read aloud. The screen turns off about 15 s after it finishes.
+2. **A follow-up** keeps the context (Hermes keeps the conversation). While Hermes uses a tool, the
+   status line shows it ("Using …").
 3. **The press that wakes the screen.** Let the screen go off and wait a minute (or run
    `adb shell dumpsys deviceidle force-idle`). Then hold the button and speak right away: nothing
    you said should be lost.

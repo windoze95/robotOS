@@ -1,10 +1,11 @@
 # Hermes remote
 
-With the **Hermes Agent** provider selected, robotOS is a remote for your Hermes agent. Hermes is
-the agent; the R1 only relays and acts:
+robotOS is a remote for your Hermes agent. Hermes is the agent and the R1's only backend; the R1
+only relays and acts:
 
 - **Push-to-talk:** hold the button and talk. robotOS transcribes the speech (OpenAI live
-  transcription), sends the text to Hermes unchanged, and speaks Hermes's reply. The R1 never interprets texting requests itself; it isn't an agent.
+  transcription), sends the text to Hermes unchanged, and speaks Hermes's reply. The R1 never
+  interprets texting requests itself; it isn't an agent.
 - **Hermes acts on the R1:** Hermes's `robotos` MCP server gives it `send_sms`, `sms_status`,
   `recent_texts`, `list_recipients` and `r1_status`. "Text Sam I'm running late" is Hermes calling
   `mcp__robotos__send_sms`, which the R1 carries out with its own SIM and number.
@@ -78,7 +79,7 @@ new node. Re-running is safe: existing keys are kept, so the R1 keeps working.
 To undo: remove the `mcp_servers.robotos` entry and the `API_SERVER_*`/`ROBOTOS_R1_TOKEN` lines,
 `launchctl bootout gui/$(id -u)/ai.robotos.tailscale` and delete its plist and
 `~/Library/Application Support/robotOS`, and `hermes gateway uninstall` if you don't otherwise use it.
-On the R1, choose another backend in Settings.
+On the R1, turn off Hermes's access and passthrough (Settings → Hermes).
 
 ### By hand
 

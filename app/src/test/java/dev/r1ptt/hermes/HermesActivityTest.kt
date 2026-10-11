@@ -30,7 +30,7 @@ class HermesActivityTest {
 
     @Before fun setup() {
         app = RuntimeEnvironment.getApplication() as App
-        configure { it.copy(activeProvider = "hermes", hermes = HermesLink(deviceApi = true, token = "t".repeat(40))) }
+        configure { it.copy(hermes = HermesLink(deviceApi = true, token = "t".repeat(40))) }
         // The real store seals with the Android Keystore, which Robolectric lacks; saves stay in memory here.
         val memory = object : ConfigBlobStorage {
             var blob: String? = null

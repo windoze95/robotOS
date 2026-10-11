@@ -15,5 +15,6 @@
     <string name="send">Send</string>
     <string name="hint">Type, or hold the button to dictate</string>
     <string name="need_mic">Microphone permission is needed</string>
-    <string name="need_key">Add your OpenAI API key in Settings (or run tools/provision.sh)</string>
+    <string name="need_hermes">Connect Hermes: run tools/hermes-setup.sh from a computer</string>
+    <string name="need_key">Add your OpenAI API key for speech in Settings</string>
 </resources>

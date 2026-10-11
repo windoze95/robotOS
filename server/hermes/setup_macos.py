@@ -81,9 +81,7 @@ def r1_settings(dns_name, api_key, token, owner=None):
     if owner:
         hermes.update(passthrough=True, owner=owner)
     return {
-        "activeProvider": "hermes",
-        "providers": {"hermes": {"label": "Hermes Agent", "baseUrl": f"https://{dns_name}/v1", "apiKey": api_key,
-                                 "model": "hermes-agent", "session": "hermes-session", "timeoutSec": 300}},
+        "agent": {"baseUrl": f"https://{dns_name}/v1", "apiKey": api_key, "model": "hermes-agent", "timeoutSec": 300},
         "hermes": hermes,
     }
 

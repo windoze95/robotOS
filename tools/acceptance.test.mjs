@@ -49,13 +49,13 @@ test('cold, warm, dictation, and restarted process fixtures have separate metric
   assert.equal(warm.connection_ms, 200); // Original connection establishment, not a warm-turn reconnect.
   assert.equal(warm.interrupt_local_flush_ms, 3);
   assert.equal(warm.interrupt_audible_silence_ms, null);
-  assert.equal(dictation.mode, 'dictation');
+  assert.equal(dictation.mode, 'voice');
   assert.equal(dictation.release_to_playback_head_ms, null);
   assert.equal(restarted.connection_ms, null); // Connection 7 in another PID is unrelated.
   assert.equal(restarted.failed, true);
   assert.deepEqual(report.network_waits.map((wait) => wait.wait_ms), [180]);
-  assert.equal(report.summary['voice/cold'].release_to_playback_head_ms.n, 1);
-  assert.equal(report.summary['voice/warm'].interrupt_local_flush_ms.p95_ms, 3);
+  assert.equal(report.summary['live/cold'].release_to_playback_head_ms.n, 1);
+  assert.equal(report.summary['live/warm'].interrupt_local_flush_ms.p95_ms, 3);
 });
 
 test('missing, stale, mismatched, and rebooted markers never invent a duration', () => {

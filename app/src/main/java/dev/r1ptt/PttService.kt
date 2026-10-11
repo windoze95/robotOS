@@ -55,13 +55,11 @@ class PttService : Service() {
                     app.screen.onScreenOff()
                     app.radio.onScreenOff()
                     app.battery.record(c, "screen_off")
-                    app.turns.screenOff()
                 }
                 Intent.ACTION_SCREEN_ON -> {
                     app.screen.onScreenOn()
                     app.radio.onScreenOn()
                     app.battery.record(c, "screen_on")
-                    app.turns.screenOn()
                 }
             }
         }

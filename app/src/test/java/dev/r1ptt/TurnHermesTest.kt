@@ -64,9 +64,8 @@ class TurnHermesTest {
         TurnController::class.java.declaredMethods.single { it.name == "launch" }.apply { isAccessible = true }
             .invoke(turns, 1L, false, block)
     }
-    private fun backend(server: MockWebServer, id: String) = configure {
-        it.copy(activeProvider = id, providers = it.providers +
-            (id to it.providers.getValue(id).copy(baseUrl = server.url("/v1").toString(), apiKey = "k".repeat(40))))
+    private fun hermes(server: MockWebServer) = configure {
+        it.copy(agent = it.agent.copy(baseUrl = server.url("/v1").toString(), apiKey = "k".repeat(40)))
     }
     private fun reply(server: MockWebServer, text: String) = server.enqueue(MockResponse().setHeader("Content-Type", "application/json")
         .setBody(JSONObject().put("choices", JSONArray().put(JSONObject().put("message", JSONObject().put("content", text))
@@ -74,7 +73,7 @@ class TurnHermesTest {
 
     @Test fun hermesGetsTheRequestUnchangedInItsSessionAndActsThroughItsTools() {
         MockWebServer().use { server ->
-            server.start(); backend(server, "hermes")
+            server.start(); hermes(server)
             reply(server, "Texted Sam.")
             completedVoice(request)
             await { app.history.messages.lastOrNull()?.text == "Texted Sam." && !turns.busy }
@@ -84,21 +83,6 @@ class TurnHermesTest {
             val messages = JSONObject(sent.body.readUtf8()).getJSONArray("messages")
             assertEquals(request, messages.getJSONObject(messages.length() - 1).getString("content"))
             assertTrue(messages.getJSONObject(0).getString("content").contains("robotos tools"))
-            assertEquals(1, server.requestCount)
-            SmsStore(app).use { assertTrue(it.threads().isEmpty()) }
-        }
-    }
-
-    @Test fun otherBackendsGetTheSameWordsAndAreToldTheyCannotActOnTheDevice() {
-        MockWebServer().use { server ->
-            server.start(); backend(server, "openai")
-            reply(server, "I can't send texts from here.")
-            turns.sendText(request)
-            await { app.history.messages.lastOrNull()?.text == "I can't send texts from here." && !turns.busy }
-            val body = JSONObject(server.takeRequest(2, TimeUnit.SECONDS)!!.body.readUtf8())
-            val messages = body.getJSONArray("messages")
-            assertEquals(request, messages.getJSONObject(messages.length() - 1).getString("content"))
-            assertTrue(messages.getJSONObject(0).getString("content").endsWith(TurnController.NO_DEVICE_ACTIONS))
             assertEquals(1, server.requestCount)
             SmsStore(app).use { assertTrue(it.threads().isEmpty()) }
         }

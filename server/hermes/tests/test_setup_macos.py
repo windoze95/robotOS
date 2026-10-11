@@ -32,7 +32,8 @@ class SetupMacosTest(unittest.TestCase):
 
     def test_r1_settings_and_mcp_entry_keep_secrets_out_of_config_yaml(self):
         settings = setup.r1_settings("host.tailnet.ts.net", "k" * 40, "t" * 40, owner="+14055550123")
-        self.assertEqual("https://host.tailnet.ts.net/v1", settings["providers"]["hermes"]["baseUrl"])
+        self.assertEqual("https://host.tailnet.ts.net/v1", settings["agent"]["baseUrl"])
+        self.assertNotIn("providers", settings)
         self.assertEqual({"deviceApi": True, "token": "t" * 40, "port": 8765, "passthrough": True, "owner": "+14055550123"}, settings["hermes"])
         self.assertNotIn("passthrough", setup.r1_settings("h.ts.net", "k", "t")["hermes"])
         entry = setup.mcp_entry("/opt/homebrew/bin/python3", "100.101.102.103")

@@ -87,7 +87,7 @@ interface DictationTarget {
  * Everything one press of the button sets in motion:
  *
  *   hold → record → release → transcribe → (keyboard up?  insert into the text field)
- *                                          (otherwise    → ask the backend → stream reply → speak)
+ *                                          (otherwise    → ask Hermes  → stream reply → speak)
  *
  * A new press always interrupts whatever is going on. Gesture callbacks arrive on the main thread;
  * network work runs on a small pool and is cancelled with its turn.
@@ -127,17 +127,13 @@ class TurnController(private val app: App) : Gestures.Listener {
         settle()
     }
 
-    /** Speech-to-speech for voice turns with the keyboard closed (OpenAI provider). */
-    private val live = LiveVoice(app, publish = { _state.value = it }, fail = ::fail, settled = ::settle)
-
-    val busy: Boolean get() = _state.value.phase.active || recorder != null || stream != null || live.busy
+    val busy: Boolean get() = _state.value.phase.active || recorder != null || stream != null
 
     @Volatile private var recorder: Recorder? = null
     /** Live transcription for this press (gpt-live-transcribe), when transcription is on OpenAI. */
     @Volatile private var stream: SttStream? = null
     @Volatile private var current: Turn? = null
     private var dictating = false
-    private var liveTurn = false
     private var streamTurn = false
     private var interrupted = false
     private var noteJob: Job? = null
@@ -165,32 +161,24 @@ class TurnController(private val app: App) : Gestures.Listener {
         if (updateBlockedPress) return
         pressGeneration++
         app.store.loadError?.let {
-            live.reset()
             stopActive()
             fail(it)
             settle()
             return
         }
         app.screen.notePress()
-        val stoppedLive = live.interrupt()
-        interrupted = stopActive() || stoppedLive
+        interrupted = stopActive()
         val cfg = app.store.value
         destination = CapturedInput(target?.takeIf { it.isActive() })
         dictating = destination.target != null
         dictationBlockedPress = (destination.target == null && privateInputScreen) || destination.target?.canDictate() == false
         if (dictationBlockedPress) { settle(); return }
         transcriptionConfig = cfg // a mid-press settings change cannot redirect private audio
-        // Keyboard closed → speech-to-speech (if available); keyboard open → dictation via transcription.
-        liveTurn = !dictating && cfg.liveVoice
-        // Dictation (and agent voice turns) stream through live transcription when it's on OpenAI.
-        streamTurn = !liveTurn && cfg.liveStt
+        // Keyboard closed → a turn for Hermes; keyboard open → dictation. Both stream through live
+        // transcription when it's on OpenAI.
+        streamTurn = cfg.liveStt
         app.radio.onActivity()
         app.screen.holdAwake()
-        if (liveTurn) {
-            live.startCapture()
-            live.warm() // connect now, not once the hold is confirmed
-            return
-        }
         if (streamTurn) {
             val generation = pressGeneration
             lateinit var s: SttStream
@@ -219,11 +207,7 @@ class TurnController(private val app: App) : Gestures.Listener {
         if (dictationBlockedPress) { target?.dictationUnavailable(); return }
         app.store.loadError?.let { fail(it); settle(); return }
         val cfg = app.store.value
-        val micMissing = when {
-            liveTurn -> !live.capturing
-            streamTurn -> stream == null
-            else -> recorder == null
-        }
+        val micMissing = if (streamTurn) stream == null else recorder == null
         if (micMissing) {
             fail("Microphone unavailable")
             settle()
@@ -232,10 +216,6 @@ class TurnController(private val app: App) : Gestures.Listener {
         noteJob?.cancel()
         if (cfg.earcons) Earcon.listening()
         if (!dictating) HomeActivity.bringToFront(app)
-        if (liveTurn) {
-            live.holdStart()
-            return
-        }
         _state.value = TurnState(phase = if (dictating) Phase.DICTATING else Phase.LISTENING)
         if (streamTurn) stream?.hold() else Http.warm(transcriptionConfig.stt.baseUrl)
     }
@@ -244,10 +224,6 @@ class TurnController(private val app: App) : Gestures.Listener {
         if (updateBlockedPress || app.updates.installing) return
         if (dictationBlockedPress) return
         if (app.store.loadError != null) return settle()
-        if (liveTurn) {
-            live.holdEnd()
-            return
-        }
         if (streamTurn) {
             val s = stream ?: return settle() // the mic never opened; onHoldStart already said so
             stream = null
@@ -278,7 +254,6 @@ class TurnController(private val app: App) : Gestures.Listener {
     override fun onShortRelease() {
         if (updateBlockedPress || app.updates.installing) return
         if (dictationBlockedPress) return
-        if (liveTurn) live.shortRelease(stoppedReply = interrupted)
         stream?.cancel()
         stream = null
         recorder?.cancel()
@@ -308,35 +283,24 @@ class TurnController(private val app: App) : Gestures.Listener {
         }
         pressGeneration++
         interrupted = false
-        live.reset()
         stopActive()
         app.history.newConversation()
         note("New conversation")
     }
 
-    /** Screen on: with the keyboard closed, the next thing is probably a voice turn. */
-    fun screenOn() {
-        if (app.updates.installing) return
-        if (!privateInputScreen && target?.isActive() != true) live.warm()
-    }
-
-    fun screenOff() = live.screenOff()
-
     /** Service termination is terminal for microphone, sockets, playback and the wake lock. */
     fun shutdown() {
         pressGeneration++
-        live.reset()
         stopActive()
         noteJob?.cancel()
         settle()
     }
 
-    /** A message typed into the launcher's text field: chat model + text-to-speech. */
+    /** A message typed into the launcher's text field: Hermes + text-to-speech. */
     fun sendText(text: String) {
         if (!app.updates.allowVoice()) return
         app.store.loadError?.let { fail(it); settle(); return }
         pressGeneration++
-        live.reset() // the next voice turn starts a fresh session that knows about this exchange
         stopActive()
         destination = CapturedInput(null)
         dictating = false
@@ -350,9 +314,7 @@ class TurnController(private val app: App) : Gestures.Listener {
 
     /** Only the explicit installer uses this; an active exchange is never interrupted for an update. */
     fun prepareForUpdate(): Boolean {
-        if (busy || current != null) return false
-        live.reset() // close an idle warm socket before handing control to Android's installer
-        return true
+        return !busy && current == null
     }
 
     private fun launch(id: Long = TurnMetrics.next(), emitStart: Boolean = true, block: suspend (Turn) -> Unit) {
@@ -418,7 +380,7 @@ class TurnController(private val app: App) : Gestures.Listener {
         }
     }
 
-    /** Dictation goes into the text field; anything else is a question for the backend. */
+    /** Dictation goes into the text field; anything else is a question for Hermes. */
     private suspend fun handleTranscript(turn: Turn, transcript: String) {
         val text = transcript.trim()
         val route = turn.input.route(target, target?.isActive() == true)
@@ -430,7 +392,7 @@ class TurnController(private val app: App) : Gestures.Listener {
         when (route) {
             InputRoute.CHAT -> ask(turn, text)
             InputRoute.DRAFT -> { turn.input.target?.insert(text); idle() }
-            InputRoute.DISCARDED -> idle() // leaving a draft never sends its words to the AI backend
+            InputRoute.DISCARDED -> idle() // leaving a draft never sends its words to Hermes
         }
     }
 
@@ -447,12 +409,12 @@ class TurnController(private val app: App) : Gestures.Listener {
 
     private suspend fun ask(turn: Turn, text: String) {
         val cfg = app.store.value
-        // The R1 is never the agent: every turn reaches the backend as said. Hermes texts people
-        // through its robotos tools; other backends can't act on the device at all.
+        // The R1 is never the agent: every turn reaches Hermes as said, and Hermes texts people
+        // through its robotos tools.
         app.history.add(Msg.USER, text)
         _state.value = TurnState(phase = Phase.THINKING)
         awaitNetwork()
-        val req = ChatRequest.build(cfg.copy(systemPrompt = cfg.systemPrompt + if (cfg.hermesAgent) HERMES_DEVICE else NO_DEVICE_ACTIONS),
+        val req = ChatRequest.build(cfg.copy(systemPrompt = cfg.systemPrompt + HERMES_DEVICE),
             app.history.messages, app.history.convId)
         val speaker = if (cfg.tts.enabled) {
             Speaker(tts::call, cfg.tts.sampleRate).also { turn.speaker = it; it.start() }
@@ -562,7 +524,7 @@ class TurnController(private val app: App) : Gestures.Listener {
 
     /** Lets the CPU sleep again once nothing is recording or in flight. */
     private fun settle() {
-        if (current == null && recorder == null && stream == null && !live.busy) app.screen.release()
+        if (current == null && recorder == null && stream == null) app.screen.release()
     }
 
     private fun clipDir() = File(app.cacheDir, "clips")
@@ -586,7 +548,5 @@ class TurnController(private val app: App) : Gestures.Listener {
         /** What Hermes is told about this device on every push-to-talk turn. */
         private const val HERMES_DEVICE = " You are the agent behind this Rabbit R1 (robotOS); it relays what the user says and speaks your reply. " +
             "Act on it with your robotos tools, for example to text someone: do what was asked, then say briefly what happened."
-        /** Every other backend talks only; it must never claim to have done something on the device. */
-        internal const val NO_DEVICE_ACTIONS = " You can't send texts or do anything on this device; if asked to, say so plainly."
     }
 }

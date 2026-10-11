@@ -233,7 +233,7 @@ class HomeActivity : Activity(), DictationTarget {
             Phase.DICTATING -> "Dictating… release to insert"
             Phase.TRANSCRIBING -> "Transcribing…"
             Phase.THINKING -> s.note.ifEmpty { "Thinking…" }
-            Phase.ANSWERING -> s.note.ifEmpty { app.store.value.provider.label }
+            Phase.ANSWERING -> s.note.ifEmpty { "Hermes" }
             Phase.SPEAKING -> "Speaking · tap to stop"
             Phase.ERROR -> s.note
         }
@@ -265,7 +265,8 @@ class HomeActivity : Activity(), DictationTarget {
         app.store.loadError?.let { return it }
         val cfg = app.store.value
         return when {
-            cfg.provider.apiKey.isBlank() && cfg.provider.id == "openai" -> getString(R.string.need_key)
+            cfg.agent.baseUrl.isBlank() || cfg.agent.apiKey.isBlank() -> getString(R.string.need_hermes)
+            cfg.missingSpeechKey -> getString(R.string.need_key)
             imeVisible -> "Hold to dictate · tap to send"
             else -> "Hold the side button to talk"
         }

@@ -1,23 +1,19 @@
-# robotOS: push-to-talk firmware for the Rabbit R1
+# robotOS: a push-to-talk remote for Hermes on the Rabbit R1
 
-Turns a Rabbit R1 into a single-purpose push-to-talk terminal for an AI. Hold the side button and
+Turns a Rabbit R1 into a push-to-talk remote for your [Hermes Agent](https://github.com/NousResearch/hermes-agent).
+Hermes is the agent; the R1 listens, speaks, and acts only when Hermes asks. Hold the side button and
 talk; on release, it either sends what you said or types it into the text field:
 
-- **Keyboard closed:** speech-to-speech. Your voice streams to OpenAI's `gpt-live-1`, which answers in
-  voice (about a second after you let go) and hands real thinking, plus web search, to `gpt-6.1-sol`.
-  The text appears on screen too. The voice session opens as soon as the screen wakes and closes when it
-  goes dark; OpenAI bills it by the second while it's open (about $0.05 a minute).
-- **Keyboard open:** dictation. Your words appear in the text field as you speak
-  (`gpt-live-transcribe`), dimmed until you let go, and nothing is sent, so you can edit first.
-  A tap of the button sends it; `gpt-6.1-sol` answers and the reply is read aloud (`gpt-4o-mini-tts`).
+- **Keyboard closed:** your words go to Hermes. They're transcribed as you speak
+  (`gpt-live-transcribe`), sent when you let go, and Hermes's reply is read aloud (`gpt-4o-mini-tts`)
+  and shown on screen.
+- **Keyboard open:** dictation. Your words appear in the text field as you speak, dimmed until you let
+  go, and nothing is sent, so you can edit first. A tap of the button sends it to Hermes.
 
-The backends are ChatGPT (an OpenAI API key, the default), **Hermes Agent**, or any
-other OpenAI-compatible server.
-
-With **Hermes Agent**, the R1 is a remote for your agent: every push-to-talk turn goes to Hermes as
-said, Hermes texts people through the R1 with its `robotos` MCP tools, and texts from your own number
-to the R1 go to Hermes, which texts back. Plugged in, the radios stay up so it is always reachable.
-See [docs/HERMES.md](docs/HERMES.md).
+Hermes acts on the R1 through its `robotos` MCP tools: "text Sam I'm running late" is Hermes texting
+from the R1's SIM. Texts from your own number to the R1 go to Hermes, which texts back. Plugged in,
+the radios stay up so it's always reachable. OpenAI is used only for speech. See
+[docs/HERMES.md](docs/HERMES.md).
 
 robotOS was previously called R1 PTT. Its repository is
 [windoze95/robotOS](https://github.com/windoze95/robotOS). The Android package (`dev.r1ptt`),
@@ -25,9 +21,9 @@ Magisk module ID (`r1ptt_system`), and existing configuration and build filename
 compatibility names.
 
 > **Status: running on a real R1** (LineageOS 21 on Rabbit's September 2026 kernel). The side button,
-> speech-to-speech voice turns and live dictation are verified on the device (final text ~0.4 s after
-> release). Typed replies are built but not yet tried on it, and standby battery drain hasn't been
-> measured ([docs/BATTERY.md](docs/BATTERY.md)).
+> live dictation (final text ~0.4 s after release), push-to-talk and typed turns to Hermes, Hermes
+> texting through the R1, and texting Hermes are verified on the device. Standby battery drain hasn't
+> been measured ([docs/BATTERY.md](docs/BATTERY.md)).
 >
 > The current reliability changes add offline-tested transport/capture limits, interruption isolation and
 > encrypted-save recovery. Its current-build hardware acceptance is pending; the observations above
@@ -84,7 +80,7 @@ Idle time is where a 1000 mAh battery goes.
     keep it awake; carrier-queued delivery after wake is not guaranteed.
 - **The screen stays on only during a turn**, then times out after 15 s at low brightness.
 - **The network is used only when there's work:** a turn (voice streams only while you hold the
-  button, and the live session closes 20 s after a reply), a text to Hermes, or a request from Hermes.
+  button), a text to Hermes, or a request from Hermes.
 
 [docs/BATTERY.md](docs/BATTERY.md) covers the design and how to measure the idle drain.
 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) defines current-build latency, interruption, reconnect,
@@ -93,16 +89,16 @@ the read-only capture and offline analyzer include synthetic fixtures, not hardw
 
 ## Getting started
 
-1. **Try the backend from your Mac first:**
+1. **Check speech from your Mac first:**
    ```sh
-   cp tools/r1ptt.example.json tools/r1ptt.json   # add your OpenAI API key
+   cp tools/r1ptt.example.json tools/r1ptt.json   # set openaiKey
    tools/smoke-test.sh --play
    ```
 2. **Follow [docs/INSTALL.md](docs/INSTALL.md):** unlock (Rabbit's developer mode) → stock baseline →
    LineageOS GSI → Magisk → `tools/provision.sh --config tools/r1ptt.json`.
+3. **Connect Hermes:** `tools/hermes-setup.sh --host you@hermes-host` ([docs/HERMES.md](docs/HERMES.md)).
 
-To make Hermes the agent, run `tools/hermes-setup.sh --host you@hermes-host` ([docs/HERMES.md](docs/HERMES.md));
-for self-hosted speech, see [server/speaches.md](server/speaches.md).
+For self-hosted speech instead of OpenAI, see [server/speaches.md](server/speaches.md).
 
 ## Repo layout
 
@@ -110,7 +106,7 @@ for self-hosted speech, see [server/speaches.md](server/speaches.md).
 app/                    native Android app (Kotlin, OkHttp + coroutines; Robolectric tests)
 magisk/r1ptt-system/    Magisk module: keylayout + boot-time power settings
 tools/                  build, smoke-test, flash, provision, battery-report scripts
-server/                 Hermes's robotos MCP server, skill and setup script; backend notes (Hermes, Speaches)
+server/                 Hermes's robotos MCP server, skill and setup script; Hermes and Speaches notes
 docs/                   install guide, Hermes remote, messages, battery notes
 ```
 

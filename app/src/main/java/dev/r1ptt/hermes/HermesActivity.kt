@@ -47,8 +47,7 @@ class HermesActivity : Activity() {
         setContentView(ScrollView(this).apply { setBackgroundColor(getColor(R.color.bg)); addView(root) })
         header("Hermes")
         status = text("", 14f, R.color.fg)
-        text(if (cfg.hermesAgent) "Every push-to-talk turn goes to Hermes as said. Hermes texts people through this R1 with its robotos tools."
-            else "Choose Hermes Agent under Settings → Backend to make Hermes the agent.", 13f, R.color.dim)
+        text("Every push-to-talk turn goes to Hermes as said. Hermes texts people through this R1 with its robotos tools.", 13f, R.color.dim)
 
         header("Hermes on this R1")
         act = switch("Let Hermes act on this R1 (send texts, read texts, status)", cfg.hermes.deviceApi)
@@ -81,7 +80,7 @@ class HermesActivity : Activity() {
         val plugged = (registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
         val last = app.deviceApi.lastCall
         return listOf(
-            "Agent: ${if (cfg.hermesAgent) "Hermes · ${runCatching { java.net.URI(cfg.provider.baseUrl).host }.getOrNull() ?: cfg.provider.baseUrl}" else cfg.provider.label}",
+            "Hermes: ${cfg.agent.baseUrl.let { url -> runCatching { java.net.URI(url).host }.getOrNull() ?: url }.ifBlank { "not set up" }}",
             "Hermes access: " + when {
                 !link.deviceApi -> "off"
                 app.deviceApi.listening -> "ready on port ${link.port}"
@@ -89,7 +88,7 @@ class HermesActivity : Activity() {
             },
             "Last reached by Hermes: ${if (last == 0L) "not since robotOS started" else DateUtils.getRelativeTimeSpanString(last)}",
             "Texts Hermes sent today: ${app.deviceApi.sentToday()}" + if (link.dailySendLimit > 0) " of ${link.dailySendLimit}" else "",
-            "Your texts to Hermes: ${if (link.passthrough && cfg.hermesAgent) "on · ${app.hermesTexts.last}" else "off"}",
+            "Your texts to Hermes: ${if (link.passthrough) "on · ${app.hermesTexts.last}" else "off"}",
             if (plugged) "On external power: radios stay up" else "On battery: radios sleep 3 minutes after the screen goes dark",
         ).joinToString("\n")
     }
