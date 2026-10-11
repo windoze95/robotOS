@@ -1,9 +1,14 @@
 # Daily use
 
-robotOS uses native Android controls, a warm charcoal background, soft white text and restrained
-orange accents. App controls avoid blue and blue-gray. Text size is adjustable under **Settings →
-Display & controls**; long replies remain selectable. The palette is a readability choice, not a
-measured battery improvement.
+robotOS uses black glass, warm white type and the R1's high-vis orange for whatever is live or
+primary; errors use a distinct rose so they never read as the accent. App controls avoid blue and
+blue-gray. Headings use Space Grotesk and status labels JetBrains Mono (both bundled, SIL OFL).
+
+Android runs at 190 dpi so its own screens fit, which made robotOS small on the 2.88-inch panel
+(about 278 ppi). robotOS now lays itself out on a 300 dp canvas instead: type and touch targets keep
+their intended size, and every control is at least 48 dp, about 7 mm. Android's own screens and
+the keyboard are unchanged. Text size is adjustable under **Settings → Display & controls**; long
+replies remain selectable. The palette is a readability choice, not a measured battery improvement.
 
 ## Home and chats
 
@@ -14,13 +19,22 @@ measured battery improvement.
   after Hermes accepts the request. A changed draft is preserved.
 - Incoming text follows the bottom only while you are reading there. Scroll upward to keep your
   place; **Latest** returns to the newest text.
-- **Menu → Read last reply** reads a completed reply aloud. **Stop speech** stops playback.
-- The battery control opens **Quick controls**. The menu also opens Messages, Hermes and Settings.
+- Holding the button for Hermes floods the screen orange: your words as they are heard, a level
+  meter, a timer and an arrow toward the button. It clears when you let go.
+- While Hermes works or speaks, the text field becomes one large **Stop speech**, **Stop task** or
+  **Disconnect** button. The keyboard button beside it still lets you type.
+- A line above the text field says what the R1 is doing: dictation, speech, errors and setup.
+  When it names a fix (Settings, microphone access, Wi-Fi), tap it.
+- The menu is a full-screen grid: **New chat**, **Chats**, **Read reply**, **Messages**, **Hermes**
+  and **Settings**. **Read reply** reads the last completed reply aloud.
+- The battery readout opens **Quick controls**. A Wi-Fi mark appears in it only while offline;
+  the fill turns orange while charging.
 - Notices sent with Hermes's `show` tool appear on Home and can be dismissed. They do not replace
   the conversation or wake the display.
 
 The wheel scrolls the visible page or dialog. While audio is actually playing, or the speech
-volume slider is selected, it adjusts speech volume. This also works when speech starts before a
+volume slider is selected, it adjusts speech volume; during playback a readout appears at the
+screen's right edge, beside the wheel. This also works when speech starts before a
 legacy streamed reply finishes. Outside robotOS, Android's existing wheel behavior is unchanged.
 
 ## Quick controls
@@ -103,6 +117,13 @@ That APK's SHA-256 is `f3e3cd216060fd1b6a043295136f785bdbd5784c39a7be77e802f1fee
 It is an unpublished acceptance build, not an official tagged release. Its full local Android
 suite passed 234 tests with debug/release build and lint coverage; the MCP/setup suite passed
 15 tests and the Node acceptance/release suite passed 15 tests.
+
+The redesigned interface is covered by Robolectric snapshots rendered at the R1's 480×640,
+190 dpi geometry (`ScreensSnapshotTest`, written to `app/build/ui-snapshots/`). On 2026-10-11 a
+local `0.3.6-luminous-dev` build was installed over the existing app on an R1 with the same
+signing certificate; existing chats survived, and Home, the menu, Quick controls and Settings
+rendered as in the snapshots. Button holds, playback and the keyboard have not yet been exercised
+with this build.
 
 Actual wheel/button handling, audible interruption, reboot/reconnect recovery, approval review
 and carrier behavior still need physical acceptance. Automated recovery and input tests do not

@@ -17,18 +17,73 @@
         <item name="android:colorControlHighlight">@color/press</item>
         <item name="android:colorButtonNormal">@color/field</item>
         <item name="android:alertDialogTheme">@style/Theme.R1.Dialog</item>
-        <item name="android:fontFamily">sans</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:windowLightNavigationBar">false</item>
     </style>
+
     <style name="Theme.R1.Dialog" parent="@android:style/Theme.Material.Dialog.Alert">
+        <item name="android:windowBackground">@drawable/dialog_surface</item>
         <item name="android:colorBackground">@color/field</item>
         <item name="android:colorBackgroundFloating">@color/field</item>
+        <item name="android:backgroundDimAmount">0.82</item>
         <item name="android:colorAccent">@color/accent</item>
         <item name="android:textColorPrimary">@color/fg</item>
         <item name="android:textColorSecondary">@color/dim</item>
+        <item name="android:textColorAlertDialogListItem">@color/fg</item>
         <item name="android:textColorHighlight">@color/press</item>
         <item name="android:colorControlNormal">@color/dim</item>
         <item name="android:colorControlActivated">@color/accent</item>
+        <item name="android:colorControlHighlight">@color/press</item>
+        <item name="android:windowTitleStyle">@style/R1.DialogTitle</item>
+        <item name="android:textAppearanceListItemSmall">@style/R1.Text.ListItem</item>
+        <item name="android:listPreferredItemHeightSmall">56dp</item>
+        <item name="android:dialogPreferredPadding">20dp</item>
+        <item name="android:buttonBarButtonStyle">@style/R1.DialogButton</item>
+        <item name="android:buttonBarNeutralButtonStyle">@style/R1.DialogButton</item>
+        <item name="android:buttonBarNegativeButtonStyle">@style/R1.DialogButton</item>
+        <item name="android:buttonBarPositiveButtonStyle">@style/R1.DialogButton.Primary</item>
+        <item name="android:windowMinWidthMajor">92%</item>
+        <item name="android:windowMinWidthMinor">92%</item>
+    </style>
+
+    <style name="R1.DialogTitle" parent="">
+        <item name="android:maxLines">2</item>
+        <item name="android:scrollHorizontally">false</item>
+        <item name="android:textAppearance">@style/R1.Text.DialogTitle</item>
+    </style>
+
+    <style name="R1.Text.DialogTitle" parent="@android:style/TextAppearance.Material.DialogWindowTitle">
+        <item name="android:fontFamily">@font/display</item>
+        <item name="android:textFontWeight">700</item>
+        <item name="android:textSize">21sp</item>
+        <item name="android:textColor">@color/fg</item>
+    </style>
+
+    <style name="R1.Text.ListItem" parent="@android:style/TextAppearance.Material.Subhead">
+        <item name="android:fontFamily">@font/display</item>
+        <item name="android:textFontWeight">500</item>
+        <item name="android:textSize">18sp</item>
+        <item name="android:textColor">@color/fg</item>
+    </style>
+
+    <style name="R1.DialogButton" parent="@android:style/Widget.Material.Button.Borderless">
+        <item name="android:textColor">@color/dialog_button_text</item>
+        <item name="android:fontFamily">@font/display</item>
+        <item name="android:textFontWeight">700</item>
+        <item name="android:textSize">17sp</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:maxLines">2</item>
+        <item name="android:minWidth">64dp</item>
+        <item name="android:minHeight">52dp</item>
+        <item name="android:paddingStart">16dp</item>
+        <item name="android:paddingEnd">16dp</item>
+    </style>
+
+    <style name="R1.DialogButton.Primary">
+        <item name="android:textColor">@color/primary_button_text</item>
+        <item name="android:background">@drawable/button_primary</item>
+        <item name="android:layout_marginStart">6dp</item>
+        <item name="android:paddingStart">20dp</item>
+        <item name="android:paddingEnd">20dp</item>
     </style>
 </resources>

@@ -7,8 +7,9 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
-import android.widget.LinearLayout
-import android.widget.Toast
+import android.text.SpannableStringBuilder
+import android.text.style.ForegroundColorSpan
+import android.widget.CompoundButton
 import dev.r1ptt.data.Config
 import dev.r1ptt.data.ConfigPersistenceException
 import dev.r1ptt.power.DeviceSettings
@@ -28,12 +29,21 @@ class QuickControlsActivity : DeviceActivity() {
         setContentView(page.root)
         wheelScrollTarget = page.scroll
         val body = page.body
-        val level = getSystemService(BatteryManager::class.java).getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-        val network = if (app.radio.isOnline()) "Network available" else "Offline"
-        body.addView(ui.text(if (level in 0..100) "$level% battery   $network" else network, 14f, true))
-        body.addView(ui.section("Display"))
+        body.addView(ui.mono("", R.color.fg, 13f, 700).apply {
+            text = readout()
+            setPadding(ui.dp(4), 0, 0, ui.dp(12))
+        })
+        body.addView(ui.grid(listOf(
+            tile("Quiet mode", R.drawable.ic_quiet, cfg.quiet) { on -> save { it.copy(quiet = on) }.also { if (it && on) app.turns.stopSpeech() } },
+            tile("Speak replies", R.drawable.ic_wave, cfg.tts.enabled) { on -> save { it.copy(tts = it.tts.copy(enabled = on)) }.also { if (it && !on) app.turns.stopSpeech() } },
+            tile("Stay reachable", R.drawable.ic_reach, cfg.power.reachableOnBattery) { on -> save(radio = true) { it.copy(power = it.power.withReachability(on)) } },
+            ui.navTile("Wi-Fi", R.drawable.ic_wifi, "Android Wi-Fi settings") {
+                runCatching { startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }.onFailure { showToast("Wi-Fi settings unavailable") }
+            },
+        ), height = 96))
+        body.addView(ui.note("Stay reachable keeps radios on while on battery. Pocket mode lets them sleep."))
         val brightness = ui.slider("Brightness", SettingsActivity.brightnessPercent(cfg.power.brightness) - 1, 99,
-            format = { "${it + 1}%" }, onPreview = { percent ->
+            format = { "${it + 1}%" }, icon = R.drawable.ic_sun, onPreview = { percent ->
                 window.attributes = window.attributes.apply { screenBrightness = ((percent * 254 / 99) + 1) / 255f }
             }, onCommit = { percent ->
                 pendingBrightness = (percent * 254 / 99) + 1
@@ -43,16 +53,12 @@ class QuickControlsActivity : DeviceActivity() {
         body.addView(brightness.root)
         val audio = getSystemService(AudioManager::class.java)
         val volume = ui.slider("Speech volume", audio.getStreamVolume(AudioManager.STREAM_MUSIC), audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC),
+            icon = R.drawable.ic_speaker,
             onPreview = { audio.setStreamVolume(AudioManager.STREAM_MUSIC, it, 0) }, onCommit = { audio.setStreamVolume(AudioManager.STREAM_MUSIC, it, 0) })
         body.addView(volume.root)
         wheelVolumeTarget = volume.seek
-        toggle(body, "Quiet mode", cfg.quiet) { on -> save { it.copy(quiet = on) }.also { if (it && on) app.turns.stopSpeech() } }
-        toggle(body, "Speak replies", cfg.tts.enabled) { on -> save { it.copy(tts = it.tts.copy(enabled = on)) }.also { if (it && !on) app.turns.stopSpeech() } }
-        toggle(body, "Stay reachable", cfg.power.reachableOnBattery) { on -> save(radio = true) { it.copy(power = it.power.withReachability(on)) } }
-        body.addView(ui.text("Stay reachable keeps radios on while on battery. Pocket mode lets them sleep.", 14f, true))
-        body.addView(ui.row(ui.button("Wi-Fi") {
-            runCatching { startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }.onFailure { toast("Wi-Fi settings unavailable") }
-        }, ui.button("Sleep") { flushBrightness(); app.screen.sleepNow() }))
+        body.addView(ui.note("Select a slider to adjust it with the wheel."))
+        body.addView(ui.button("Sleep", primary = true) { flushBrightness(); app.screen.sleepNow() })
     }
 
     override fun onPause() {
@@ -62,17 +68,31 @@ class QuickControlsActivity : DeviceActivity() {
         super.onPause()
     }
 
+    /** Battery, charge and network at a glance, read once when the screen opens. */
+    private fun readout(): CharSequence {
+        val battery = getSystemService(BatteryManager::class.java)
+        val level = battery.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+        val online = app.radio.isOnline()
+        return SpannableStringBuilder().apply {
+            if (level in 0..100) append("$level% battery", ForegroundColorSpan(getColor(if (level <= 15) R.color.error else R.color.fg)), 0)
+            if (battery.isCharging) append("  ·  charging", ForegroundColorSpan(getColor(R.color.accent)), 0)
+            if (isNotEmpty()) append("  ·  ")
+            append(if (online) "online" else "offline", ForegroundColorSpan(getColor(if (online) R.color.ok else R.color.dim)), 0)
+        }
+    }
+
     private fun flushBrightness() {
         val value = pendingBrightness ?: return
         pendingBrightness = null
         if (!save(device = true) { it.copy(power = it.power.copy(brightness = value)) }) window.attributes = window.attributes.apply { screenBrightness = -1f }
     }
 
-    private fun toggle(body: LinearLayout, label: String, checked: Boolean, save: (Boolean) -> Boolean) {
+    /** A tile that reverts itself when its setting could not be saved. */
+    private fun tile(label: String, glyph: Int, checked: Boolean, save: (Boolean) -> Boolean): CompoundButton {
         var changing = false
-        val control = ui.toggle(label, checked)
-        control.setOnCheckedChangeListener { _, on -> if (!changing && !save(on)) { changing = true; control.isChecked = !on; changing = false } }
-        body.addView(control)
+        return ui.tile(label, glyph, checked).apply {
+            setOnCheckedChangeListener { control, on -> if (!changing && !save(on)) { changing = true; control.isChecked = !on; changing = false } }
+        }
     }
 
     private fun save(device: Boolean = false, radio: Boolean = false, update: (Config) -> Config): Boolean = try {
@@ -80,7 +100,5 @@ class QuickControlsActivity : DeviceActivity() {
         if (device) DeviceSettings.apply(next)
         if (radio) app.radio.applyBaseline()
         true
-    } catch (e: ConfigPersistenceException) { toast(e.message ?: "Settings could not be saved"); false }
-
-    private fun toast(text: String) { Toast.makeText(this, text, Toast.LENGTH_LONG).show() }
+    } catch (e: ConfigPersistenceException) { showToast(e.message ?: "Settings could not be saved"); false }
 }

@@ -11,6 +11,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Button
+import android.widget.CompoundButton
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -85,7 +86,7 @@ class DeviceUiActivityTest {
     @Test fun quietModeKeepsTheUsersSpeechAndEarconPreferences() {
         val controller = Robolectric.buildActivity(QuickControlsActivity::class.java).setup()
         val activity = controller.get()
-        all(activity.window.decorView).filterIsInstance<Switch>().single { it.text == "Quiet mode" }.isChecked = true
+        all(activity.window.decorView).filterIsInstance<CompoundButton>().single { it.text == "Quiet mode" }.isChecked = true
         assertTrue(app.store.value.quiet)
         assertTrue(app.store.value.tts.enabled)
         assertTrue(app.store.value.earcons)
@@ -95,7 +96,7 @@ class DeviceUiActivityTest {
     @Test fun quickControlsShowsLegacyNeverSleepAsReachableAndTurningItOffWorks() {
         app.store.update { it.copy(power = it.power.copy(wifiIdleMinutes = 0, stayReachable = false)) }
         val controller = Robolectric.buildActivity(QuickControlsActivity::class.java).setup()
-        val control = all(controller.get().window.decorView).filterIsInstance<Switch>().single { it.text == "Stay reachable" }
+        val control = all(controller.get().window.decorView).filterIsInstance<CompoundButton>().single { it.text == "Stay reachable" }
         assertTrue(control.isChecked)
         control.isChecked = false
         assertFalse(app.store.value.power.reachableOnBattery)
@@ -155,14 +156,15 @@ class DeviceUiActivityTest {
         activity.wheelScrollTarget = scroll
         val audio = activity.getSystemService(AudioManager::class.java)
         audio.setStreamVolume(AudioManager.STREAM_MUSIC, 3, 0)
+        val step = (48 * activity.resources.displayMetrics.density + .5f).toInt()
         assertTrue(activity.handleWheel(wheel(up = false)))
-        assertEquals(48, scroll.scrollY)
+        assertEquals(step, scroll.scrollY)
         assertEquals(3, audio.getStreamVolume(AudioManager.STREAM_MUSIC))
         val owner = Any()
         AudioPlayback.started(owner)
         try {
             assertTrue(activity.handleWheel(wheel(up = true)))
-            assertEquals(48, scroll.scrollY)
+            assertEquals(step, scroll.scrollY)
             assertEquals(4, audio.getStreamVolume(AudioManager.STREAM_MUSIC))
         } finally { AudioPlayback.stopped(owner) }
         assertFalse(WheelPolicy.isWheel(KeyEvent.KEYCODE_VOLUME_UP, 0, "External keyboard"))
@@ -180,11 +182,12 @@ class DeviceUiActivityTest {
         content.layout(0, 0, 404, 463)
         val scroll = all(content).filterIsInstance<ScrollView>().single()
         assertTrue(scroll.canScrollVertically(1))
-        all(content).filterIsInstance<Button>().forEach { assertTrue("${it.text} touch height", it.height >= 48) }
-        all(content).filterIsInstance<Switch>().forEach { assertTrue("${it.text} touch height", it.height >= 48) }
+        val target = 48 * activity.resources.displayMetrics.density
+        all(content).filterIsInstance<Button>().forEach { assertTrue("${it.text} touch height", it.height >= target) }
+        all(content).filterIsInstance<CompoundButton>().forEach { assertTrue("${it.text} touch height", it.height >= target) }
         scroll.fullScroll(View.FOCUS_DOWN)
         val sleep = all(content).filterIsInstance<Button>().single { it.text == "Sleep" }
-        assertTrue(sleep.width >= 48)
+        assertTrue(sleep.width >= target)
         val bitmap = Bitmap.createBitmap(404, 463, Bitmap.Config.ARGB_8888)
         content.draw(Canvas(bitmap))
         File("build/device-ui/quick-controls-large.png").apply { requireNotNull(parentFile).mkdirs() }.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }

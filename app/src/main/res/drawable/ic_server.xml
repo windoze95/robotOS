@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated line icon: 24 dp, 2 dp round strokes, white; tinted where used. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#00000000" android:strokeColor="#FFFFFFFF" android:strokeWidth="2"
+        android:strokeLineCap="round" android:strokeLineJoin="round"
+        android:pathData="M6,4 H18 A2,2 0 0 1 20,6 V9 A2,2 0 0 1 18,11 H6 A2,2 0 0 1 4,9 V6 A2,2 0 0 1 6,4 Z M6,13 H18 A2,2 0 0 1 20,15 V18 A2,2 0 0 1 18,20 H6 A2,2 0 0 1 4,18 V15 A2,2 0 0 1 6,13 Z M7.5,7.5 H7.51 M7.5,16.5 H7.51" />
+</vector>

@@ -56,7 +56,7 @@ The R1 is an Android 13 phone underneath (MediaTek MT6765). The firmware is four
 | **Scroll wheel** | Scroll the visible page; volume during speech or with its slider selected. | Scroll the visible page; volume during speech or with its slider selected. |
 
 Tap the text field to bring up the keyboard. The chat title opens saved **Chats**, the battery
-control opens **Quick controls**, and the menu opens **Messages**, **Hermes** and **Settings**.
+readout opens **Quick controls**, and the menu opens **Messages**, **Hermes** and **Settings**.
 While an approval review is open, button gestures cannot approve it or replace the pending task.
 
 **Menu → Messages** opens the one-to-one SMS handler for texts you write yourself: drafts,

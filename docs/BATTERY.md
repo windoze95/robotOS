@@ -17,8 +17,9 @@ Hermes access and SMS relay still need their own settings ([HERMES.md](HERMES.md
 powered soak and matched unplugged comparisons remain to be measured.
 
 **Quiet mode** stops and mutes speech and feedback sounds. It does not change radio policy.
-The warm charcoal UI is designed for reading comfort. Battery improvements must be established
-by backlight, active-time, radio and background-work measurements.
+The black-and-orange UI is designed for reading comfort; its animations run only while the R1 is
+listening, working or speaking. Battery improvements must be established by backlight,
+active-time, radio and background-work measurements.
 
 ## What robotOS does
 

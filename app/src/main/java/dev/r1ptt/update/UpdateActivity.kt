@@ -35,11 +35,13 @@ class UpdateActivity : DeviceActivity() {
         setContentView(page.root)
         wheelScrollTarget = page.scroll
         val root = page.body
-        fun button(text: String, primary: Boolean = false, action: () -> Unit) = ui.button(text, primary, action).also(root::addView)
-        root.addView(ui.text("Installed", 14f, true))
-        root.addView(ui.text("robotOS ${updates.installedVersion()}", 20f))
-        status = ui.text("").apply { setPadding(0, ui.dp(20), 0, ui.dp(20)); root.addView(this) }
-        release = ui.text("", 14f, true).apply { setPadding(0, 0, 0, ui.dp(16)); root.addView(this) }
+        fun button(text: String, primary: Boolean = false, action: () -> Unit) = ui.button(text, primary, action = action).also(root::addView)
+        root.addView(ui.card().apply {
+            addView(ui.mono("Installed", R.color.accent))
+            addView(ui.title("robotOS ${updates.installedVersion()}", 26f).apply { setPadding(0, ui.dp(4), 0, 0) })
+        })
+        status = ui.text("", 18f).apply { setPadding(ui.dp(4), ui.dp(16), ui.dp(4), ui.dp(12)); root.addView(this) }
+        release = ui.mono("", R.color.dim, 13f, 500).apply { setPadding(ui.dp(4), 0, 0, ui.dp(16)); root.addView(this) }
         check = button("Check for updates", primary = true) { updates.check() }
         download = button("Download update", primary = true) { updates.download() }
         install = button("Install update", primary = true) {
@@ -70,7 +72,7 @@ class UpdateActivity : DeviceActivity() {
                     .onFailure { status.text = "No browser is available to open release notes." }
             }
         }
-        root.addView(ui.text("Updates are checked only when you ask. Downloads stop when you leave this screen.", 14f, true))
+        root.addView(ui.note("Updates are checked only when you ask. Downloads stop when you leave this screen."))
         render(updates.state.value)
     }
 

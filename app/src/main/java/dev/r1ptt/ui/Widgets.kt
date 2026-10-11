@@ -1,0 +1,411 @@
+package dev.r1ptt.ui
+
+import android.animation.ValueAnimator
+import android.annotation.SuppressLint
+import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.ColorFilter
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.PixelFormat
+import android.graphics.RectF
+import android.graphics.Typeface
+import android.graphics.drawable.Drawable
+import android.graphics.drawable.GradientDrawable
+import android.util.AttributeSet
+import android.view.Gravity
+import android.view.View
+import android.view.ViewAnimationUtils
+import android.view.animation.DecelerateInterpolator
+import android.view.animation.LinearInterpolator
+import android.widget.CheckBox
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.TextView
+import dev.r1ptt.R
+import kotlin.math.PI
+import kotlin.math.hypot
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.sin
+import kotlin.math.sqrt
+
+/** The two bundled faces (SIL OFL 1.1, see licenses/): Space Grotesk for display, JetBrains Mono for labels. */
+object Fonts {
+    private val cache = HashMap<Long, Typeface>()
+    fun display(context: Context, weight: Int = 600): Typeface = get(context, R.font.display, weight)
+    fun mono(context: Context, weight: Int = 700): Typeface = get(context, R.font.mono, weight)
+
+    @Synchronized private fun get(context: Context, family: Int, weight: Int): Typeface =
+        cache.getOrPut(family.toLong() shl 16 or weight.toLong()) {
+            val base = runCatching { context.resources.getFont(family) }.getOrNull() ?: Typeface.DEFAULT
+            Typeface.create(base, weight, false)
+        }
+}
+
+private fun View.px(dp: Float) = dp * resources.displayMetrics.density
+
+/** Microphone level history as rounded bars, newest last. Redraws only when a level is pushed. */
+class LevelBars @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : View(context, attrs) {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK }
+    private var levels = FloatArray(28)
+    private var head = 0
+    private val bar = RectF()
+    var color: Int
+        get() = paint.color
+        set(value) { paint.color = value; invalidate() }
+    var bars: Int
+        get() = levels.size
+        set(value) { levels = FloatArray(value.coerceAtLeast(2)); head = 0; invalidate() }
+
+    fun push(level: Float) {
+        levels[head] = (sqrt(level.coerceIn(0f, 1f)) * 1.7f).coerceAtMost(1f)
+        head = (head + 1) % levels.size
+        invalidate()
+    }
+
+    fun reset() { levels.fill(0f); head = 0; invalidate() }
+
+    override fun onDraw(canvas: Canvas) {
+        val n = levels.size
+        val step = width / (n - .35f)
+        val w = step * .62f
+        val mid = height / 2f
+        for (i in 0 until n) {
+            val h = max(w, levels[(head + i) % n] * height)
+            val x = i * step
+            bar.set(x, mid - h / 2, x + w, mid + h / 2)
+            canvas.drawRoundRect(bar, w / 2, w / 2, paint)
+        }
+    }
+}
+
+/** Three dots for "working" or four bars for "speaking". Moves only while it is actually shown. */
+class PulseView @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : View(context, attrs) {
+    enum class Mode { DOTS, BARS }
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val shape = RectF()
+    private val animator = ValueAnimator.ofFloat(0f, 1f).apply {
+        duration = 1200
+        repeatCount = ValueAnimator.INFINITE
+        interpolator = LinearInterpolator()
+        addUpdateListener { invalidate() }
+    }
+    var mode = Mode.DOTS
+        set(value) { field = value; invalidate() }
+    var color: Int
+        get() = paint.color
+        set(value) { paint.color = value; invalidate() }
+
+    init { paint.color = context.getColor(R.color.accent) }
+
+    override fun onVisibilityAggregated(isVisible: Boolean) {
+        super.onVisibilityAggregated(isVisible)
+        if (isVisible && !animator.isStarted) animator.start() else if (!isVisible) animator.cancel()
+    }
+
+    override fun onDetachedFromWindow() { animator.cancel(); super.onDetachedFromWindow() }
+
+    override fun onDraw(canvas: Canvas) {
+        val t = if (animator.isRunning) animator.animatedValue as Float else .25f
+        if (mode == Mode.DOTS) {
+            val r = min(height / 2f, width / 9f)
+            val gap = (width - 6 * r) / 2f
+            for (i in 0..2) {
+                val wave = sin(PI * ((t - i * .16f + 1f) % 1f)).toFloat().let { it * it }
+                paint.alpha = (90 + 165 * wave).toInt()
+                canvas.drawCircle(r + i * (2 * r + gap), height / 2f, r * (.62f + .38f * wave), paint)
+            }
+            paint.alpha = 255
+        } else {
+            val w = width / 6.5f
+            for (i in 0..3) {
+                val wave = (sin(2 * PI * (t + i * .27f)) * .5 + .5).toFloat()
+                val h = height * (.28f + .72f * wave)
+                val x = i * w * 1.8f
+                shape.set(x, (height - h) / 2, x + w, (height + h) / 2)
+                canvas.drawRoundRect(shape, w / 2, w / 2, paint)
+            }
+        }
+    }
+}
+
+/** Battery charge as a filled outline with the percentage printed inside it. */
+class BatteryGlyph(context: Context) : Drawable() {
+    private val density = context.resources.displayMetrics.density
+    private val fg = context.getColor(R.color.fg)
+    private val ink = context.getColor(R.color.on_accent)
+    private val charge = context.getColor(R.color.accent)
+    private val low = context.getColor(R.color.error)
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val digits = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = Fonts.mono(context, 800)
+        textAlign = Paint.Align.CENTER
+        textSize = 11.5f * density
+    }
+    private val rect = RectF()
+    var percent = -1
+    var charging = false
+
+    override fun getIntrinsicWidth() = (38 * density).toInt()
+    override fun getIntrinsicHeight() = (20 * density).toInt()
+
+    override fun draw(canvas: Canvas) {
+        val b = bounds
+        val nub = 2.6f * density
+        val stroke = 1.5f * density
+        val radius = 6f * density
+        val right = b.right - nub - 1.2f * density
+        val inset = stroke + 1.6f * density
+        val level = percent.coerceIn(0, 100)
+        val fillEnd = b.left + inset + (right - b.left - 2 * inset) * level / 100f
+        paint.style = Paint.Style.FILL
+        paint.color = when { charging -> charge; percent in 0..15 -> low; else -> fg }
+        if (percent >= 0) canvas.drawRoundRect(b.left + inset, b.top + inset, fillEnd, b.bottom - inset, radius - inset, radius - inset, paint)
+        val label = if (percent < 0) "–" else "$percent"
+        val baseline = b.exactCenterY() - (digits.descent() + digits.ascent()) / 2
+        val middle = (b.left + right) / 2
+        canvas.save()
+        canvas.clipRect(fillEnd, b.top.toFloat(), right, b.bottom.toFloat())
+        digits.color = fg
+        canvas.drawText(label, middle, baseline, digits)
+        canvas.restore()
+        canvas.save()
+        canvas.clipRect(b.left.toFloat(), b.top.toFloat(), fillEnd, b.bottom.toFloat())
+        digits.color = ink
+        canvas.drawText(label, middle, baseline, digits)
+        canvas.restore()
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = stroke
+        paint.color = fg
+        paint.alpha = 150
+        rect.set(b.left + stroke / 2, b.top + stroke / 2, right - stroke / 2, b.bottom - stroke / 2)
+        canvas.drawRoundRect(rect, radius, radius, paint)
+        paint.style = Paint.Style.FILL
+        rect.set(b.right - nub, b.top + b.height() * .34f, b.right.toFloat(), b.bottom - b.height() * .34f)
+        canvas.drawRoundRect(rect, nub / 2, nub / 2, paint)
+        paint.alpha = 255
+    }
+
+    override fun setAlpha(alpha: Int) { paint.alpha = alpha }
+    override fun setColorFilter(filter: ColorFilter?) { paint.colorFilter = filter }
+    @Deprecated("Deprecated in Java") override fun getOpacity() = PixelFormat.TRANSLUCENT
+}
+
+/** A vertical volume readout at the screen's right edge, beside the R1's wheel. Fades by itself. */
+class VolumeHud(context: Context) : View(context) {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val shape = RectF()
+    private val icon = context.getDrawable(R.drawable.ic_speaker)!!.mutate()
+    private val number = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = Fonts.mono(context, 800)
+        textAlign = Paint.Align.CENTER
+        textSize = px(14f)
+    }
+    private val hide = Runnable { animate().alpha(0f).setDuration(220).withEndAction { visibility = GONE } }
+    private var level = 0
+    private var max = 1
+
+    init { alpha = 0f; visibility = GONE; importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO }
+
+    fun show(level: Int, max: Int) {
+        this.level = level
+        this.max = max.coerceAtLeast(1)
+        invalidate()
+        removeCallbacks(hide)
+        visibility = VISIBLE
+        animate().cancel()
+        animate().alpha(1f).setDuration(120).start()
+        postDelayed(hide, 1400)
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        val r = width / 2f
+        paint.color = context.getColor(R.color.raised)
+        shape.set(0f, 0f, width.toFloat(), height.toFloat())
+        canvas.drawRoundRect(shape, r, r, paint)
+        val inset = px(5f)
+        val top = px(34f)
+        val track = height - top - inset
+        val fill = track * level / max
+        paint.color = context.getColor(R.color.accent)
+        if (fill > 0) {
+            shape.set(inset, height - inset - max(fill, width - 2 * inset), width - inset, height - inset)
+            canvas.drawRoundRect(shape, r - inset, r - inset, paint)
+        }
+        number.color = context.getColor(R.color.fg)
+        canvas.drawText("$level", width / 2f, px(24f), number)
+        val size = px(22f).toInt()
+        val left = (width - size) / 2
+        val bottom = height - inset.toInt() - px(8f).toInt()
+        icon.setBounds(left, bottom - size, left + size, bottom)
+        icon.setTint(context.getColor(if (fill >= px(30f)) R.color.on_accent else R.color.fg))
+        icon.draw(canvas)
+    }
+
+    override fun onDetachedFromWindow() { removeCallbacks(hide); super.onDetachedFromWindow() }
+}
+
+/** A square toggle: orange when on. It is a [CheckBox] so accessibility announces its state. */
+@SuppressLint("ViewConstructor") // built in code with its icon; never inflated
+class Tile(context: Context, private val glyph: Drawable) : CheckBox(context) {
+    private val state = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = Fonts.mono(context, 800)
+        textSize = px(11f)
+        textAlign = Paint.Align.RIGHT
+        letterSpacing = .08f
+    }
+
+    init {
+        buttonDrawable = null
+        gravity = Gravity.BOTTOM or Gravity.START
+        typeface = Fonts.display(context, 600)
+        setPadding(px(14f).toInt(), px(46f).toInt(), px(12f).toInt(), px(12f).toInt())
+        refreshColors()
+    }
+
+    override fun setChecked(checked: Boolean) {
+        super.setChecked(checked)
+        @Suppress("SENSELESS_COMPARISON") if (state != null) refreshColors()
+    }
+
+    private fun refreshColors() {
+        val on = isChecked
+        setTextColor(context.getColor(if (on) R.color.on_accent else R.color.fg))
+        glyph.setTint(context.getColor(if (on) R.color.on_accent else R.color.accent))
+        state.color = context.getColor(if (on) R.color.on_accent else R.color.faint)
+        invalidate()
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        val size = px(26f).toInt()
+        val left = paddingStart
+        val top = px(14f).toInt()
+        glyph.setBounds(left, top, left + size, top + size)
+        glyph.draw(canvas)
+        canvas.drawText(if (isChecked) "ON" else "OFF", width - px(12f), top + px(11f), state)
+    }
+}
+
+/** A rule ending in an arrowhead at the screen edge: "the button is over here". */
+class EdgeArrow @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : View(context, attrs) {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+        color = context.getColor(R.color.accent)
+    }
+    private val head = Path()
+    var color: Int
+        get() = paint.color
+        set(value) { paint.color = value; invalidate() }
+
+    override fun onDraw(canvas: Canvas) {
+        paint.strokeWidth = px(3f)
+        val y = height / 2f
+        val end = width - px(3f)
+        val size = min(height / 2f - px(2f), px(9f))
+        canvas.drawLine(px(2f), y, end, y, paint)
+        head.reset()
+        head.moveTo(end - size, y - size)
+        head.lineTo(end, y)
+        head.lineTo(end - size, y + size)
+        canvas.drawPath(head, paint)
+    }
+}
+
+/**
+ * Full-screen orange while the button is held for Hermes: live words, a level meter, and an arrow
+ * toward the side button. It floods in from the right edge, where the button is.
+ */
+class VoiceStage @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : FrameLayout(context, attrs) {
+    private val ink = context.getColor(R.color.on_accent)
+    private val title = TextView(context)
+    private val timer = TextView(context)
+    private val words = TextView(context)
+    private val meter = LevelBars(context)
+    private val hint = TextView(context)
+    var showing = false
+        private set
+
+    init {
+        setBackgroundColor(context.getColor(R.color.accent))
+        isClickable = true // touches don't reach the conversation underneath
+        visibility = GONE
+        val column = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(px(20f).toInt(), px(18f).toInt(), px(20f).toInt(), px(18f).toInt())
+        }
+        val top = LinearLayout(context).apply { gravity = Gravity.CENTER_VERTICAL }
+        listOf(title, timer, hint).forEach {
+            it.typeface = Fonts.mono(context, 800)
+            it.textSize = 13f
+            it.letterSpacing = .1f
+            it.setTextColor(ink)
+            it.isAllCaps = true
+        }
+        val dot = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(ink); setSize(px(10f).toInt(), px(10f).toInt()) }
+        title.setCompoundDrawablesRelativeWithIntrinsicBounds(dot, null, null, null)
+        title.compoundDrawablePadding = px(8f).toInt()
+        top.addView(title, LinearLayout.LayoutParams(0, -2, 1f))
+        top.addView(timer)
+        column.addView(top)
+        words.apply {
+            typeface = Fonts.display(context, 600)
+            textSize = 27f
+            setTextColor(ink)
+            setLineSpacing(0f, 1.02f)
+            letterSpacing = -.01f
+            gravity = Gravity.BOTTOM or Gravity.START
+        }
+        column.addView(words, LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = px(12f).toInt() })
+        meter.color = ink
+        column.addView(meter, LinearLayout.LayoutParams(-1, px(64f).toInt()).apply { topMargin = px(16f).toInt(); bottomMargin = px(14f).toInt() })
+        val bottom = LinearLayout(context).apply { gravity = Gravity.CENTER_VERTICAL }
+        bottom.addView(hint, LinearLayout.LayoutParams(-2, -2))
+        bottom.addView(EdgeArrow(context).apply { color = ink },
+            LinearLayout.LayoutParams(0, px(20f).toInt(), 1f).apply { marginStart = px(12f).toInt() })
+        column.addView(bottom)
+        addView(column, LayoutParams(-1, -1))
+    }
+
+    /** Floods in from the right edge. */
+    fun show() {
+        if (showing) return
+        showing = true
+        meter.reset()
+        animate().cancel()
+        alpha = 1f
+        visibility = VISIBLE
+        if (isAttachedToWindow && width > 0) runCatching {
+            ViewAnimationUtils.createCircularReveal(this, width, height / 2, 0f, hypot(width.toFloat(), height.toFloat()))
+                .apply { duration = 260; interpolator = DecelerateInterpolator() }.start()
+        }
+    }
+
+    fun hide() {
+        if (!showing) return
+        showing = false
+        animate().alpha(0f).setDuration(180).withEndAction { if (!showing) visibility = GONE }.start()
+    }
+
+    fun update(heard: String, level: Float, sending: Boolean, elapsedMs: Long) {
+        title.setIfChanged(if (sending) "Sending" else "Listening")
+        hint.setIfChanged(if (sending) "Transcribing" else "Release to send")
+        val seconds = (elapsedMs / 1000).coerceAtLeast(0)
+        timer.setIfChanged("%d:%02d".format(seconds / 60, seconds % 60))
+        val said = heard.trim()
+        words.alpha = if (said.isEmpty()) .5f else 1f
+        words.setIfChanged(when {
+            said.isEmpty() -> if (sending) "…" else "Listening…"
+            said.length > 160 -> "…" + said.takeLast(160).substringAfter(' ')
+            else -> said
+        })
+        if (!sending) meter.push(level)
+    }
+
+    /** Level updates arrive many times a second; only real text changes should cost a layout. */
+    private fun TextView.setIfChanged(value: String) { if (text.toString() != value) text = value }
+}
