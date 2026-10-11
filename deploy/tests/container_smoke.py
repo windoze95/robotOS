@@ -36,9 +36,11 @@ def await_healthy(name, seconds=60):
         if data.get('Health', {}).get('Status') == 'healthy':
             return
         if not data['Running']:
-            raise RuntimeError('Container stopped: ' + name + '\n' + docker('logs', name).stdout[-2000:])
+            logs = docker('logs', name)
+            raise RuntimeError('Container stopped: ' + name + '\n' + (logs.stdout + logs.stderr)[-2000:])
         time.sleep(1)
-    raise RuntimeError('Container did not become healthy: ' + name + '\n' + docker('logs', name).stdout[-2000:])
+    logs = docker('logs', name)
+    raise RuntimeError('Container did not become healthy: ' + name + '\n' + (logs.stdout + logs.stderr)[-2000:])
 
 
 def main():
@@ -63,19 +65,27 @@ def main():
                 '-subj', '/CN=hermes.test', '-addext', 'subjectAltName=DNS:hermes.test,DNS:workspace.test',
                 '-keyout', str(folder / 'key.pem'), '-out', str(folder / 'cert.pem'))
         (folder / 'key.pem').chmod(0o444)
+        def mounts(names, destination):
+            # Mount files exactly like Compose secrets. Mounting the 0700 host
+            # directory itself prevents a different Linux runtime UID reading it.
+            arguments = []
+            for item in names:
+                arguments += ['-v', str(folder / item) + ':' + destination + '/' + item + ':ro']
+            return arguments
+        credentials = mounts(('owner-password', 'owner-token', 'mcp-token', 'hermes-token', 'speech-token', 'cert.pem'), '/run/secrets')
         try:
             docker('network', 'create', network)
             for target in (volume, hermes_volume):
                 docker('volume', 'create', target)
                 volumes.append(target)
             docker('run', '-d', '--name', upstream, '--network', network, '--network-alias', 'hermes.test',
-                   '--network-alias', 'workspace.test', '-v', str(folder) + ':/test:ro',
+                   '--network-alias', 'workspace.test', *mounts(('hermes-token', 'cert.pem', 'key.pem'), '/test'),
                    '-v', str(ROOT / 'deploy/tests/fake_upstream.py') + ':/test-server.py:ro',
                    '--entrypoint', 'python', args.image, '/test-server.py')
             containers.append(upstream)
             common = ['--network', network, '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
                       '--tmpfs', '/tmp:rw,noexec,nosuid,size=16m', '-v', volume + ':/var/lib/robotos',
-                      '-v', str(folder) + ':/run/secrets:ro', '-e', 'ROBOTOS_HUB_BIND=0.0.0.0',
+                      *credentials, '-e', 'ROBOTOS_HUB_BIND=0.0.0.0',
                       '-e', 'ROBOTOS_HUB_ALLOW_REMOTE_BIND=true', '-e', 'ROBOTOS_HUB_PUBLIC_ORIGIN=https://workspace.test:8642',
                       '-e', 'ROBOTOS_HUB_HERMES_URL=https://hermes.test:8642', '-e', 'ROBOTOS_HUB_WORKER_INTERVAL=0.1',
                       '-e', 'SSL_CERT_FILE=/run/secrets/cert.pem']
@@ -135,7 +145,7 @@ def main():
                        '/opt/hermes/.venv/bin/python', args.hermes_image, '-c', seed)
                 docker('run', '-d', '--name', hermes, '--network', network, '--cap-drop', 'ALL',
                        '--security-opt', 'no-new-privileges', '-v', hermes_volume + ':/opt/data',
-                       '-v', str(folder) + ':/run/secrets:ro', '-e', 'ROBOTOS_HUB_URL=https://workspace.test:8642',
+                       *mounts(('mcp-token', 'hermes-token', 'cert.pem'), '/run/secrets'), '-e', 'ROBOTOS_HUB_URL=https://workspace.test:8642',
                        '-e', 'ROBOTOS_HUB_MCP_TOKEN_FILE=/run/secrets/mcp-token',
                        '-e', 'API_SERVER_KEY_FILE=/run/secrets/hermes-token', '-e', 'SSL_CERT_FILE=/run/secrets/cert.pem',
                        args.hermes_image)
