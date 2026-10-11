@@ -4,10 +4,13 @@ import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.BatteryManager
 import android.os.Looper
 import android.view.View
@@ -36,6 +39,8 @@ import dev.r1ptt.hermes.HermesApproval
 import dev.r1ptt.hermes.HermesRun
 import dev.r1ptt.hermes.HermesRunState
 import dev.r1ptt.messages.MessagesActivity
+import dev.r1ptt.messages.SmsRecord
+import dev.r1ptt.messages.SmsStore
 import dev.r1ptt.update.UpdateActivity
 import java.io.File
 import java.time.Duration
@@ -130,7 +135,9 @@ class ScreensSnapshotTest {
         val canvas = Canvas(bitmap)
         canvas.drawColor(Color.BLACK)
         content.draw(canvas)
-        File(out, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        File(out, "$name.png").apply { parentFile!!.mkdirs() }.outputStream().use {
+            assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it))
+        }
         return bitmap
     }
 
@@ -147,6 +154,79 @@ class ScreensSnapshotTest {
     }
 
     private fun all(view: View): List<View> = listOf(view) + if (view is ViewGroup) (0 until view.childCount).flatMap { all(view.getChildAt(it)) } else emptyList()
+
+    /** Public screenshots use only these staged fixtures, never a connected device's data. */
+    @Test fun githubGallery() {
+        configured()
+        val cm = app.getSystemService(ConnectivityManager::class.java)
+        val capabilities = NetworkCapabilities()
+        shadowOf(capabilities).addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        shadowOf(cm).setNetworkCapabilities(cm.activeNetwork, capabilities)
+        assertTrue(app.radio.isOnline())
+        shadowOf(app.getSystemService(BatteryManager::class.java))
+            .setIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY, 82)
+
+        val home = open(HomeActivity::class.java)
+        try {
+            online(home.get())
+            snap(home.get(), "github/home")
+            val request = "Text Sam I'll be there in five minutes."
+            repeat(24) {
+                turn(TurnState(phase = Phase.LISTENING, level = (it % 7) * .05f + .02f, heard = request))
+            }
+            snap(home.get(), "github/listening")
+            turn(TurnState())
+            // Seed the saved transcript directly. This does not ask Hermes or send an SMS.
+            app.history.add(Msg.USER, request)
+            app.history.add(Msg.ASSISTANT, "Sent to Sam: \"I'll be there in five minutes.\"")
+            app.history.rename(app.history.convId, "On my way")
+            settle()
+            snap(home.get(), "github/conversation")
+            home.get().findViewById<View>(R.id.menu).performClick()
+            settle(400)
+            snap(home.get(), "github/menu")
+        } finally { home.pause().stop().destroy() }
+
+        val current = app.history.convId
+        app.history.newConversation()
+        app.history.add(Msg.USER, "What do I need for dinner?")
+        app.history.add(Msg.ASSISTANT, "Pasta, tomatoes, basil and parmesan.")
+        app.history.rename(app.history.convId, "Dinner plans")
+        app.history.select(current)
+        listOf(
+            ChatsActivity::class.java to "chats",
+            QuickControlsActivity::class.java to "quick-controls",
+            SettingsActivity::class.java to "settings",
+        ).forEach { (type, name) ->
+            val controller = open(type)
+            try { snap(controller.get(), "github/$name") }
+            finally { controller.pause().stop().destroy() }
+        }
+
+        shadowOf(app.packageManager).setSystemFeature(PackageManager.FEATURE_TELEPHONY_MESSAGING, true)
+        shadowOf(app).grantPermissions(Manifest.permission.RECEIVE_SMS)
+        app.sms.receiveEnabled = true
+        SmsStore(app).use { db ->
+            listOf(
+                Triple("Sam", "+12025550101", "See you in a few!"),
+                Triple("Alex", "+12025550102", "Coffee tomorrow at 9?"),
+            ).forEachIndexed { index, (name, number, body) ->
+                db.addRecipient(name, number)
+                db.insert(SmsRecord("demo-$index", number, body, System.currentTimeMillis() - index * 60_000L, 1, true))
+            }
+        }
+        val messages = open(MessagesActivity::class.java)
+        try {
+            val deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos()
+            fun loaded(): Boolean {
+                val labels = all(messages.get().window.decorView).map { it.contentDescription?.toString().orEmpty() }
+                return labels.any { it.startsWith("● Sam.") } && labels.any { it.startsWith("● Alex.") }
+            }
+            while (!loaded() && System.nanoTime() < deadline) { settle(); Thread.sleep(5) }
+            assertTrue("Demo message names and threads must finish loading before capture", loaded())
+            snap(messages.get(), "github/messages")
+        } finally { messages.pause().stop().destroy() }
+    }
 
     @Test fun theAppLaysItselfOutForTheR1PanelWithoutChangingAndroid() {
         val r1 = Configuration().apply { densityDpi = 190; smallestScreenWidthDp = 404; screenWidthDp = 404; screenHeightDp = 539 }

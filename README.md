@@ -16,6 +16,18 @@ Separate permissions allow announcements, Home notices, volume changes and saved
 Plugged in, configured radios stay available. OpenAI is used only for speech. See
 [docs/HERMES.md](docs/HERMES.md).
 
+## Screenshots
+
+The app at the R1's 480×640 screen size, rendered with staged demo data.
+
+| Push to talk | Live transcription | Hermes reply |
+|:---:|:---:|:---:|
+| [<img src="docs/screenshots/home.png" width="240" alt="Home screen with hold-to-talk instructions">](docs/screenshots/home.png) | [<img src="docs/screenshots/listening.png" width="240" alt="Live speech transcription on the orange listening screen">](docs/screenshots/listening.png) | [<img src="docs/screenshots/conversation.png" width="240" alt="Example conversation asking Hermes to text Sam">](docs/screenshots/conversation.png) |
+| **Menu** | **Messages** | **Quick controls** |
+| [<img src="docs/screenshots/menu.png" width="240" alt="Menu with chats, messages, Hermes and settings">](docs/screenshots/menu.png) | [<img src="docs/screenshots/messages.png" width="240" alt="SMS inbox with fictional recipients and messages">](docs/screenshots/messages.png) | [<img src="docs/screenshots/quick-controls.png" width="240" alt="Quiet mode, spoken replies and reachability controls">](docs/screenshots/quick-controls.png) |
+
+[All screenshots and capture instructions](docs/screenshots/README.md)
+
 robotOS was previously called R1 PTT. Its repository is
 [windoze95/robotOS](https://github.com/windoze95/robotOS). The Android package (`dev.r1ptt`),
 Magisk module ID (`r1ptt_system`), and existing configuration and build filenames retain their
