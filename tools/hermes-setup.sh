@@ -21,7 +21,8 @@ done
 need adb; need ssh; need rsync; need jq
 
 say "Finding the R1's tailnet address"
-R1=$(adb shell ip -4 addr show tun0 2>/dev/null | awk '/inet /{split($2, a, "/"); print a[1]}' | tr -d '\r')
+# Tailscale's VPN interface is tun0 or tun1 depending on how often it has reconnected.
+R1=$(adb shell ip -4 addr 2>/dev/null | awk '/^[0-9]+: tun/{tun=1; next} /^[0-9]+:/{tun=0} tun && /inet /{split($2, a, "/"); print a[1]; exit}' | tr -d '\r')
 [ -n "$R1" ] || die "The R1 has no tailnet address. Open its Tailscale app, sign in to your tailnet, and allow the VPN."
 
 say "Setting up Hermes on $HOST (approve any Tailscale link it prints)"
