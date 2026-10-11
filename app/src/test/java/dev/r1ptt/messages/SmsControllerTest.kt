@@ -116,7 +116,6 @@ class SmsControllerTest {
     @Test fun incomingOptInDefaultsOffEvenWhenAndroidPermissionExists() {
         shadowOf(app).grantPermissions(Manifest.permission.RECEIVE_SMS)
         assertFalse(controller.receiveEnabled)
-        assertFalse(app.smsAssistant.enabled)
     }
 
     @Test fun manifestProtectsDeliveryAndHasNoExportedSendAction() {

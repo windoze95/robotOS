@@ -19,8 +19,6 @@ import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
 import dev.r1ptt.App
 import dev.r1ptt.R
-import dev.r1ptt.OutcomeStatus
-import dev.r1ptt.OutcomeReason
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.security.MessageDigest
@@ -126,7 +124,7 @@ class SmsController(
     }
 
     /** Preparation is local. The only transport call is in send(). */
-    fun prepare(draft: SmsDraft, outcomeId: String? = null): SmsReview {
+    fun prepare(draft: SmsDraft): SmsReview {
         check(canSend) { "Enable SMS sending first." }
         check(cellularEnabled()) { "Turn on Use cellular data (SIM) in robotOS settings first." }
         val peer = requireNotNull(SmsAddress.normalize(draft.peer)) { "Enter one phone number, including its country code when needed." }
@@ -140,7 +138,7 @@ class SmsController(
         val carrier = runCatching { app.getSystemService(TelephonyManager::class.java).createForSubscriptionId(sub).networkOperatorName }
             .getOrNull().orEmpty()
         val label = listOfNotNull("Default SMS SIM", if (slot >= 0) "slot ${slot + 1}" else null, carrier.takeIf { it.isNotBlank() }).joinToString(" · ")
-        return SmsReview(draft, SmsRecord.outgoing(peer, body, sub, texts.size, System.currentTimeMillis()).copy(assistantOutcomeId = outcomeId), texts, label)
+        return SmsReview(draft, SmsRecord.outgoing(peer, body, sub, texts.size, System.currentTimeMillis()), texts, label)
     }
 
     /**
@@ -174,7 +172,6 @@ class SmsController(
                 val sent = ArrayList(record.parts.indices.map { callback(record, it, false) })
                 val delivered = ArrayList(record.parts.indices.map { callback(record, it, true) })
                 transport.send(record, review.texts, sent, delivered)
-                record.assistantOutcomeId?.let { app.outcomes.update(it, OutcomeStatus.HANDOFF) }
                 changed()
                 main.post { done(true, "Sending…") }
             } catch (_: SecurityException) {
@@ -187,7 +184,6 @@ class SmsController(
                 // A binder/transport exception after persistence may have happened after handoff.
                 // Leave that attempt uncertain; never report it as safely retryable.
                 changed()
-                review.record.assistantOutcomeId?.let { app.outcomes.update(it, if (persisted) OutcomeStatus.SMS_UNKNOWN else OutcomeStatus.FAILED, OutcomeReason.UNAVAILABLE) }
                 main.post { done(persisted, if (persisted) "Send status is uncertain. Check with the recipient before trying again." else "The text could not be saved, so it was not sent.") }
             } finally { dispatching = false }
         }
@@ -195,7 +191,7 @@ class SmsController(
 
     private fun failBeforeSend(record: SmsRecord, source: String) {
         record.parts.indices.forEach { part -> db.update(SmsCallback(record.id, record.token, part, false)) { it.sent(part, false, SmsManager.RESULT_ERROR_GENERIC_FAILURE, source = source) } }
-        db.record(record.id)?.let { syncSystem(it); outcome(it) }
+        db.record(record.id)?.let(::syncSystem)
         pending.remove(record.id)
         pendingUntil = pending.values.maxOrNull() ?: 0L
         changed()
@@ -224,7 +220,7 @@ class SmsController(
                 pending.remove(callback.id)
                 pendingUntil = pending.values.maxOrNull() ?: 0L
             }
-            if (updated) { db.record(callback.id)?.let { syncSystem(it); outcome(it) }; changed() }
+            if (updated) { db.record(callback.id)?.let(::syncSystem); changed() }
         } catch (_: Exception) { notifyPrivate("A text status could not be saved. Check Messages before retrying.") }
         finally { finished() }
     }
@@ -265,20 +261,6 @@ class SmsController(
     }
 
     private fun changed() { _revision.value += 1 }
-
-    private fun outcome(record: SmsRecord) {
-        val id = record.assistantOutcomeId ?: return
-        val status = when (record.status(System.currentTimeMillis())) {
-            SmsStatus.SENT -> OutcomeStatus.SMS_SENT
-            SmsStatus.DELIVERED -> OutcomeStatus.SMS_DELIVERED
-            SmsStatus.FAILED -> OutcomeStatus.SMS_FAILED
-            SmsStatus.PARTLY_SENT -> OutcomeStatus.SMS_PARTLY_SENT
-            SmsStatus.DELIVERY_FAILED -> OutcomeStatus.SMS_DELIVERY_FAILED
-            SmsStatus.UNKNOWN -> OutcomeStatus.SMS_UNKNOWN
-            else -> OutcomeStatus.HANDOFF
-        }
-        app.outcomes.update(id, status, code = record.parts.firstNotNullOfOrNull { it.error })
-    }
 
     private fun notifyPrivate(message: String) {
         if (!permitted(Manifest.permission.POST_NOTIFICATIONS)) return

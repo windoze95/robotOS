@@ -70,7 +70,6 @@ class MessagesActivity : Activity(), DictationTarget {
     private var dictationConsent: String? = null
     private var rows = emptyList<SmsRecord>()
     private var threads = emptyList<SmsThread>()
-    private var pendingCompose: SmsComposeAction? = null
     private var pendingExternal: SmsDraft? = null
     private var pendingNotice: String? = null
     private var mmsNotices = 0
@@ -81,17 +80,11 @@ class MessagesActivity : Activity(), DictationTarget {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val name = intent.getStringExtra(SmsAssistant.RECIPIENT).orEmpty()
-        val text = intent.getStringExtra(SmsAssistant.BODY).orEmpty()
-        if (name.isNotBlank() && name.length <= 80 && text.isNotBlank() && text.length <= SmsRecord.MAX_DRAFT_CHARS) pendingCompose = SmsComposeAction(name, text)
         val externalPeer = intent.getStringExtra(SmsExternalDraft.PEER)
         val externalBody = intent.getStringExtra(SmsExternalDraft.BODY).orEmpty()
         if (externalPeer != null && SmsAddress.normalize(externalPeer) == externalPeer && externalBody.length <= SmsRecord.MAX_DRAFT_CHARS)
             pendingExternal = SmsDraft(externalPeer, externalBody)
         pendingNotice = intent.getStringExtra(SmsExternalDraft.NOTICE)?.take(300)
-        intent.getStringExtra(SmsAssistant.THREAD)?.let { address ->
-            if (SmsAddress.normalize(address) == address) { screen = Screen.CONVERSATION; peer = address }
-        }
         root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(10), dp(4), dp(10), dp(6))
@@ -227,7 +220,6 @@ class MessagesActivity : Activity(), DictationTarget {
             loaded = true; rows = snapshot.messages; threads = snapshot.threads
             mmsNotices = snapshot.mmsNotices; replyRequests = snapshot.replyRequests
             if (rebuild) renderScreen() else renderRows()
-            pendingCompose?.let { action -> pendingCompose = null; resolveAction(action) }
             pendingExternal?.let { next -> pendingExternal = null; replaceDraft(next) }
             pendingNotice?.let { notice -> pendingNotice = null; showDialog(AlertDialog.Builder(this).setTitle("SMS only").setMessage(notice).setPositiveButton("OK", null)) }
             if (screen == Screen.CONVERSATION) getSystemService(NotificationManager::class.java).cancel(SmsController.NOTIFICATION)
@@ -277,24 +269,6 @@ class MessagesActivity : Activity(), DictationTarget {
     }
 
     private fun reply() { peer?.let { replaceDraft(SmsDraft(it, "")) } }
-
-    private fun resolveAction(action: SmsComposeAction) {
-        sms.recipients { saved, error ->
-            if (!resumed) { pendingCompose = action; return@recipients }
-            if (saved == null) { pendingCompose = action; status.text = error; return@recipients }
-            when (val result = SmsRecipientResolver.resolve(action.recipient, saved)) {
-                is SmsResolution.Number -> replaceDraft(SmsDraft(result.number, action.body))
-                is SmsResolution.Choose -> showDialog(AlertDialog.Builder(this).setTitle("Which ${action.recipient}?")
-                    .setItems(result.matches.map { "${it.name} · ${it.number}" }.toTypedArray()) { _, which ->
-                        replaceDraft(SmsDraft(result.matches[which].number, action.body))
-                    }.setNegativeButton("Cancel", null))
-                SmsResolution.Missing -> {
-                    replaceDraft(SmsDraft("", action.body))
-                    status.text = getString(R.string.sms_missing_recipient, action.recipient)
-                }
-            }
-        }
-    }
 
     private fun replaceDraft(next: SmsDraft, accepted: () -> Unit = {}) {
         if (draft.body.isNotBlank() && draft != next) {
@@ -395,12 +369,10 @@ class MessagesActivity : Activity(), DictationTarget {
             if (sms.canSend) "SMS sending is enabled" else "Enable SMS sending",
             if (SmsRole.held(this)) "Default SMS app · incoming enabled" else if (sms.receiveEnabled) "Turn off incoming texts" else "Enable incoming texts",
             if (dictationConsent == consentKey()) "Turn off dictation" else "Enable dictation for this visit",
-            if (app.smsAssistant.enabled) "Turn off assistant SMS sending" else "Enable assistant SMS sending",
             "Saved recipients",
             "robotOS settings",
             if (SmsRole.held(this)) "robotOS is the default SMS app" else "Make robotOS the default SMS app",
             "SMS diagnostics",
-            "Recent assistant outcomes",
             "Hermes",
         )
         showDialog(AlertDialog.Builder(this).setTitle("Messages options").setItems(options) { _, which ->
@@ -408,13 +380,11 @@ class MessagesActivity : Activity(), DictationTarget {
                 0 -> if (!sms.canSend) enableSend()
                 1 -> if (SmsRole.held(this)) defaultSmsInfo() else if (sms.receiveEnabled) { sms.receiveEnabled = false; status.text = idleHint() } else enableReceive()
                 2 -> if (dictationConsent == consentKey()) { dictationConsent = null; status.text = idleHint() } else enableDictation()
-                3 -> if (app.smsAssistant.enabled) { app.smsAssistant.enabled = false; app.turns.refreshVoiceContext() } else enableAssistant()
-                4 -> savedRecipients()
-                5 -> startActivity(Intent(this, SettingsActivity::class.java))
-                6 -> defaultSmsInfo()
-                7 -> details(null)
-                8 -> startActivity(Intent(this, dev.r1ptt.OutcomesActivity::class.java))
-                9 -> startActivity(Intent(this, dev.r1ptt.hermes.HermesActivity::class.java))
+                3 -> savedRecipients()
+                4 -> startActivity(Intent(this, SettingsActivity::class.java))
+                5 -> defaultSmsInfo()
+                6 -> details(null)
+                7 -> startActivity(Intent(this, dev.r1ptt.hermes.HermesActivity::class.java))
             }
         })
     }
@@ -467,13 +437,6 @@ class MessagesActivity : Activity(), DictationTarget {
                 if (!hasMic()) requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), MIC_PERMISSION)
                 status.text = idleHint()
             }.setNegativeButton("Keep typing", null))
-    }
-
-    private fun enableAssistant() {
-        showDialog(AlertDialog.Builder(this).setTitle("Let the assistant send texts directly?")
-            .setMessage("Ask naturally, for example ‘Tell Sam I’m on my way’ or ‘Send a text to NUMBER’. The assistant writes a natural message and sends without review to one clear recipient. With no topic, it writes a brief greeting. For verbatim wording, say ‘Text Sam exactly: MESSAGE’. Carrier SMS charges may apply. Missing or ambiguous recipients need clarification.\n\nWhile enabled, completed voice and typed requests use your selected chat provider to interpret the request and write the message. Saved recipients and existing texts stay local. Messages shows Android’s actual status; Recent assistant outcomes retains categories only. Contextual requests such as ‘send that to her’ still need a clear recipient and intent.")
-            .setPositiveButton("Enable direct sending") { _, _ -> app.smsAssistant.enabled = true; app.turns.refreshVoiceContext(); status.setText(R.string.sms_assistant_enabled) }
-            .setNegativeButton("Cancel", null))
     }
 
     private fun savedRecipients() {

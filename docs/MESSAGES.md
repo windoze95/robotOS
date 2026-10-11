@@ -1,8 +1,9 @@
 # Messages
 
-With the **Hermes Agent** provider, robotOS does not interpret texting requests itself: Hermes
-sends texts through its `robotos` tools, and your own texts to the R1 go to Hermes. See
-[HERMES.md](HERMES.md). The on-device assistant below applies to the other providers.
+robotOS never interprets texting requests itself; the R1 is not an agent. With the **Hermes Agent**
+backend, Hermes sends texts through its `robotos` tools and your own texts to the R1 go to Hermes
+([HERMES.md](HERMES.md)). Other backends only talk. Everything below is the R1's own SMS handling:
+drafts you write, Android's sending, receiving and receipts.
 
 Messages is a personal SMS handler inside the existing robotOS APK. It uses Android’s SMS
 service and your SIM. You can choose robotOS as the default SMS app through Android’s role
@@ -13,7 +14,7 @@ Messaging app, or add a messaging backend.
 
 Open the message icon on Home. **New text** opens a single-recipient draft. **Review text**, the
 keyboard action, and a side-button tap in Messages all stop at recipient/message review. **Send SMS**
-in that review dispatches a manual draft. Separately enabled assistant commands can send directly.
+in that review dispatches a manual draft.
 Long messages are split by Android; the review shows the part
 count. The limit is ten SMS parts and 1,600 draft characters. Pictures, attachments, group MMS,
 RCS, and importing old SMS are outside this version.
@@ -37,73 +38,16 @@ Messages → **Options** has separate opt-ins:
   Audio leaves the device only after this opt-in and a hold in the compose screen. Release
   inserts words into the draft. The draft, recipient, and prior texts are not supplied as context.
   Changing endpoints invalidates consent. Messages dictation clips are excluded from `saveClips`.
-- **Enable assistant SMS sending** recognizes completed requests like “Tell Sam I’m on my way”
-  and “Send a text to +15551234567”. It writes a short, natural message from your intent, adding a
-  greeting or paraphrasing as appropriate. With no topic, it writes a brief neutral greeting.
-  Say “Text Sam exactly: MESSAGE” or “Text Sam word for word: MESSAGE” to preserve the entire
-  supplied message verbatim. Numbers may be spoken digit by digit or in groups (“four oh five,
-  five five five…”); the AI copies them as said and robotOS converts and checks the digits locally,
-  adding +1 on a US SIM. Leading words such as “Okay,” “Hey robot,” or “Try again.” are fine, and
-  “my mom” matches a saved “Mom”. When a request can't be carried out, the reply says why: the
-  recipient didn't match what you said, it wasn't a direct request, or the exact wording was unclear. Completed requests send directly without a review step when the
-  recipient is an exact number or a unique saved name. Android SMS access, a default SMS SIM,
-  and the cellular setting are still required. The
-  old draft-only opt-in does not enable direct sending; enable this option once. Voice uses the
-  configured transcription endpoint, followed by the selected chat provider. This adds an action
-  interpretation step before the reply. Contextual requests such as “send that to her”, scheduled
-  sends, and multiple recipients require clarification.
-- **Recent assistant outcomes** shows at most 50 local outcomes from the last three days. Each
-  contains a random action ID, timestamp, input source, result/category, and optional numeric
-  error code. No recipient, body, transcript, URL, API key, or raw provider error is retained here.
-  Older builds did not record these outcomes, so earlier attempts cannot be reconstructed.
-- **Saved recipients** stores names and exact numbers you enter on this device. The assistant
-  receives no contact list. Exact names match without case sensitivity; different numbers under
-  the same name require a local choice. Missing names leave the phone field empty. No phone
-  number is inferred from an AI response or invented.
-
-While assistant sending is enabled, every completed request—including `Text NAME: MESSAGE`—uses
-a bounded, stateless interpretation/composition request at the selected chat endpoint, with only
-the current user input. The full response must finish normally and copy one recipient from that
-input. The AI may compose the body but cannot invent or expand a recipient. It is instructed to
-convey the requested meaning without inventing facts, names, times, or commitments. Explicit exact
-controls use a separate response mode checked against the entire locally identified literal body;
-they cannot fall through to paraphrasing. Invalid or incomplete responses report no text sent. No
-action is executed from partial streamed output. The interpreter receives no contact list, SMS
-database, or conversation history; Hermes uses a fresh session. Saved recipient names resolve
-locally after extraction.
-
-The current GPT-Live speech-to-speech protocol has no client device-tool bridge. While assistant
-SMS sending is enabled, Home voice turns use completed transcription → intent → native action
-or ordinary chat/TTS. This applies to OpenAI, Hermes, and custom chat providers. GPT-Live remains
-available when assistant sending is off. Interrupted or failed turns do not send. A command
-is consumed once; a new press or turn invalidates a pending recipient lookup. Missing or ambiguous
-recipients leave a clarification on Home instead of switching into a private draft. Repeat the
-complete request with an exact number, or save the recipient in Messages first. Assistant requests
-preserve any existing manual draft.
-Completed recognized commands are not copied into AI chat history. Provider speech is not evidence
-of SMS dispatch: Messages opens the stored attempt and displays Android's actual send and delivery
-status. Model replies, incoming texts, compose intents, and restored activities cannot trigger an
-assistant send.
-
-Unclear requests, interpretation failures, local recipient problems, and send outcomes leave a generic
-explanation in the Home conversation and speak it when voice replies and the network are available.
-Speech starts after the executor reports its result; it never submits or retries a text. A new press
-cancels old feedback. The intercepted request, recipient, and body are not added to chat history.
-Ordinary chat instructions such as “Reply in one sentence”
-remain chat even though they contain words also used for messaging.
-
-The outcome journal distinguishes request resolution, clarification, cancellation, API/network
-failure, Android handoff, and native sent/delivery results. New clarification entries distinguish
-missing or unsupported request details (`REQUEST`) from local recipient lookup (`RECIPIENT`).
-Older clarification entries cannot distinguish these causes. A completed AI turn never means a text
-was sent. A handoff with no result after two minutes displays unknown and must not be retried
-automatically. Native status callbacks remain authoritative; success requires sent callbacks for
-every SMS part, and delivery requires a carrier report.
+- **Saved recipients** stores names and exact numbers you enter on this device, so Hermes can text
+  someone by name. Names match without case sensitivity (“my mom” finds a saved “Mom”); a name
+  saved with two numbers needs the number instead. Spoken numbers (“four oh five, five five five…”)
+  are converted locally and get +1 on a US SIM. No number is ever guessed.
 
 ## Delivery, privacy, and sleep
 
 Drafts, recipients, and conversations live in the private `messages.db`, separate from AI history.
-No received texts are forwarded to AI, spoken aloud automatically, or included in notifications.
+Received texts are not forwarded to AI, spoken aloud automatically, or included in notifications,
+except texts from your own number when Hermes passthrough is on ([HERMES.md](HERMES.md)).
 Notifications contain generic text only; message bodies and recipients are never previewed. The recent view shows the newest 100 conversations
 and 100 texts per conversation; older records remain stored. There is no export or backup UI yet.
 
@@ -153,13 +97,11 @@ with a visible explanation rather than silently converted into SMS.
 
 ## Validation and live acceptance boundary
 
-JVM and Robolectric tests use synthetic data and a fake transport: address validation, explicit
-command parsing, natural intent extraction with mocked streaming providers, typed/completed-voice
-dispatch, cancellation and malformed/incomplete responses, bounded content-free outcomes,
-local/ambiguous recipient resolution, stale and repeated
-completion rejection, draft ownership, durable SQLite transactions,
+JVM and Robolectric tests use synthetic data and a fake transport: address validation, spoken and
+written numbers, local/ambiguous recipient resolution, Hermes's device API and passthrough, draft
+ownership, durable SQLite transactions,
 process restart, replay protection, part aggregation, uncertain failures, permission/SIM changes,
-manifest protection, role entry points, version-one data migration, exact system-provider copies,
+manifest protection, role entry points, records saved by older builds, exact system-provider copies,
 MMS-notice persistence, call-reply drafts, result diagnostics, and compose/button behavior. The existing voice, configuration, updater,
 release tooling, builds, and lint checks remain in the suite. These are not carrier acceptance tests.
 
@@ -175,9 +117,8 @@ permission workarounds. Then verify:
    “Sent”; missing carrier receipts remain unconfirmed.
 4. Test optional incoming reception while awake and after the normal radio idle cut. Verify the
    modem still sleeps; document actual retry delay and any missed/expired text instead of promising it.
-5. Check direct assistant sending only with a separately approved real recipient and body. Use fake
-   transport tests for missing/duplicate-name clarification and stale/repeated completion. Check cloud-dictation
-   consent, Home PTT/audio, app update fences, and draft recovery after app restart.
+5. Check cloud-dictation consent, Home PTT/audio, app update fences, and draft recovery after app
+   restart. Hermes's texting has its own checks in [HERMES.md](HERMES.md).
 
 No live SMS send, incoming-message inspection, default-role change, or SMS permission grant is
 performed by the build or automated tests.

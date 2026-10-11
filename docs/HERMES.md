@@ -4,8 +4,7 @@ With the **Hermes Agent** provider selected, robotOS is a remote for your Hermes
 the agent; the R1 only relays and acts:
 
 - **Push-to-talk:** hold the button and talk. robotOS transcribes the speech (OpenAI live
-  transcription), sends the text to Hermes unchanged, and speaks Hermes's reply. The R1 does no SMS
-  interpretation of its own in this mode.
+  transcription), sends the text to Hermes unchanged, and speaks Hermes's reply. The R1 never interprets texting requests itself; it isn't an agent.
 - **Hermes acts on the R1:** Hermes's `robotos` MCP server gives it `send_sms`, `sms_status`,
   `recent_texts`, `list_recipients` and `r1_status`. "Text Sam I'm running late" is Hermes calling
   `mcp__robotos__send_sms`, which the R1 carries out with its own SIM and number.

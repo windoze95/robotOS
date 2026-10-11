@@ -35,7 +35,6 @@ data class SmsRecord(
     val parts: List<SmsPart> = emptyList(),
     val systemOwned: Boolean = false,
     val sendEvidence: String? = null,
-    val assistantOutcomeId: String? = null,
 ) {
     fun status(now: Long): SmsStatus {
         if (incoming) return SmsStatus.RECEIVED
@@ -77,7 +76,7 @@ data class SmsRecord(
 
     fun encode(): String = JSONObject().put("id", id).put("peer", peer).put("body", body)
         .put("createdAt", createdAt).put("subscriptionId", subscriptionId).put("incoming", incoming)
-        .put("token", token).put("systemOwned", systemOwned).put("sendEvidence", sendEvidence).put("assistantOutcomeId", assistantOutcomeId).put("parts", JSONArray().also { array -> parts.forEach { p ->
+        .put("token", token).put("systemOwned", systemOwned).put("sendEvidence", sendEvidence).put("parts", JSONArray().also { array -> parts.forEach { p ->
             array.put(JSONObject().put("sent", p.sent.name).put("delivery", p.delivery.name).put("error", p.error)
                 .put("radioError", p.radioError).put("failureSource", p.failureSource))
         } }).toString()
@@ -105,8 +104,7 @@ data class SmsRecord(
                         if (p.has("radioError") && !p.isNull("radioError")) p.getInt("radioError") else null,
                         if (p.has("failureSource") && !p.isNull("failureSource")) p.getString("failureSource") else null)
                 } }, j.optBoolean("systemOwned", false),
-                if (j.has("sendEvidence") && !j.isNull("sendEvidence")) j.getString("sendEvidence") else null,
-                if (j.has("assistantOutcomeId") && !j.isNull("assistantOutcomeId")) j.getString("assistantOutcomeId") else null)
+                if (j.has("sendEvidence") && !j.isNull("sendEvidence")) j.getString("sendEvidence") else null)
             require(record.incoming || record.parts.size in 1..MAX_PARTS)
             return record
         }

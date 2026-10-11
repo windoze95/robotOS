@@ -55,26 +55,12 @@ The R1 is an Android 13 phone underneath (MediaTek MT6765). The firmware is four
 
 Tap the text field on the touchscreen to bring up the keyboard. The gear icon opens settings.
 
-The message icon opens **Messages**, a one-to-one SMS handler. With **Hermes Agent** as the backend,
-Hermes does the texting (above) and the assistant described here stays out of the way. Otherwise, type
-a draft, or opt in to dictation and assistant requests such as “Tell Sam I’m on my way” or “Send a text
-to NUMBER.” Numbers can be spoken digit by digit, and a US SIM adds the +1. Saved names resolve
-locally (“my mom” finds a saved “Mom”); unknown or ambiguous recipients need your input. With **assistant SMS sending** enabled,
-explicit completed commands send directly without review. The assistant writes a natural message
-from your intent, or a short greeting when no message is supplied. Say “Text Sam exactly: MESSAGE”
-for verbatim wording. Manual drafts still use **Review text**
-and **Send SMS**. Sending, new incoming texts, and assistant commands each have
-explicit controls in Messages → Options. No SMS permission is requested merely by opening it. Options can request Android’s default SMS
-role. MMS is explicitly unsupported; incoming MMS notices are retained locally and shown as warnings.
-Message details exposes native failure codes without retrying a failed or uncertain attempt.
-With assistant sending enabled, voice uses completed transcription and the selected chat provider
-to interpret every completed request and compose messages before sending. When a request can't be carried out, a reply on
-Home says why (recipient not matched, not a direct request, unclear exact wording) and is spoken when voice replies and the
-network are available. Only the generic explanation is kept
-in the conversation; the intercepted SMS request stays out of chat history.
-Options → **Recent assistant outcomes** distinguishes missing request details from unresolved saved
-recipients and retains brief result categories, including failures; it contains no message text or
-recipient numbers.
+The message icon opens **Messages**, a one-to-one SMS handler for texts you write yourself: drafts,
+**Review text** and **Send SMS**, incoming texts, and Android's real send and delivery status. The
+R1 never decides to send a text on its own; with Hermes, Hermes does (above). No SMS permission is
+requested merely by opening Messages; Options can request Android's default SMS role. MMS is
+explicitly unsupported; incoming MMS notices are retained locally and shown as warnings. Message
+details exposes native failure codes without retrying a failed or uncertain attempt.
 MMS, RCS, old inbox import, and live carrier acceptance are not included. See [docs/MESSAGES.md](docs/MESSAGES.md).
 
 **Settings → Hermes** (also Messages → Options → Hermes) shows whether Hermes can reach the R1,

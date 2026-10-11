@@ -75,7 +75,6 @@
         <activity android:name=".messages.MessagesActivity" android:exported="false"
             android:label="@string/messages"
             android:windowSoftInputMode="adjustResize|stateHidden" />
-        <activity android:name=".OutcomesActivity" android:exported="false" android:label="Recent assistant outcomes" />
         <receiver android:name=".messages.SmsStatusReceiver" android:exported="false" />
         <receiver android:name=".messages.SmsIncomingReceiver" android:exported="true"
             android:permission="android.permission.BROADCAST_SMS">

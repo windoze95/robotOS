@@ -82,28 +82,6 @@ object SmsRecipientText {
         return parse(words)
     }
 
-    /**
-     * Whether [request] itself names [recipient]: the same words in any capitalization, or the same
-     * number however it was spoken or punctuated. A number must be the whole number in the request,
-     * never a shortened part of a longer one.
-     */
-    fun mentions(request: String, recipient: String): Boolean {
-        val words = tokens(request)
-        digits(recipient)?.let { number ->
-            var start = 0
-            while (start < words.size) {
-                if (!numeric(words[start])) { start++; continue }
-                var end = start
-                while (end < words.size && numeric(words[end])) end++
-                if (parse(words.subList(start, end)) == number) return true
-                start = end
-            }
-            return false
-        }
-        val name = tokens(recipient).filter { it != BREAK }
-        return name.isNotEmpty() && words.windowed(name.size).any { it == name }
-    }
-
     /** A spoken or written number as Android can dial it; ten-digit numbers get +1 on a NANP SIM. */
     fun number(phrase: String, region: String?): String? {
         val number = SmsAddress.normalize(phrase) ?: digits(phrase)?.let(SmsAddress::normalize) ?: return null

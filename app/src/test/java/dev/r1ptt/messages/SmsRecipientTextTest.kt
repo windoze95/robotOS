@@ -28,25 +28,6 @@ class SmsRecipientTextTest {
         }
     }
 
-    @Test fun mentionsMatchesWordsOrTheWholeSpokenNumber() {
-        val request = "Send a text message to four zero five five five five zero one two three. Say anything"
-        assertTrue(SmsRecipientText.mentions(request, "four zero five five five five zero one two three"))
-        assertTrue(SmsRecipientText.mentions(request, "4055550123"))
-        assertTrue(SmsRecipientText.mentions(request, "405-555-0123"))
-        assertTrue(SmsRecipientText.mentions("Text 405 555 0123: hi", "4055550123"))
-        assertTrue(SmsRecipientText.mentions("Text four zero five, five five five, zero one two three saying hi", "four zero five five five five zero one two three"))
-        // A number must be whole: no dropped digits, added country codes or neighbouring digits.
-        assertFalse(SmsRecipientText.mentions(request, "4055550124"))
-        assertFalse(SmsRecipientText.mentions(request, "555 0123"))
-        assertFalse(SmsRecipientText.mentions(request, "+14055550123"))
-        assertFalse(SmsRecipientText.mentions("Text 405 555 0123 5 minutes late", "4055550123"))
-        // Names match whole words in any case, never inside a longer name.
-        assertTrue(SmsRecipientText.mentions("tell SAM i'm late", "Sam"))
-        assertTrue(SmsRecipientText.mentions("Text my mom: home soon", "my mom"))
-        assertFalse(SmsRecipientText.mentions("Text Samuel: hi", "Sam"))
-        assertFalse(SmsRecipientText.mentions("Text Sam: hi", "Samuel"))
-    }
-
     @Test fun nationalNumbersGetPlusOneOnlyOnNanpSims() {
         assertEquals("+14055550123", SmsRecipientText.number("four zero five five five five zero one two three", "us"))
         assertEquals("+14055550123", SmsRecipientText.number("1 405 555 0123", "US"))

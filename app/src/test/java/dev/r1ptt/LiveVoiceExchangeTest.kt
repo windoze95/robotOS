@@ -19,7 +19,8 @@ import java.time.Duration
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = App::class)
 @LooperMode(LooperMode.Mode.PAUSED)
-class LiveVoiceSmsTest {
+/** Live speech-to-speech (OpenAI only) talks; it never acts on the device. */
+class LiveVoiceExchangeTest {
     private lateinit var app: App
     private lateinit var voice: LiveVoice
     private lateinit var tracker: LiveTracker
@@ -42,7 +43,6 @@ class LiveVoiceSmsTest {
     /** Synthetic accepted events; no microphone, network, player or native SMS transport. */
     private fun begin(heard: String, said: String = "Synthetic response") {
         LiveVoice::class.java.getDeclaredField("active").apply { isAccessible = true }.setBoolean(voice, true)
-        LiveVoice::class.java.getDeclaredField("outcomeId").apply { isAccessible = true }.set(voice, app.outcomes.begin(OutcomeSource.LIVE_VOICE))
         tracker.hold(); event(LiveProtocol.Event.Heard(heard)); event(LiveProtocol.Event.Said(said))
         assertNull(field("session")); assertFalse(voice.capturing)
     }
@@ -50,19 +50,17 @@ class LiveVoiceSmsTest {
     private fun advance(ms: Long) { ShadowSystemClock.advanceBy(Duration.ofMillis(ms)) }
     private fun noSms() { SmsStore(app).use { assertTrue(it.threads().isEmpty()) } }
 
-    @Test fun enabledAssistantUsesCompletedTranscriptionOnEveryProvider() {
+    @Test fun liveVoiceIsOnlyForTheOpenAiBackend() {
         for (provider in listOf("openai", "hermes", "custom")) {
             val c = AppConfig().let { it.copy(activeProvider = provider, providers = it.providers +
                 (provider to it.providers.getValue(provider).copy(apiKey = "synthetic-key"))) }
-            assertFalse(TurnController.useLiveVoice(c, assistantSms = true))
-            assertEquals(provider == "openai", TurnController.useLiveVoice(c, assistantSms = false))
+            assertEquals(provider, provider == "openai", c.liveVoice)
         }
     }
 
-    @Test fun liveCompletionIsNeverAnSmsExecutionBridge() {
+    @Test fun aCompletedRequestToTextIsOnlyConversation() {
         begin(command); reply(); advance(1200); tick(); tick()
         noSms(); assertFalse(voice.busy); assertTrue(failures.isEmpty())
-        assertEquals(OutcomeStatus.COMPLETED, app.outcomes.list().single().status)
     }
 
     @Test fun pendingBackendWorkStillPreventsQuietAudioCompletion() {
@@ -72,28 +70,26 @@ class LiveVoiceSmsTest {
         assertFalse(voice.busy); noSms()
     }
 
-    @Test fun interruptionRecordsCancellationWithoutDispatch() {
+    @Test fun interruptionSettlesWithoutFailing() {
         begin(command); reply(); assertTrue(voice.interrupt()); advance(2000); tick()
         noSms(); assertFalse(voice.busy); assertTrue(failures.isEmpty())
-        assertEquals(OutcomeStatus.CANCELLED, app.outcomes.list().single().status)
     }
 
-    @Test fun failedExchangeRetainsOnlyTheFailureCategory() {
+    @Test fun failedExchangeKeepsNothingAndSaysWhy() {
         begin(command); reply()
         LiveVoice::class.java.getDeclaredMethod("failExchange", String::class.java).apply { isAccessible = true }
             .invoke(voice, "Synthetic connection failure")
         noSms(); assertFalse(voice.busy); assertTrue(app.history.messages.isEmpty())
-        assertEquals(OutcomeStatus.FAILED, app.outcomes.list().single().status)
-        assertEquals(OutcomeReason.NETWORK, app.outcomes.list().single().reason)
+        assertEquals(listOf("Synthetic connection failure"), failures)
     }
 
-    @Test fun noReplyTimeoutCannotBeRecordedAsSuccess() {
+    @Test fun noReplyTimeoutIsAFailure() {
         begin(command); tracker.release(); advance(20_000); tick()
         assertEquals(listOf("No reply; please try again"), failures)
-        noSms(); assertEquals(OutcomeStatus.FAILED, app.outcomes.list().single().status)
+        noSms()
     }
 
-    @Test fun assistantOutputCannotAuthorizeASend() {
+    @Test fun modelOutputCannotSendAnything() {
         begin("Explain how texting works", said = command); reply(); advance(1200); tick()
         noSms(); assertEquals(listOf("Explain how texting works", command), app.history.messages.map { it.text })
     }
