@@ -135,6 +135,10 @@ class EndToEndTest(unittest.TestCase):
         command = self.call('POST', '/devices/' + self.a['device_id'] + '/commands',
                             {'id': 'return-message', 'type': 'show_message', 'payload': {'message': 'Please return this R1'}, 'expires_at': now() + 60000})
         self.assertEqual('queued', command['status'])
+        self.assertEqual([], recovery['commands'])
+        packet.update(applied_policy_revision=recovery['policy_revision'], security={'workspace_restricted': True})
+        acknowledged = self.call('POST', '/devices/self/check-in', packet, self.a['recovery'])
+        self.assertEqual('return-message', acknowledged['commands'][0]['id'])
         for status in ('received', 'applied'):
             self.call('POST', '/devices/self/commands/return-message/ack', {'status': status, 'result': {'message': 'Return information saved'}}, self.a['recovery'])
         self.assertEqual('applied', self.call('GET', '/devices/' + self.a['device_id'] + '/commands')['items'][0]['status'])

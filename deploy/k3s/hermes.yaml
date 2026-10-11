@@ -1,0 +1,155 @@
+# Optional: add to kustomization.yaml resources when Hermes also runs in k3s.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hermes-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: robotos-hermes
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: robotos-hermes
+  template:
+    metadata:
+      labels:
+        app: robotos-hermes
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 90
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10000
+        runAsGroup: 10000
+        fsGroup: 10000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: hermes
+          image: robotos-hermes:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: api
+              containerPort: 8642
+          env:
+            - name: ROBOTOS_HUB_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: robotos-config
+                  key: ROBOTOS_HUB_PUBLIC_ORIGIN
+            - name: ROBOTOS_HUB_MCP_TOKEN_FILE
+              value: /run/secrets/mcp-token
+            - name: API_SERVER_KEY_FILE
+              value: /run/secrets/hermes-token
+          # Provider keys may be supplied through an additional Secret envFrom.
+          # The model/provider config persists in /opt/data/hermes/config.yaml.
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: '4'
+              memory: 4Gi
+          startupProbe:
+            httpGet:
+              path: /health
+              port: api
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: api
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /opt/data
+            - name: credentials
+              mountPath: /run/secrets
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: hermes-data
+        - name: credentials
+          secret:
+            secretName: robotos-credentials
+            defaultMode: 0440
+            items:
+              - key: mcp-token
+                path: mcp-token
+              - key: hermes-token
+                path: hermes-token
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: robotos-hermes
+spec:
+  selector:
+    app: robotos-hermes
+  ports:
+    - name: api
+      port: 8642
+      targetPort: api
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: robotos-hermes
+spec:
+  podSelector:
+    matchLabels:
+      app: robotos-hermes
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - protocol: TCP
+          port: 8642
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: robotos-hermes
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: 'true'
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [hermes.example.net]
+      secretName: hermes-tls
+  rules:
+    - host: hermes.example.net
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: robotos-hermes
+                port:
+                  number: 8642

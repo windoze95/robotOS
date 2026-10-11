@@ -17,6 +17,9 @@ ACTIVE = {'queued', 'submitting', 'submission_unknown', 'running', 'waiting_for_
 COMMAND_TYPES = {'ring', 'stop_ring', 'show_message', 'lock', 'locate', 'clear_workspace', 'factory_reset', 'update_app', 'reboot'}
 DANGEROUS = {'lock', 'clear_workspace', 'factory_reset', 'update_app', 'reboot'}
 LOCAL_ONLY_SETTINGS = {'remote_management', 'location_reporting', 'allow_clear_workspace', 'allow_factory_reset', 'allow_updates', 'allow_reboot', 'secure_lock', 'recovery_checkins'}
+RECOVERY_COMMANDS = {'ring', 'stop_ring', 'show_message', 'lock', 'locate', 'clear_workspace', 'factory_reset'}
+SECURITY_FIELDS = {'app_restriction_available', 'secure_lock_configured', 'device_admin_active', 'device_owner',
+                   'secure_lock_available', 'secure_lock_applied', 'workspace_restricted'}
 
 
 def now():
@@ -106,7 +109,17 @@ class Store:
               device_id TEXT, created_at INTEGER NOT NULL);
             INSERT OR IGNORE INTO resume VALUES(1,0,'{}');
             ''')
-            db.execute('PRAGMA user_version=1')
+            # Upgrade existing installations in place; lost policy survives service upgrades/restarts.
+            columns = {row['name'] for row in db.execute('PRAGMA table_info(devices)')}
+            for name, definition in [('policy_revision', 'INTEGER NOT NULL DEFAULT 1'),
+                                     ('applied_policy_revision', 'INTEGER NOT NULL DEFAULT 0'),
+                                     ('policy_applied_at', 'INTEGER'), ('security', "TEXT NOT NULL DEFAULT '{}'")]:
+                if name not in columns:
+                    db.execute('ALTER TABLE devices ADD COLUMN ' + name + ' ' + definition)
+            command_columns = {row['name'] for row in db.execute('PRAGMA table_info(commands)')}
+            if 'issuer_role' not in command_columns:
+                db.execute("ALTER TABLE commands ADD COLUMN issuer_role TEXT NOT NULL DEFAULT ''")
+            db.execute('PRAGMA user_version=2')
         os.chmod(self.path, 0o600)
         self.recover()
 
@@ -517,8 +530,9 @@ class Store:
 
     def device(self, row):
         item = {key: row[key] for key in ('id', 'name', 'revision', 'settings_revision', 'applied_settings_revision',
+                  'policy_revision', 'applied_policy_revision', 'policy_applied_at',
                   'lost_message', 'app_version', 'battery', 'last_seen', 'created_at', 'updated_at')}
-        for key in ('desired_settings', 'applied_settings', 'capabilities'):
+        for key in ('desired_settings', 'applied_settings', 'capabilities', 'security'):
             item[key] = json.loads(row[key])
         for key in ('lost', 'revoked', 'lost_applied', 'charging'):
             item[key] = bool(row[key]) if row[key] is not None else None
@@ -548,8 +562,12 @@ class Store:
             lost = boolean(body.get('lost', bool(row['lost'])), 'lost')
             revoked = boolean(body.get('revoked', bool(row['revoked'])), 'revoked')
             message = string(body.get('lost_message', row['lost_message']), 'lost_message', 1000)
+            policy_revision = row['policy_revision'] + int((lost, revoked, message) !=
+                                                          (bool(row['lost']), bool(row['revoked']), row['lost_message']))
             settings, settings_revision = json.loads(row['desired_settings']), row['settings_revision']
             if 'settings' in body:
+                if lost or revoked:
+                    raise HubError(403, 'device_quarantined', 'Restore device access before changing ordinary settings')
                 if not isinstance(body['settings'], dict) or len(canonical(body['settings'])) > 16000:
                     raise HubError(400, 'invalid_settings', 'Invalid desired settings')
                 if set(body['settings']) & LOCAL_ONLY_SETTINGS:
@@ -569,15 +587,27 @@ class Store:
                         raise HubError(400, 'invalid_settings', 'Unsupported desired setting: ' + str(key))
                 settings.update(body['settings'])
                 settings_revision += 1
-            db.execute('''UPDATE devices SET name=?,lost=?,revoked=?,lost_message=?,desired_settings=?,settings_revision=?,
-              revision=revision+1,updated_at=? WHERE id=?''', (name, int(lost), int(revoked), message, canonical(settings), settings_revision, now(), device_id))
+            db.execute('''UPDATE devices SET name=?,lost=?,revoked=?,lost_message=?,desired_settings=?,settings_revision=?,policy_revision=?,
+              revision=revision+1,updated_at=? WHERE id=?''', (name, int(lost), int(revoked), message, canonical(settings), settings_revision, policy_revision, now(), device_id))
             if lost or revoked:
-                # Fence any previously issued workspace edit lease while retaining recovery communication.
-                db.execute('DELETE FROM leases WHERE actor=?', ('device:' + device_id,))
-                db.execute("UPDATE commands SET status='cancelled',updated_at=? WHERE device_id=? AND type='device_tool' AND status='queued'", (now(), device_id))
+                self._quarantine(db, device_id)
             self.change(db, 'device', device_id)
             self.audit(db, actor['actor'], 'device_policy_updated', device_id)
             return self.device(self._row(db, 'devices', device_id))
+
+    def _quarantine(self, db, device_id):
+        # Previously received commands may already have executed. Retain that uncertainty;
+        # never describe them as cancelled or offer them for another execution.
+        db.execute('DELETE FROM leases WHERE actor=?', ('device:' + device_id,))
+        for command in db.execute("SELECT id,status FROM commands WHERE device_id=? AND (type IN ('device_tool','update_app','reboot') OR issuer_role!='owner') AND status IN ('queued','received')", (device_id,)).fetchall():
+            status = 'cancelled' if command['status'] == 'queued' else 'unknown'
+            db.execute('UPDATE commands SET status=?,result=?,updated_at=? WHERE id=?',
+                       (status, canonical({'message': 'Device access restricted by owner policy'}), now(), command['id']))
+            self.change(db, 'command', command['id'])
+
+    def policy(self, row):
+        return {key: bool(row[key]) if key in {'lost', 'revoked'} else row[key]
+                for key in ('policy_revision', 'applied_policy_revision', 'lost', 'revoked', 'lost_message')}
 
     def _expire_commands(self, db, device_id):
         rows = db.execute("SELECT id,status FROM commands WHERE device_id=? AND expires_at<=? AND status IN ('queued','received')", (device_id, now())).fetchall()
@@ -591,6 +621,19 @@ class Store:
         with self.transaction() as db:
             self.authorize(db, actor, 'recovery')
             row = self._row(db, 'devices', actor['id'])
+            applied_policy = integer(body.get('applied_policy_revision', 0), 'applied_policy_revision')
+            if applied_policy > row['policy_revision']:
+                raise HubError(409, 'policy_revision_conflict', 'Device acknowledged an unknown recovery policy')
+            security = body.get('security', {})
+            if not isinstance(security, dict) or set(security) - SECURITY_FIELDS or any(not isinstance(value, bool) for value in security.values()):
+                raise HubError(400, 'invalid_security', 'Security posture must contain supported boolean values')
+            restricted = bool(row['lost'] or row['revoked'])
+            if restricted and applied_policy == row['policy_revision'] and security.get('workspace_restricted') is not True:
+                raise HubError(409, 'policy_not_applied', 'Local restrictions must be applied before acknowledging recovery policy', **self.policy(row))
+            policy_current = applied_policy == row['policy_revision']
+            policy_applied_at = now() if policy_current and applied_policy > row['applied_policy_revision'] else row['policy_applied_at']
+            # A delayed request may report an older policy; it must not undo a confirmed acknowledgement.
+            stored_security = canonical(security) if applied_policy >= row['applied_policy_revision'] else row['security']
             capabilities = body.get('capabilities', {})
             if not isinstance(capabilities, dict) or len(capabilities) > 100 or any(not isinstance(k, str) or not isinstance(v, bool) for k, v in capabilities.items()):
                 raise HubError(400, 'invalid_capabilities', 'Capabilities must contain boolean values')
@@ -629,13 +672,16 @@ class Store:
             version = string(body.get('app_version', ''), 'app_version', 100)
             lost_applied = boolean(body.get('lost_applied', bool(row['lost_applied'])), 'lost_applied')
             db.execute('''UPDATE devices SET name=?,app_version=?,battery=?,charging=?,capabilities=?,applied_settings=?,
-              applied_settings_revision=?,location=?,lost_applied=?,last_seen=?,updated_at=? WHERE id=?''',
+              applied_settings_revision=?,location=?,lost_applied=?,applied_policy_revision=?,policy_applied_at=?,security=?,last_seen=?,updated_at=? WHERE id=?''',
               (name, version, battery, charging, canonical(capabilities), canonical(settings), applied_revision, stored_location,
-               int(lost_applied), now(), now(), row['id']))
+               int(lost_applied), max(applied_policy, row['applied_policy_revision']), policy_applied_at, stored_security, now(), now(), row['id']))
             self._expire_commands(db, row['id'])
-            commands = [self.command(r) for r in db.execute("SELECT * FROM commands WHERE device_id=? AND status IN ('queued','received') AND expires_at>? ORDER BY created_at", (row['id'], now()))]
+            if restricted:
+                self._quarantine(db, row['id'])
+            commands = [self.command(r) for r in db.execute("SELECT * FROM commands WHERE device_id=? AND status IN ('queued','received') AND expires_at>? ORDER BY created_at", (row['id'], now()))
+                        if not restricted or (policy_current and r['type'] in RECOVERY_COMMANDS)]
             self.change(db, 'device', row['id'])
-            return {'device_id': row['id'], 'name': row['name'], 'lost': bool(row['lost']), 'revoked': bool(row['revoked']), 'lost_message': row['lost_message'],
+            return {'device_id': row['id'], 'name': row['name'], **self.policy(self._row(db, 'devices', row['id'])),
                     'settings_revision': row['settings_revision'], 'settings': json.loads(row['desired_settings']), 'commands': commands}
 
     def command(self, row):
@@ -667,8 +713,8 @@ class Store:
         if expires_at <= now() or expires_at > now() + 7 * 86400 * 1000:
             raise HubError(400, 'invalid_expiry', 'Command expiry must be in the next seven days')
         timestamp = now()
-        db.execute('INSERT INTO commands(id,device_id,type,payload,expires_at,status,payload_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)',
-                   (command_id, row['id'], kind, canonical(payload), expires_at, 'queued', binding, timestamp, timestamp))
+        db.execute('INSERT INTO commands(id,device_id,type,payload,expires_at,status,payload_hash,created_at,updated_at,issuer_role) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                   (command_id, row['id'], kind, canonical(payload), expires_at, 'queued', binding, timestamp, timestamp, actor['role']))
         self.change(db, 'command', command_id)
         self.audit(db, actor['actor'], 'command_' + kind, row['id'])
         return self.command(self._row(db, 'commands', command_id))
@@ -697,6 +743,8 @@ class Store:
             else:
                 self.authorize(db, actor, 'owner')
             row = self._row(db, 'devices', device_id)
+            if (row['lost'] or row['revoked']) and (kind not in RECOVERY_COMMANDS or actor['role'] != 'owner'):
+                raise HubError(403, 'device_quarantined', 'Only owner recovery actions are available while this device is restricted')
             if kind in DANGEROUS:
                 if actor['role'] != 'owner' or not actor.get('recent'):
                     raise HubError(403, 'recent_auth_required', 'Sign in again before issuing this command')
@@ -705,9 +753,8 @@ class Store:
             self._command_permission(row, kind)
             result = self._insert_command(db, actor, row, command_id, kind, payload, expires_at)
             if kind == 'clear_workspace' and not row['revoked']:
-                db.execute('UPDATE devices SET revoked=1,revision=revision+1,updated_at=? WHERE id=?', (now(), device_id))
-                db.execute('DELETE FROM leases WHERE actor=?', ('device:' + device_id,))
-                db.execute("UPDATE commands SET status='cancelled',updated_at=? WHERE device_id=? AND type='device_tool' AND status='queued'", (now(), device_id))
+                db.execute('UPDATE devices SET revoked=1,revision=revision+1,policy_revision=policy_revision+1,updated_at=? WHERE id=?', (now(), device_id))
+                self._quarantine(db, device_id)
                 self.change(db, 'device', device_id)
                 self.audit(db, actor['actor'], 'workspace_revoked_for_clear', device_id)
             return result
@@ -728,16 +775,27 @@ class Store:
             row = self._row(db, 'commands', command_id)
             if row['device_id'] != actor['id']:
                 raise HubError(404, 'not_found', 'Command not found')
+            device = self._row(db, 'devices', actor['id'])
+            if status == 'received' and (device['lost'] or device['revoked']):
+                if row['type'] not in RECOVERY_COMMANDS or row['issuer_role'] != 'owner':
+                    raise HubError(403, 'device_quarantined', 'Device action admission denied by recovery policy', **self.policy(device))
+                if device['applied_policy_revision'] != device['policy_revision']:
+                    raise HubError(409, 'policy_not_applied', 'Apply recovery policy before executing commands', **self.policy(device))
+            if status == 'received':
+                if row['expires_at'] <= now():
+                    raise HubError(409, 'command_expired', 'Command expired before device handoff', **self.policy(device))
+                # Check-in may have withdrawn a capability after this command was queued.
+                self._command_permission(device, row['type'])
             if row['status'] in {'applied', 'failed', 'cancelled', 'expired'}:
                 if row['status'] != status or json.loads(row['result']) != result:
                     raise HubError(409, 'receipt_conflict', 'Command already has a final receipt')
-                return self.command(row)
+                return dict(self.command(row), **self.policy(device))
             if row['status'] == 'unknown' and status == 'received':
                 raise HubError(409, 'receipt_conflict', 'Uncertain actions must not be retried')
             db.execute('UPDATE commands SET status=?,result=?,updated_at=? WHERE id=?', (status, canonical(result), now(), command_id))
             self.change(db, 'command', command_id)
             self.audit(db, actor['actor'], 'command_' + status, actor['id'])
-            return self.command(self._row(db, 'commands', command_id))
+            return dict(self.command(self._row(db, 'commands', command_id)), **self.policy(device))
 
     def device_action(self, actor, body=None, action_id=None):
         if actor['role'] not in {'owner', 'mcp'}:

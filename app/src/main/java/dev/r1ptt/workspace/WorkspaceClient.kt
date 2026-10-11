@@ -21,7 +21,52 @@ class WorkspaceClient(private val app: App) {
     val status: StateFlow<String> = mutable
     private var loop: Job? = null
     val management by lazy { HubManagement(app, this) }
-    val blocked: Boolean get() = identity.quarantined || identity.error != null || store.loadError != null
+    private val recoveryFence = RecoveryFence().apply { if (identity.paired) invalidate() }
+    private var recoveryJob: Job? = null
+    val quarantined: Boolean get() = identity.quarantined || identity.error != null || store.loadError != null
+    val recoveryPending: Boolean get() = identity.paired && recoveryFence.pending()
+    val blocked: Boolean get() = quarantined || recoveryPending
+    val canReenroll: Boolean get() = identity.value.let { it.optBoolean("local_workspace_cleared") && !it.optBoolean("lost") && !it.optBoolean("revoked") } && identity.error == null && recoveryFence.verified()
+    val networkAllowed: Boolean get() = !blocked && (!identity.paired || recoveryFence.verified())
+    internal fun recoveryTicket(): Long = recoveryFence.ticket()
+    internal fun recoveryConfirmed(ticket: Long) {
+        if (recoveryFence.confirm(ticket)) mutable.value = if (quarantined) "Device access restricted" else "Device recovery verified"
+    }
+    /** Fence synchronously before any activity/button/API can observe the newly awake device. */
+    fun requireRecovery(checkNow: Boolean = true) {
+        if (!identity.paired) return
+        recoveryFence.invalidate()
+        mutable.value = "Checking device recovery…"
+        dev.r1ptt.ui.DeviceActivity.refreshRecovery(app)
+        if (checkNow) recoverNow()
+    }
+    @Synchronized fun recoverNow() {
+        if (!identity.paired || recoveryJob?.isActive == true) return
+        val ticket = recoveryTicket()
+        recoveryJob = scope.launch {
+            try {
+                app.radio.hold("workspace-wake-recovery", true)
+                // Recovery has its own short HTTP deadline; never queue behind a transcription.
+                withTimeoutOrNull(15_000) { if (app.radio.awaitOnline(5_000)) recoveryOnly() }
+            } catch (_: Exception) { /* Known lost state remains durable through every failure. */ }
+            finally {
+                recoveryFence.offline(ticket)
+                app.radio.hold("workspace-wake-recovery", false)
+                if (!recoveryFence.verified()) mutable.value = if (quarantined) "Device access restricted" else "Recovery not verified · connect to your host and retry"
+                withContext(NonCancellable + Dispatchers.Main) { dev.r1ptt.ui.DeviceActivity.refreshRecovery(app) }
+                synchronized(this@WorkspaceClient) { recoveryJob = null }
+                // A new wake/network event during the request must receive its own fresh check.
+                if (recoveryPending && recoveryTicket() != ticket) recoverNow()
+            }
+        }
+    }
+    suspend fun recoveryOnly() = withContext(Dispatchers.IO) { recoveryLock.withLock {
+        val applied = identity.value.optLong("applied_policy_revision")
+        management.checkIn()
+        // Confirm the newly applied policy immediately, then receive only its permitted commands.
+        if (identity.value.optLong("applied_policy_revision") != applied) management.checkIn()
+    } }
+    private val recoveryLock = Mutex()
 
     fun start() {
         if (loop?.isActive == true) return
@@ -38,43 +83,54 @@ class WorkspaceClient(private val app: App) {
     fun refresh() { scope.launch { runCatching { sync() } } }
     suspend fun pair(url: String, code: String, name: String) = withContext(Dispatchers.IO) {
         lock.withLock {
-            check(!identity.paired || identity.value.optBoolean("local_workspace_cleared")) { "This R1 is already paired. Revoke its enrollment in the host console before clearing app data to pair again." }
+            check(!identity.paired || canReenroll) { "This R1 is already paired. Revoke its enrollment in the host console before clearing app data to pair again." }
             identity.error?.let { error(it) }
             val base = HubHttp.normalize(url)
             val result = http.json(base, "", "POST", "/enrollments/claim", JSONObject().put("code", code.trim()).put("name", name.trim()).put("lost", false).put("revoked", false).put("local_workspace_cleared", false)
                     .put("settings_revision", 0).put("permissions", JSONObject()))
+            check(!identity.paired || canReenroll) { "Recovery access changed while pairing. Restore this R1 in the owner console first." }
             identity.update { root ->
                 root.put("base_url", base).put("device_id", result.getString("device_id"))
                     .put("device_token", result.getString("device_token")).put("recovery_token", result.getString("recovery_token"))
                     .put("name", name.trim()).put("lost", false).put("revoked", false).put("local_workspace_cleared", false)
                     .put("settings_revision", 0).put("permissions", JSONObject())
+                    .put("policy_revision", 0).put("applied_policy_revision", 0).put("secure_lock_applied", false)
+                root.remove("lost_message"); root.remove("return_message")
             }
         }
         store.resumeAfterEnrollment()
         app.store.update { it.copy(agent = it.agent.copy(apiKey = "", headers = emptyMap()),
             hermes = if (it.hermes.deviceApi) it.hermes.copy(token = newId().replace("-", "") + newId().replace("-", "")) else it.hermes) }
-        start(); sync()
+        requireRecovery(); start(); sync()
     }
     internal fun api(method: String, path: String, body: JSONObject? = null, recovery: Boolean = false): JSONObject {
         check(identity.paired) { "Pair this R1 with a host first" }
-        if (!recovery) check(!blocked) { "Shared workspace access is restricted on this device" }
+        if (!recovery) check(networkAllowed) { "Shared workspace access is restricted on this device" }
         val credentials = identity.value
         try {
             val result = http.json(credentials.getString("base_url"), credentials.getString(if (recovery) "recovery_token" else "device_token"), method, path, body)
             check(identity.value.optString("device_id") == credentials.getString("device_id")) { "Device enrollment changed while the request was running" }
-            if (!recovery) check(!blocked) { "Shared workspace access changed while the request was running" }
+            if (!recovery) check(networkAllowed) { "Shared workspace access changed while the request was running" }
             return result
         } catch (e: HubException) {
-            if (!recovery && e.status in setOf(401, 403)) identity.update { it.put("revoked", true) }
+            if (!recovery && e.status in setOf(401, 403)) {
+                identity.update { it.put("revoked", true) }
+                withRecoveryRestriction()
+            }
             throw e
         }
+    }
+    private fun withRecoveryRestriction() {
+        mutable.value = "Device access restricted"
+        dev.r1ptt.ui.DeviceActivity.refreshRecovery(app)
+        requireRecovery()
     }
     /** Active host runs can request a native tool; drain its durable queue without a workspace upload. */
     suspend fun checkCommands() = withContext(Dispatchers.IO) {
         lock.withLock {
-            check(identity.paired && !blocked) { "Shared workspace access is restricted" }
+            check(identity.paired && !quarantined) { "Shared workspace access is restricted" }
             try {
-                management.checkIn()
+                recoveryOnly()
                 check(!blocked) { "Shared workspace access changed during check-in" }
             } finally {
                 // Learning quarantine can cancel this active chat. Wake Home's content gate even
@@ -88,7 +144,7 @@ class WorkspaceClient(private val app: App) {
             if (!identity.paired) return@withLock
             mutable.value = "Syncing…"
             try {
-                management.checkIn()
+                recoveryOnly()
                 if (blocked) { mutable.value = "Workspace access restricted"; return@withLock }
                 syncNotes()
                 listOf("notes", "prompts", "runs").forEach { key ->
@@ -110,13 +166,14 @@ class WorkspaceClient(private val app: App) {
         }
     }
     internal fun syncNotes() {
+        check(networkAllowed) { "Check device recovery before syncing" }
         store.items("notes").filter { it.optBoolean("pending") }.forEach { note ->
             try {
                 if (note.optString("kind") == "audio" && note.stringOrEmpty("media_id").isBlank()) {
                     val credentials = identity.value
                     val media = http.upload(credentials.getString("base_url"), credentials.getString("device_token"), note.getString("id"),
                         File(store.mediaDir, note.getString("local_media")), note.optString("mime", "audio/mp4"))
-                    check(!blocked && identity.value.optString("device_id") == credentials.getString("device_id")) { "Workspace access changed during upload" }
+                    check(networkAllowed && identity.value.optString("device_id") == credentials.getString("device_id")) { "Workspace access changed during upload" }
                     note.put("media_id", media.getString("id")); store.put("notes", note)
                 }
                 // Journal the exact creation body before admission. Local edits never change a
@@ -191,9 +248,10 @@ class WorkspaceClient(private val app: App) {
     suspend fun recording(note: JSONObject): File = withContext(Dispatchers.IO) {
         check(!blocked)
         note.stringOrEmpty("local_media").takeIf(String::isNotBlank)?.let { name -> File(store.mediaDir, name).takeIf(File::exists)?.let { return@withContext it } }
+        check(networkAllowed) { "Check device recovery before downloading" }
         val credentials = identity.value; val id = note.getString("media_id")
         val downloaded = http.media(credentials.getString("base_url"), credentials.getString("device_token"), id, File(store.mediaDir, "download-$id.audio"))
-        if (blocked || identity.value.optString("device_id") != credentials.getString("device_id")) {
+        if (!networkAllowed || identity.value.optString("device_id") != credentials.getString("device_id")) {
             downloaded.delete(); error("Workspace access changed during download")
         }
         downloaded

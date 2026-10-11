@@ -51,6 +51,8 @@ class SharedChatTest {
         }
         app.workspace.identity.javaClass.getDeclaredField("persistence").apply { isAccessible = true }
             .set(app.workspace.identity, EncryptedConfigPersistence(identity, disk, cipher, codec))
+        // These tests start inside an already verified foreground recovery session.
+        app.workspace.recoveryConfirmed(app.workspace.recoveryTicket())
         return app
     }
     private class Host(private val dropFirstRunReply: Boolean = false, private val waitForCommand: Boolean = false) : Dispatcher() {

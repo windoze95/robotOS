@@ -1,0 +1,42 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: robotos-hub
+spec:
+  podSelector:
+    matchLabels:
+      app: robotos-hub
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Default k3s Traefik. Adjust to your actual ingress controller's selectors.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - protocol: TCP
+          port: 8787
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        # Covers service DNAT when a same-cluster HTTPS route uses Traefik.
+        - protocol: TCP
+          port: 8443
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+        # Hermes, transcription, and HTTPS proxies. Add an explicit port rule
+        # when an upstream HTTPS origin uses a nonstandard port (e.g. 9443).
+        - protocol: TCP
+          port: 443

@@ -21,6 +21,9 @@ the R1 and in a self-hosted web console. Combine several notes, add more while e
 request, save it for later and track the reply. Two enrolled R1s use the same saved revisions and
 run history. The console also manages device enrollment, settings and permissioned recovery
 commands. See [docs/HUB.md](docs/HUB.md) for setup, synchronization and lost-device limits.
+For native services, Docker Compose, k3s, or Hermes and robotOS on separate machines, see
+[deployment architectures](docs/DEPLOYMENT.md). The hub owns shared state; the MCP adapter runs
+alongside Hermes and connects to that hub.
 
 ## Screenshots
 

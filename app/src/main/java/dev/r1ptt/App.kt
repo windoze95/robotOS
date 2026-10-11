@@ -20,7 +20,9 @@ class App : Application() {
     /** Hermes's way into the R1 (texts, status) over the tailnet. */
     val deviceApi by lazy { dev.r1ptt.hermes.DeviceApi(this) }
     /** The owner's texts to the R1's number, passed through to Hermes. */
-    val hermesTexts by lazy { dev.r1ptt.hermes.HermesTexts(this) }
+    private val hermesTextsInstance = lazy { dev.r1ptt.hermes.HermesTexts(this) }
+    val hermesTexts get() = hermesTextsInstance.value
+    fun resumeHermesTexts() { if (hermesTextsInstance.isInitialized()) hermesTextsInstance.value.resume() }
     val hermesRuns by lazy { dev.r1ptt.hermes.HermesRuns(filesDir) { store.value } }
     val workspace by lazy { dev.r1ptt.workspace.WorkspaceClient(this) }
     val notices by lazy { dev.r1ptt.hermes.DeviceNotices(this) }
@@ -50,5 +52,6 @@ class App : Application() {
         turns = TurnController(this)
         updates = UpdateManager(this)
         updates.recover()
+        dev.r1ptt.workspace.RecoveryMonitor(this).start()
     }
 }

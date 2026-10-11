@@ -125,7 +125,19 @@ class PttService : Service() {
         } else dev.r1ptt.workspace.WorkspaceActivity.button
             ?: { down -> if (down) gestures.down() else gestures.up() }
     }
-    private fun routeButton(down: Boolean) = pressRouter.edge(down)
+    fun cancelPressForRecovery() {
+        pressRouter.cancel()
+        if (::gestures.isInitialized) gestures.cancel()
+    }
+    private fun routeButton(down: Boolean) {
+        val app = application as App
+        if (app.workspace.blocked) {
+            cancelPressForRecovery()
+            if (down) { app.workspace.recoverNow(); app.workspace.management.stopRinging() }
+            return
+        }
+        pressRouter.edge(down)
+    }
 
     // Not sticky: Android 14 won't let a microphone service restart from the background. If the
     // process ever dies, the launcher restarts the service the next time it comes to the front.

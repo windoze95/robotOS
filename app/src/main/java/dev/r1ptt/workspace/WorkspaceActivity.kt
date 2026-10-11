@@ -64,7 +64,8 @@ class WorkspaceActivity : DeviceActivity() {
         hub.start(); hub.refresh()
         statusJob = scope.launch { hub.status.collect { value ->
             status?.text = value
-            if (hub.blocked && screen != "restricted") restricted()
+            if (hub.quarantined && screen != "restricted") restricted()
+            else if (!hub.blocked && screen == "restricted") index()
             else if (!hub.blocked && value != "Syncing…" && screen in setOf("index", "notes", "prompts", "runs")) {
                 val y = wheelScrollTarget?.scrollY ?: 0
                 when (screen) { "index" -> index(); "notes" -> notes(); "prompts" -> prompts(); "runs" -> runs() }
@@ -92,6 +93,7 @@ class WorkspaceActivity : DeviceActivity() {
         status = ui.note(hub.status.value).also(body::addView)
     }
     private fun restricted() {
+        stashDraft()
         recorder?.cancel(); recorder = null; recordingDestination = null
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         stopPlayback(); page("Device recovery", "restricted")
@@ -456,6 +458,10 @@ class WorkspaceActivity : DeviceActivity() {
     companion object {
         var button: ((Boolean) -> Unit)? = null
         private var active: java.lang.ref.WeakReference<WorkspaceActivity>? = null
+        fun pauseForRecovery() { active?.get()?.let {
+            it.stashDraft(); it.recorder?.cancel(); it.recorder = null; it.recordingDestination = null
+            it.stopPlayback(); it.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } }
         fun quarantineActive() { active?.get()?.restricted() }
     }
 }

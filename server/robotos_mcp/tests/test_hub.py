@@ -1,6 +1,8 @@
 import io
 import json
 import os
+from pathlib import Path
+import tempfile
 from unittest.mock import patch
 import unittest
 
@@ -50,6 +52,23 @@ class ReceiptHub(Hub):
 
 
 class HubMcpTest(unittest.TestCase):
+    def test_explicit_projected_secret_file_and_ambiguous_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            secret = Path(directory) / 'token'
+            secret.write_text('scoped-mcp-token-' * 3 + '\n')
+            projected = Path(directory) / 'mounted-secret'
+            projected.symlink_to(secret)
+            with patch.dict(os.environ, {'ROBOTOS_HUB_URL': 'https://hub.example.com',
+                                         'ROBOTOS_HUB_MCP_TOKEN_FILE': str(projected)}, clear=True):
+                hub = from_env(mcp.TOOLS)
+                self.assertEqual('scoped-mcp-token-' * 3, hub.token)
+                with patch.dict(os.environ, {'ROBOTOS_HUB_MCP_TOKEN': 'different-' * 4}):
+                    with self.assertRaisesRegex(ValueError, 'only one'):
+                        from_env(mcp.TOOLS)
+                secret.unlink()
+                with self.assertRaisesRegex(ValueError, 'Could not read'):
+                    from_env(mcp.TOOLS)
+
     def test_multiple_devices_never_select_an_arbitrary_sim(self):
         hub = FakeHub([{"id": "a"}, {"id": "b"}])
         _, failed, _ = hub.run_tool("send_sms", {"to": "Sam", "body": "Hello"})

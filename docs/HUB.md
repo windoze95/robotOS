@@ -123,6 +123,21 @@ workspace access on the host immediately. Its restricted recovery identity can s
 receive its own recovery commands and acknowledge them. Offline cached data cannot be remotely
 locked or cleared until the R1 receives the instruction. The shared workspace and other R1s are
 not erased when local data is cleared.
+The lost policy is durable and has no expiration. On boot, waking, returning to robotOS or reconnecting,
+the R1 checks that policy before revealing cached content or resuming ordinary device actions. Once received,
+it saves the restriction before processing recovery commands. A blocked device remains blocked
+across app restarts and offline periods until it receives a newer policy restoring access. The
+console distinguishes the owner's requested policy from the exact policy acknowledged by the R1;
+a stale check-in cannot confirm a newer lost request. This is separate from command expirations.
+
+Marking lost or revoked cancels queued agent actions (including MCP recovery requests), updates
+and reboots. Only owner-issued recovery actions remain available; legacy queued commands without
+issuer evidence are cancelled conservatively. Already-received
+actions become unknown because they may have executed; a later final receipt is retained.
+New ordinary command admissions are denied, including receipt handoffs racing with a lost request.
+Ordinary settings changes are also disabled until the owner restores access.
+Owner recovery commands such as ringing, return information and locally permitted locking remain
+available after the R1 confirms that it has applied the policy. Local permissions still apply.
 This prevents new agent requests; work already admitted to Hermes may finish and must be checked
 in Runs. Revocation does not undo an external action that has already happened.
 Clearing local workspace also revokes its workspace credential immediately and requires a new
@@ -139,11 +154,27 @@ and active device-admin support. Factory reset requires supported device-owner e
 separate local authorization. The existing provisioning script disables the keyguard for the
 original PTT workflow; configure and verify a secure credential before relying on remote locking.
 
+Protection adapts to the security features actually enabled on the R1. Without a secure Android
+credential, robotOS restricts its own screens and action entry points; this does not lock Android
+or prevent access through other apps, debugging or a modified operating system. With a secure
+credential, active device admin and locally enabled management, lost mode can also request an
+Android lock. Capability checks refresh when robotOS resumes and reports its state, so enabling
+those protections locally does not require re-enrollment. No local permission is silently granted.
+The console reports app restrictions, secure credential availability, remote-lock support and
+device-reported lock application separately, together with the last connection time. A lock
+receipt is evidence that Android accepted a lock action, not proof that the device remains locked.
+
 Recovery check-ins are opt-in and coordinate with the existing radio policy. They trade standby
 battery life for opportunities to receive commands. A server cannot reach an R1 while all of its
 radios are off. An alarm or location request sent to an offline device remains queued until a
 connection is available, and may expire first. The rooted/unlocked platform does not establish
 tamper-resistant theft protection.
+Foreground, wake and reconnect checks protect normal use without enabling periodic background
+radio wakeups. If the R1 cannot reach the host, it stays on the recovery screen until a successful
+check verifies access. This also applies to a previously unrestricted device: a timeout or failed
+connection never exposes cached notes or chats. The cache remains saved on disk, and network setup
+and recovery checks remain available. Older robotOS clients must be updated to use this strict
+verification gate, acknowledge versioned recovery policy and report the new security posture.
 
 Update commands must follow the existing signed-release verifier and Android installer policy.
 The command specifies the official release version code; arbitrary APK URLs are not accepted.

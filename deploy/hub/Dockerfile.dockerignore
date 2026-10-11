@@ -1,0 +1,11 @@
+**
+!server
+!server/robotos_hub
+!server/robotos_hub/**
+!tools
+!tools/hub-backup.py
+!deploy
+!deploy/hub
+!deploy/hub/healthcheck.py
+**/__pycache__
+**/tests

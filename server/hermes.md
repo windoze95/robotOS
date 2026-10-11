@@ -1,5 +1,36 @@
 # Connecting Hermes Agent
 
+For shared notes, Prompt Builder, multiple R1s and lost-device recovery, use the
+[robotOS hub](../docs/HUB.md). R1s connect to the hub with individual credentials; the hub connects
+to Hermes. Hermes's small stdio MCP adapter connects back to the hub to queue device actions.
+The hub and Hermes can run on different machines. See [deployment architectures](../docs/DEPLOYMENT.md)
+for Docker Compose, k3s, native services and mixed deployments.
+
+For a native hub using a remote Hermes API:
+
+```sh
+tools/hub-setup.sh --public-origin https://workspace.example.com \
+  --hermes-url https://hermes.example.com \
+  --hermes-token-file /private/hermes-api-key
+```
+
+On the separate Hermes machine, install only its adapter:
+
+```sh
+tools/hub-setup.sh --mcp-only --hub-url https://workspace.example.com \
+  --mcp-token-file /private/robotOS-mcp-token
+```
+
+The second command installs the adapter and skill, stores only the scoped MCP token in Hermes's
+protected `.env`, updates its MCP configuration and restarts its gateway. It does not install a
+second hub or copy the owner's console credential. Add `--no-start` to prepare configuration
+without restarting. Use the hub's `mcp_token`, not its `owner_token`, for the adapter. Keep source
+token files private and transfer them through your protected secret-management channel.
+Remote URLs require HTTPS. Both services retain independent data directories, credentials and
+lifecycles; a sleeping R1 is not required for saving a draft or viewing a stored reply.
+
+## Legacy direct connection
+
 Run `tools/hermes-setup.sh --host you@hermes-host` ([docs/HERMES.md](../docs/HERMES.md)). Hermes is the
 R1's only backend: every push-to-talk turn goes to Hermes, Hermes texts people through the R1 with its
 `robotos` MCP tools, and texts from your own number reach Hermes. The script connects the R1 and

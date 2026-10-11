@@ -47,4 +47,16 @@ class PressRouterTest {
         router.edge(false)
         assertEquals(listOf("stop ring", "ptt:true", "ptt:false"), events)
     }
+    @Test fun recoveryCancellationNeverReleasesTheOldCaptureAndAcceptsTheNextPress() {
+        val events = mutableListOf<String>()
+        var surface = "old"
+        val router = PressRouter { val target = surface; { down -> events += "$target:$down" } }
+        router.edge(true)
+        router.cancel()
+        router.edge(false) // physical release arrives while restricted; never submits the old note
+        surface = "restored"
+        router.edge(true); router.edge(false)
+        assertEquals(listOf("old:true", "restored:true", "restored:false"), events)
+    }
+
 }

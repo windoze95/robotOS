@@ -54,7 +54,7 @@ class HubSettingsActivity : DeviceActivity() {
             }); body.addView(ui.note(detail))
         }
         permission("remote_management", "Allow remote management", "Lets your authenticated owner console ring this R1, display return information and change quiet mode, brightness, text size and screen timeout. Additional controls below are separate permissions.")
-        permission("recovery_checkins", "Periodic recovery check-ins", "About every 15 minutes, briefly asks the existing radio policy for connectivity. Off by default; increases battery use. Android may defer check-ins. A powered-off device remains unreachable.")
+        permission("recovery_checkins", "Periodic recovery check-ins", "Wake, reconnect and boot always check recovery first. This optional setting also checks about every 15 minutes and briefly asks the existing radio policy for connectivity. Off by default; increases battery use. Android may defer check-ins. A powered-off device remains unreachable.")
         body.addView(ui.toggle("Share location for recovery", hub.identity.allowed("location_reporting")) { enabled ->
             hub.identity.permission("location_reporting", enabled)
             if (enabled && checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != android.content.pm.PackageManager.PERMISSION_GRANTED)
@@ -69,7 +69,14 @@ class HubSettingsActivity : DeviceActivity() {
             })
         }
         body.addView(ui.button("Android location settings") { startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) })
-        permission("secure_lock", "Allow secure remote lock", "Requires an Android PIN/password and active device-admin enrollment. Sleeping without a secure credential is not advertised as a lock.")
+        permission("secure_lock", "Allow secure remote lock", "With your permission, lost or revoked status automatically requests Android secure lock whenever a PIN/password and active device admin are available. Enabling Android security later automatically strengthens recovery protection. Without them robotOS restricts its own screens and actions; other Android apps remain accessible.")
+        val security = hub.management.security()
+        body.addView(ui.note(if (security.optBoolean("secure_lock_available")) "Protection: robotOS restriction and Android secure lock."
+            else "Protection: robotOS restriction. Android secure lock requires the permission above, remote management, an Android PIN/password and device admin."))
+        body.addView(ui.button("Enable Android device admin") {
+            startActivity(Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN,
+                android.content.ComponentName(this, dev.r1ptt.sys.AdminReceiver::class.java)))
+        })
         body.addView(ui.button("Configure Android screen lock") { startActivity(Intent(Settings.ACTION_SECURITY_SETTINGS)) })
         permission("allow_clear_workspace", "Allow clearing local workspace", "Owner can erase shared notes, recordings, drafts and cached replies on this R1. Host copies and the other R1 remain intact; recovery identity survives.")
         permission("allow_updates", "Allow update requests", "Owner can request a signed robotOS update. The existing updater verifies the release and requires local installer approval. The console shows pending until the installed version is confirmed.")

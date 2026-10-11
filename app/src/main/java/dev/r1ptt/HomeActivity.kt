@@ -197,14 +197,7 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
         app.turns.attachTarget(this)
         hideSystemBars()
         if (hasMic()) PttService.start(this) // the microphone service may only start from the foreground
-        var recoveryOpened = false
         observations = MainScope().also { s ->
-            s.launch { app.workspace.status.collect {
-                if (app.workspace.blocked && !recoveryOpened) {
-                    recoveryOpened = true
-                    startActivity(Intent(this@HomeActivity, dev.r1ptt.workspace.WorkspaceActivity::class.java))
-                }
-            } }
             s.launch { app.store.flow.collect(::applyConfig) }
             s.launch { app.history.flow.collect(::renderHistory) }
             s.launch { app.turns.state.collect { render(it); kotlinx.coroutines.delay(50) } }

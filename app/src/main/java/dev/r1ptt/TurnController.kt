@@ -180,9 +180,9 @@ class TurnController(private val app: App) : Gestures.Listener {
         approvalPressBack = approvalReviewBack
         approvalBlockedPress = approvalPressBack != null
         if (approvalBlockedPress) { app.screen.notePress(); return }
-        updateBlockedPress = app.workspace.blocked || !app.updates.allowVoice()
+        updateBlockedPress = !app.workspace.networkAllowed || !app.updates.allowVoice()
         if (updateBlockedPress) {
-            if (app.workspace.blocked) { stopActive(); fail("Workspace access is restricted on this R1"); settle() }
+            if (!app.workspace.networkAllowed) { stopActive(); fail("Workspace access is restricted on this R1"); settle() }
             return
         }
         pressGeneration++
@@ -396,7 +396,7 @@ class TurnController(private val app: App) : Gestures.Listener {
 
     /** A message typed into the launcher's text field: Hermes + text-to-speech. */
     fun sendText(text: String) {
-        if (app.workspace.blocked) { fail("Workspace access is restricted on this R1"); return }
+        if (!app.workspace.networkAllowed) { fail("Workspace access is restricted on this R1"); return }
         if (!app.updates.allowVoice()) return
         app.store.loadError?.let { fail(it); settle(); return }
         pressGeneration++

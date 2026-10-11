@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Install on the current Hermes host. No device changes or public ingress configuration.
+# Install a native hub or (--mcp-only) the adapter on a separate Hermes host.
+# No device changes or public ingress configuration.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 if [ -x /opt/homebrew/bin/python3.13 ]; then
