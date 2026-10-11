@@ -37,7 +37,7 @@ class SettingsActivity : DeviceActivity() {
         current = next
         dirty = { false }
         wheelVolumeTarget = null
-        if (next == Page.CONNECTION || next == Page.SPEECH) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        if (app.workspace.identity.paired || next == Page.CONNECTION || next == Page.SPEECH) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
         val page = ui.page(next.title, ::back)
         body = page.body
@@ -67,7 +67,7 @@ class SettingsActivity : DeviceActivity() {
             ui.navTile("Sound", R.drawable.ic_speaker, "Spoken replies and listening sounds") { show(Page.SOUND) },
             ui.navTile("Connectivity & power", R.drawable.ic_wifi, "Wi-Fi, cellular and reachability") { show(Page.POWER) },
             ui.navTile("Hermes", R.drawable.ic_hermes, "Connection, tasks and device access") { startActivity(Intent(this, dev.r1ptt.hermes.HermesActivity::class.java)) },
-            ui.navTile("Connections", R.drawable.ic_server, "Hermes address and credentials") { show(Page.CONNECTION) },
+            ui.navTile("Connections", R.drawable.ic_server, if (app.workspace.identity.paired) "Managed by your workspace host" else "Hermes address and credentials") { show(Page.CONNECTION) },
             ui.navTile("Speech services", R.drawable.ic_voice, "Transcription, voice and credentials") { show(Page.SPEECH) },
             ui.navTile("Host & devices", R.drawable.ic_server, "Shared workspace and recovery permissions") { startActivity(Intent(this, dev.r1ptt.workspace.HubSettingsActivity::class.java)) },
             ui.navTile("System", R.drawable.ic_chip, "Battery, app updates and power") { show(Page.SYSTEM) },
@@ -122,6 +122,12 @@ class SettingsActivity : DeviceActivity() {
     }
 
     private fun connection() {
+        if (app.workspace.identity.paired) {
+            body.addView(ui.note("Your workspace host manages the Hermes connection and model. Change them on the host; this R1 uses its paired device access."))
+            body.addView(ui.button("Host & devices", primary = true) { startActivity(Intent(this, dev.r1ptt.workspace.HubSettingsActivity::class.java)) })
+            body.addView(ui.button("Workspace runs") { startActivity(dev.r1ptt.workspace.WorkspaceActivity.runsIntent(this)) })
+            return
+        }
         val before = app.store.value.agent
         body.addView(ui.note("Your R1 sends conversations to this Hermes server."))
         val url = field("Hermes server URL", before.baseUrl, uri = true)

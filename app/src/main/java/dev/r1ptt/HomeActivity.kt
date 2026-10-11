@@ -98,7 +98,7 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
     private val batteryEvents = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == Intent.ACTION_SCREEN_OFF || intent.action == Intent.ACTION_SCREEN_ON) {
-                app.hermesRuns.setVisible(this@HomeActivity, intent.action == Intent.ACTION_SCREEN_ON)
+                app.hermesRuns.setVisible(this@HomeActivity, !app.workspace.identity.paired && intent.action == Intent.ACTION_SCREEN_ON)
                 return
             }
             val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
@@ -203,14 +203,14 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
             s.launch { app.turns.state.collect { render(it); kotlinx.coroutines.delay(50) } }
             s.launch { AudioPlayback.flow.collect { render(app.turns.state.value) } }
             s.launch { app.history.errors.collect { render(app.turns.state.value) } }
-            s.launch { app.hermesRuns.state.collect { renderTask(it) } }
+            if (!app.workspace.identity.paired) s.launch { app.hermesRuns.state.collect { renderTask(it) } }
             s.launch { app.notices.state.collect(::renderNotices) }
         }
         render(app.turns.state.value)
         registerReceiver(batteryEvents, IntentFilter(Intent.ACTION_BATTERY_CHANGED).apply {
             addAction(Intent.ACTION_SCREEN_ON); addAction(Intent.ACTION_SCREEN_OFF)
         }, RECEIVER_NOT_EXPORTED)
-        app.hermesRuns.setVisible(this, getSystemService(android.os.PowerManager::class.java).isInteractive)
+        app.hermesRuns.setVisible(this, !app.workspace.identity.paired && getSystemService(android.os.PowerManager::class.java).isInteractive)
         runCatching { getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(connectionEvents) }
             .onSuccess { connectionRegistered = true }
     }
@@ -406,7 +406,7 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
                 requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 1)
             }
             heroAsks && setupNeeded() != null -> null
-            cfg.agent.baseUrl.isBlank() || cfg.agent.apiKey.isBlank() -> Strip(getString(R.string.need_hermes), R.color.accent, Glyph.ICON, R.drawable.ic_hermes, settings)
+            needsDirectHermes() -> Strip(getString(R.string.need_hermes), R.color.accent, Glyph.ICON, R.drawable.ic_hermes, settings)
             cfg.missingSpeechKey -> Strip(getString(R.string.need_key), R.color.accent, Glyph.ICON, R.drawable.ic_voice, settings)
             imeVisible -> Strip("Hold to dictate · tap to send", R.color.dim, Glyph.ICON, R.drawable.ic_voice)
             !networkAvailable -> Strip("No network connection", R.color.dim, Glyph.ICON, R.drawable.ic_wifi_off) {
@@ -490,7 +490,7 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
     }
 
     private fun stopLabel() = if (AudioPlayback.active) "Stop speech"
-        else if (app.hermesRuns.state.value.run?.active == true) "Stop task" else "Disconnect"
+        else if (!app.workspace.identity.paired && app.hermesRuns.state.value.run?.active == true) "Stop task" else "Disconnect"
 
     /** The first-run and empty-chat card: what the button does, with an arrow toward it. */
     private fun buildEmpty() {
@@ -507,10 +507,15 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
         }
     }
 
+    /** Pairing deliberately removes the direct Hermes credential; the host owns that connection. */
+    private fun needsDirectHermes() = !app.workspace.identity.paired && app.store.value.agent.let {
+        it.baseUrl.isBlank() || it.apiKey.isBlank()
+    }
+
     private fun setupNeeded(): String? {
         val cfg = app.store.value
         return when {
-            cfg.agent.baseUrl.isBlank() || cfg.agent.apiKey.isBlank() -> "Connect Hermes to start."
+            needsDirectHermes() -> "Connect Hermes to start."
             cfg.missingSpeechKey -> "Add a speech key to start."
             else -> null
         }
@@ -675,12 +680,14 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
     private fun renderTask(state: HermesRunState) {
         drawTask(state)
         renderAction(shown())
+        if (app.workspace.identity.paired) return
         app.hermesRuns.confirmAdmittedDraft(app.history)
         app.hermesRuns.reconcile(app.history)
     }
 
     private fun drawTask(state: HermesRunState) {
         val card = findViewById<TextView>(R.id.hermes_task)
+        if (app.workspace.identity.paired) { card.visibility = View.GONE; return }
         val run = state.run
         card.visibility = if (run != null && (run.active || !run.delivered)) View.VISIBLE else View.GONE
         val urgent = run?.status == "waiting_for_approval"
