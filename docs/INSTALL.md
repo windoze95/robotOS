@@ -120,6 +120,8 @@ The script makes these changes:
 - Makes the app the home screen.
 - Turns the lock screen off.
 - Sets a 15 s screen timeout and low brightness.
+- Turns on Android's dark theme, colored from the R1's orange, so Android's own screens and the
+  keyboard match robotOS.
 - Disables the bloat in `tools/debloat.txt`.
 - Pushes your config, including API keys.
 - Reboots.

@@ -95,6 +95,11 @@ adb shell settings put system screen_off_timeout 15000
 adb shell settings put system screen_brightness_mode 0
 adb shell settings put system screen_brightness 60
 [ "$DENSITY" != 0 ] && adb shell wm density "$DENSITY"
+# Android's own screens and the stock keyboard (its default Material You theme follows the system)
+# go dark, colored from the R1's orange, so they match robotOS instead of flashing white.
+THEME='{"android.theme.customization.system_palette":"FF4F12","android.theme.customization.accent_color":"FF4F12","android.theme.customization.color_source":"preset","android.theme.customization.theme_style":"VIBRANT"}'
+adb shell cmd uimode night yes >/dev/null
+adb shell "settings put secure theme_customization_overlay_packages '$THEME'"
 
 if [ "$DEBLOAT" = 1 ]; then
   say "Disabling unneeded system apps (reversible: --undo-debloat)"
