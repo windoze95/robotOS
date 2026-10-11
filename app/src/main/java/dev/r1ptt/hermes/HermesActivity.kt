@@ -17,8 +17,8 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
-import android.widget.Toast
 import dev.r1ptt.App
+import dev.r1ptt.R
 import dev.r1ptt.data.ConfigPersistenceException
 import dev.r1ptt.data.HermesLink
 import dev.r1ptt.messages.SmsRecipientText
@@ -70,24 +70,29 @@ class HermesActivity : DeviceActivity() {
         val page = ui.page("Hermes") { finish() }
         setContentView(page.root); wheelScrollTarget = page.scroll
         val body = page.body
-        connection = ui.text(host(), 15f, muted = true); body.addView(connection)
-        body.addView(ui.button("Check connection") { checkConnection() })
+        body.addView(ui.card().apply {
+            addView(ui.mono("Server", R.color.accent))
+            connection = ui.text(host(), 17f).apply { typeface = dev.r1ptt.ui.Fonts.display(context, 600); setPadding(0, ui.dp(4), 0, ui.dp(10)) }
+            addView(connection)
+            addView(ui.button("Check connection") { checkConnection() }.apply { (layoutParams as LinearLayout.LayoutParams).bottomMargin = 0 })
+        })
         tasks = ui.column(); body.addView(tasks)
         body.addView(ui.section("Model"))
-        modelSummary = ui.text(modelLabel(), 15f, muted = true); body.addView(modelSummary)
+        modelSummary = ui.text(modelLabel(), 16f).apply { setPadding(ui.dp(4), 0, ui.dp(4), ui.dp(10)) }; body.addView(modelSummary)
         body.addView(ui.button("Choose model") { chooseModel() })
-        body.addView(ui.text("A Hermes session may have its own model setting. Completed tasks show the model actually used.", 13f, muted = true))
+        body.addView(ui.note("A Hermes session may have its own model setting. Completed tasks show the model actually used."))
         body.addView(ui.section("This R1"))
-        status = ui.text(describe(), 14f, muted = true); body.addView(status)
+        status = ui.mono(describe(), R.color.dim, 12f, 500).apply { setLineSpacing(ui.dp(4).toFloat(), 1f); setPadding(ui.dp(4), 0, ui.dp(4), ui.dp(12)) }
+        body.addView(status)
         act = ui.toggle("Let Hermes access this R1", cfg.hermes.deviceApi); body.addView(act)
         if (cfg.hermes.token.length < 32) {
             act.isEnabled = false
-            body.addView(ui.text("Set up the device connection from your computer first.", 14f, muted = true))
+            body.addView(ui.note("Set up the device connection from your computer first."))
         }
-        body.addView(ui.text("Access includes text messages, saved recipients and device status.", 14f, muted = true))
+        body.addView(ui.note("Access includes text messages, saved recipients and device status."))
         body.addView(ui.section("Your texts to Hermes"))
         passthrough = ui.toggle("Relay my texts to Hermes", cfg.hermes.passthrough); body.addView(passthrough)
-        body.addView(ui.text("Only texts from your number are relayed. Hermes replies by SMS.", 14f, muted = true))
+        body.addView(ui.note("Only texts from your number are relayed. Hermes replies by SMS."))
         body.addView(ui.section("Text limit"))
         limit = ui.field("Texts per day · 0 for unlimited", cfg.hermes.dailySendLimit.toString(), InputType.TYPE_CLASS_NUMBER)
         body.addView(limit)
@@ -98,9 +103,9 @@ class HermesActivity : DeviceActivity() {
         show = ui.toggle("Show messages on screen", cfg.hermes.allowShow); body.addView(show)
         volume = ui.toggle("Change volume", cfg.hermes.allowVolume); body.addView(volume)
         recipients = ui.toggle("Save recipients", cfg.hermes.allowSaveRecipient); body.addView(recipients)
-        body.addView(ui.text("These controls are available only while device access is on. Quiet mode still applies.", 14f, muted = true))
+        body.addView(ui.note("These controls are available only while device access is on. Quiet mode still applies."))
         body.addView(ui.section(""))
-        body.addView(ui.row(ui.button("Save", true) { save() }, ui.button("Close") { finish() }))
+        body.addView(ui.row(ui.button("Close") { finish() }, ui.button("Save", true) { save() }))
         renderTask(app.hermesRuns.state.value)
     }
 
@@ -132,21 +137,30 @@ class HermesActivity : DeviceActivity() {
         tasks.removeAllViews()
         val run = state.run
         if (run == null) {
-            if (state.message.isNotBlank()) tasks.addView(ui.text(state.message, 14f, muted = true))
+            if (state.message.isNotBlank()) tasks.addView(ui.note(state.message).apply { setPadding(ui.dp(4), ui.dp(12), ui.dp(4), 0) })
             return
         }
         tasks.addView(ui.section("Current task"))
-        tasks.addView(ui.text(run.label, 18f))
-        if (run.error.isNotBlank()) tasks.addView(ui.text(run.error, 14f, muted = true))
-        if (state.message.isNotBlank()) tasks.addView(ui.text(state.message, 14f, muted = true))
-        if (run.provider.isNotBlank() || run.model.isNotBlank())
-            tasks.addView(ui.text(listOf(run.provider, run.model).filter { it.isNotBlank() }.joinToString(" · "), 13f, muted = true))
+        val urgent = run.status == "waiting_for_approval"
+        tasks.addView(ui.card().apply {
+            if (urgent) background = ui.background(R.color.accent, 20)
+            val ink = if (urgent) R.color.on_accent else R.color.fg
+            addView(ui.mono(if (urgent) "Waiting for you" else run.status.replace('_', ' '), if (urgent) R.color.on_accent else R.color.accent))
+            addView(ui.title(run.approval?.description?.takeIf { urgent && it.isNotBlank() } ?: run.label, 19f, 600).apply {
+                setTextColor(getColor(ink)); setPadding(0, ui.dp(4), 0, 0)
+            })
+            if (run.error.isNotBlank()) addView(ui.text(run.error, 14f).apply { setTextColor(getColor(if (urgent) ink else R.color.error)); setPadding(0, ui.dp(6), 0, 0) })
+            if (state.message.isNotBlank()) addView(ui.text(state.message, 14f, muted = !urgent).apply { if (urgent) setTextColor(getColor(ink)); setPadding(0, ui.dp(6), 0, 0) })
+            if (run.provider.isNotBlank() || run.model.isNotBlank())
+                addView(ui.mono(listOf(run.provider, run.model).filter { it.isNotBlank() }.joinToString(" · "), if (urgent) R.color.on_accent else R.color.dim, 11f, 500)
+                    .apply { setPadding(0, ui.dp(8), 0, 0) })
+        })
+        if (run.status == "waiting_for_approval")
+            tasks.addView(ui.button("Review request", true) { reviewApproval(run) }.apply { isEnabled = !state.working })
         if (run.status == "submission_unknown") tasks.addView(ui.button("Check submission") { app.hermesRuns.retrySubmission() }
             .apply { isEnabled = !state.working && run.durableIdempotency })
         if (run.runId.isNotBlank()) tasks.addView(ui.button("Refresh status") { app.hermesRuns.refresh() }.apply { isEnabled = !state.working })
-        if (run.status == "waiting_for_approval") {
-            tasks.addView(ui.button("Review request", true) { reviewApproval(run) }.apply { isEnabled = !state.working })
-        } else if (approvalDialog != null) approvalDialog?.dismiss()
+        if (run.status != "waiting_for_approval") approvalDialog?.dismiss()
         if (run.active && run.runId.isNotBlank()) tasks.addView(ui.button("Stop task") { app.hermesRuns.stop() }
             .apply { isEnabled = !state.working && run.canStop && run.status != "stopping" })
         if (run.terminal && run.output.isNotBlank()) tasks.addView(ui.actionRow("Read result", run.output.take(100)) {
@@ -168,8 +182,14 @@ class HermesActivity : DeviceActivity() {
         val content = ui.column().apply {
             setPadding(ui.dp(16), ui.dp(12), ui.dp(16), ui.dp(16))
             addView(ui.text(a.description.ifBlank { "Hermes needs your decision to continue." }, 17f))
-            if (a.command.isNotBlank()) addView(ui.text(a.command, 14f, muted = true))
-            addView(ui.text("The side button cannot approve this request.", 13f, muted = true))
+            if (a.command.isNotBlank()) addView(ui.mono(a.command, R.color.fg, 12f, 500).apply {
+                isAllCaps = false
+                letterSpacing = 0f
+                background = ui.background(R.color.raised, 12)
+                setPadding(ui.dp(12), ui.dp(10), ui.dp(12), ui.dp(10))
+                setTextIsSelectable(true)
+            }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = ui.dp(12) })
+            addView(ui.text("The side button cannot approve this request.", 13f, muted = true).apply { setPadding(0, ui.dp(12), 0, 0) })
         }
         val scroll = ScrollView(this).apply { addView(content) }
         val dialog = showDeviceDialog(AlertDialog.Builder(this).setTitle("Review request").setView(scroll)
@@ -201,7 +221,7 @@ class HermesActivity : DeviceActivity() {
             isEnabled = run.canApprove && a.requestId.isNotBlank() && "deny" in a.choices
             setOnClickListener { resolve(false) }
         }
-        if (!run.canApprove || a.requestId.isBlank()) content.addView(ui.text("Update Hermes on your computer to answer this request safely.", 14f, muted = true))
+        if (!run.canApprove || a.requestId.isBlank()) content.addView(ui.note("Update Hermes on your computer to answer this request safely."))
     }
 
     private fun checkConnection() {
@@ -297,5 +317,5 @@ class HermesActivity : DeviceActivity() {
         val text = ui.text(value, 17f).apply { setPadding(ui.dp(16), ui.dp(12), ui.dp(16), ui.dp(12)); setTextIsSelectable(true) }
         showDeviceDialog(AlertDialog.Builder(this).setTitle(title).setView(ScrollView(this).apply { addView(text) }).setPositiveButton("Close", null))
     }
-    private fun toast(value: String) = Toast.makeText(this, value, Toast.LENGTH_LONG).show()
+    private fun toast(value: String) = showToast(value)
 }

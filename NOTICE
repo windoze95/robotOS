@@ -34,5 +34,8 @@ robotOS builds on work by others.
   sequence.
 - Rabbit Inc.: official developer mode, the WebUSB flash tool, and the stock firmware images.
 - Andy Yan's LineageOS GSI builds, and Magisk by topjohnwu.
+- Space Grotesk (Copyright 2020 The Space Grotesk Project Authors) and JetBrains Mono (Copyright
+  2020 The JetBrains Mono Project Authors), bundled unmodified in app/src/main/res/font under the
+  SIL Open Font License 1.1. The license texts are in licenses/.
 
 Not affiliated with Rabbit Inc., OpenAI, or Nous Research.

@@ -5,6 +5,7 @@ import android.app.AlertDialog
 import android.app.NotificationManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -88,7 +89,7 @@ class MessagesActivity : DeviceActivity(), DictationTarget {
         pendingNotice = intent.getStringExtra(SmsExternalDraft.NOTICE)?.take(300)
         root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), dp(4), dp(12), dp(8))
+            setPadding(dp(10), dp(10), dp(12), dp(10))
             setBackgroundColor(getColor(R.color.bg))
             isFocusableInTouchMode = true
         }
@@ -168,11 +169,12 @@ class MessagesActivity : DeviceActivity(), DictationTarget {
         root.removeAllViews(); list = null; recipient = null; body = null; reviewButton = null; draftInfo = null
         val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         root.addView(header)
-        header.addView(button("‹", ::goBack).apply { contentDescription = "Back" }, LinearLayout.LayoutParams(dp(48), dp(48)))
-        header.addView(label("Messages", 20f).apply { setPadding(dp(10), 0, 0, 0) }, LinearLayout.LayoutParams(0, dp(48), 1f))
-        header.addView(button("Options", ::options), LinearLayout.LayoutParams(dp(104), dp(48)))
+        header.addView(ui.iconButton(R.drawable.ic_back, "Back", action = ::goBack), LinearLayout.LayoutParams(dp(48), dp(48)))
+        header.addView(ui.title(when (screen) { Screen.COMPOSE -> "New text"; else -> "Messages" }, 24f).apply { setPadding(dp(14), 0, 0, 0) },
+            LinearLayout.LayoutParams(0, dp(48), 1f))
+        header.addView(ui.iconButton(R.drawable.ic_more, "Options", action = ::options), LinearLayout.LayoutParams(dp(48), dp(48)))
         status = label(if (loaded) idleHint() else "Opening Messages…", 14f).apply {
-            setTextColor(getColor(R.color.dim)); setPadding(0, dp(4), 0, dp(4))
+            setTextColor(getColor(R.color.dim)); setPadding(dp(6), dp(6), dp(4), dp(6))
         }
         root.addView(status)
         if (screen == Screen.COMPOSE) {
@@ -188,8 +190,8 @@ class MessagesActivity : DeviceActivity(), DictationTarget {
         list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; scroll.addView(this) }
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
         when (screen) {
-            Screen.THREADS -> root.addView(button(if (draft.body.isNotEmpty() || draft.peer.isNotEmpty()) "Resume draft" else "New text") { navigate(Screen.COMPOSE) }.apply { isEnabled = loaded })
-            Screen.CONVERSATION -> root.addView(button("Write a reply", ::reply))
+            Screen.THREADS -> root.addView(button(if (draft.body.isNotEmpty() || draft.peer.isNotEmpty()) "Resume draft" else "New text", primary = true) { navigate(Screen.COMPOSE) }.apply { isEnabled = loaded })
+            Screen.CONVERSATION -> root.addView(button("Write a reply", primary = true, action = ::reply))
             Screen.COMPOSE -> {
                 body = field("Write a text…", draft.body, InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_MULTI_LINE).also { field ->
                     field.contentDescription = "SMS draft"
@@ -203,7 +205,10 @@ class MessagesActivity : DeviceActivity(), DictationTarget {
                     root.addView(field)
                     watch(field) { draft = draft.copy(body = it); draftChanged() }
                 }
-                reviewButton = button("Review text", { sendTyped() }).also { root.addView(it) }
+                reviewButton = button("Review text", primary = true) { sendTyped() }.also {
+                    (it.layoutParams as LinearLayout.LayoutParams).apply { topMargin = dp(8); bottomMargin = 0 }
+                    root.addView(it)
+                }
             }
         }
         building = false
@@ -236,39 +241,58 @@ class MessagesActivity : DeviceActivity(), DictationTarget {
         container.removeAllViews()
         when (screen) {
             Screen.THREADS -> {
-                if (mmsNotices > 0) container.addView(label("$mmsNotices MMS notice(s) saved on this device. robotOS cannot download pictures or group MMS. Choose an MMS-capable default app in Android settings and ask the sender to resend; the notice is not an imported MMS.", 14f))
+                if (mmsNotices > 0) container.addView(ui.note("$mmsNotices MMS notice(s) saved on this device. robotOS cannot download pictures or group MMS. Choose an MMS-capable default app in Android settings and ask the sender to resend; the notice is not an imported MMS."))
                 replyRequests.forEach { (id, requested) -> container.addView(button("Review saved draft · ${requested.peer}") {
                     replaceDraft(requested) { sms.removeReplyRequest(id) }
                 }) }
-                if (threads.isEmpty()) container.addView(label("No texts yet.\n\nNew SMS will appear here. Pictures and group messages aren't supported.", 15f))
+                if (threads.isEmpty()) container.addView(ui.column().apply {
+                    setPadding(dp(6), dp(20), dp(6), dp(12))
+                    addView(ui.iconWell(R.drawable.ic_sms), LinearLayout.LayoutParams(dp(48), dp(48)))
+                    addView(ui.title("No texts yet", 22f).apply { setPadding(0, dp(14), 0, dp(6)) })
+                    addView(ui.text("New SMS will appear here. Pictures and group messages aren't supported.", 15f, muted = true))
+                })
                 threads.forEach { thread ->
-                    container.addView(ui.actionRow("${if (thread.unread) "● " else ""}${displayName(thread.peer)}", thread.last.body.take(90)) {
-                        navigate(Screen.CONVERSATION, thread.peer)
-                    })
+                    container.addView(ui.actionRow("${if (thread.unread) "● " else ""}${displayName(thread.peer)}", thread.last.body.take(90),
+                        R.drawable.ic_sms) { navigate(Screen.CONVERSATION, thread.peer) })
                 }
-                if (threads.size == 100) container.addView(label("Showing the 100 most recent conversations.", 12f))
+                if (threads.size == 100) container.addView(ui.note("Showing the 100 most recent conversations."))
             }
             Screen.CONVERSATION -> {
-                container.addView(label(displayName(peer.orEmpty()), 18f))
-                if (recipientNames.containsKey(peer)) container.addView(ui.text(peer.orEmpty(), 14f, true))
-                if (rows.size == 100) container.addView(label("Showing the newest 100 texts. Older texts remain stored on this device.", 12f))
+                container.addView(ui.title(displayName(peer.orEmpty()), 22f).apply { setPadding(dp(6), dp(4), 0, 0) })
+                if (recipientNames.containsKey(peer)) container.addView(ui.text(peer.orEmpty(), 14f, true).apply { setPadding(dp(6), 0, 0, 0) })
+                if (rows.size == 100) container.addView(ui.note("Showing the newest 100 texts. Older texts remain stored on this device."))
                 rows.forEach { record ->
+                    val r = dp(20).toFloat()
+                    val tail = dp(6).toFloat()
                     val message = label(record.body, 17f).apply {
-                        setTextIsSelectable(true); setPadding(dp(10), dp(10), dp(10), dp(10))
-                        background = ui.background()
-                        gravity = if (record.incoming) Gravity.START else Gravity.END
+                        setTextIsSelectable(true); setPadding(dp(14), dp(10), dp(14), dp(11))
+                        setTextColor(getColor(if (record.incoming) R.color.fg else R.color.on_accent))
+                        if (!record.incoming) highlightColor = 0x40000000
+                        background = GradientDrawable().apply {
+                            setColor(getColor(if (record.incoming) R.color.field else R.color.accent))
+                            cornerRadii = if (record.incoming) floatArrayOf(r, r, r, r, r, r, tail, tail) else floatArrayOf(r, r, r, r, tail, tail, r, r)
+                        }
                     }
-                    container.addView(message, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
+                    container.addView(message, LinearLayout.LayoutParams(-2, -2).apply {
+                        topMargin = dp(14)
+                        gravity = if (record.incoming) Gravity.START else Gravity.END
+                        if (record.incoming) marginEnd = dp(36) else marginStart = dp(36)
+                    })
                     val time = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(record.createdAt))
                     val count = if (record.parts.size > 1) " · ${record.parts.count { it.sent == SentPart.SENT }}/${record.parts.size} parts sent" else ""
-                    val metadata = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-                    metadata.addView(ui.text("${record.status(System.currentTimeMillis()).label()}$count\n$time", 13f, true), LinearLayout.LayoutParams(0, -2, 1f))
-                    if (!record.incoming) metadata.addView(button("⋯") { messageOptions(record) }.apply { contentDescription = "Message options" }, LinearLayout.LayoutParams(dp(48), dp(48)))
-                    container.addView(metadata)
+                    val metadata = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL or if (record.incoming) Gravity.START else Gravity.END }
+                    metadata.addView(ui.mono("${record.status(System.currentTimeMillis()).label()}$count\n$time", R.color.faint, 10f, 500).apply {
+                        gravity = if (record.incoming) Gravity.START else Gravity.END
+                        setLineSpacing(dp(2).toFloat(), 1f)
+                        setPadding(dp(4), dp(4), dp(4), 0)
+                    }, LinearLayout.LayoutParams(-2, -2))
+                    if (!record.incoming) metadata.addView(ui.iconButton(R.drawable.ic_more, "Message options", R.color.dim, R.color.bg) { messageOptions(record) },
+                        LinearLayout.LayoutParams(dp(48), dp(48)))
+                    container.addView(metadata, LinearLayout.LayoutParams(-1, -2))
                 }
             }
             Screen.COMPOSE -> {
-                draftInfo = ui.text(composeHint(), 14f, true).apply { setPadding(0, dp(8), 0, dp(8)) }
+                draftInfo = ui.text(composeHint(), 14f, true).apply { setPadding(dp(6), dp(10), dp(6), dp(8)) }
                 container.addView(draftInfo)
             }
         }
@@ -351,7 +375,7 @@ class MessagesActivity : DeviceActivity(), DictationTarget {
         catch (_: Exception) { status.setText(R.string.sms_unavailable); return true }
         hideKeyboard()
         val text = "To: ${review.record.peer}\n${review.simLabel}\n${review.texts.size} SMS ${if (review.texts.size == 1) "part" else "parts"}\n\n${review.record.body}\n\nCarrier SMS charges may apply."
-        val scroll = ScrollView(this).apply { addView(label(text, 16f).apply { setPadding(dp(18), dp(8), dp(18), dp(8)) }) }
+        val scroll = ScrollView(this).apply { addView(label(text, 16f).apply { setPadding(dp(20), dp(8), dp(20), dp(8)) }) }
         showDialog(AlertDialog.Builder(this).setTitle("Review text").setView(scroll)
             .setNegativeButton("Keep editing", null)
             .setPositiveButton("Send SMS") { _, _ ->
@@ -493,12 +517,12 @@ class MessagesActivity : DeviceActivity(), DictationTarget {
     }
 
     private fun addRecipient() {
-        val fields = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), 0, dp(16), 0) }
+        val fields = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(4), dp(20), 0) }
         val name = field("Name you will say", "", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS)
             .apply { filters = arrayOf(InputFilter.LengthFilter(80)) }
         val number = field("Exact phone number", "", InputType.TYPE_CLASS_PHONE)
             .apply { filters = arrayOf(InputFilter.LengthFilter(40)) }
-        fields.addView(name); fields.addView(number)
+        fields.addView(name); fields.addView(number, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
         showDialog(AlertDialog.Builder(this).setTitle("Save a recipient").setView(fields).setPositiveButton("Save", null).setNegativeButton("Cancel", null))
         val shown = dialog ?: return
         shown.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
@@ -564,7 +588,7 @@ class MessagesActivity : DeviceActivity(), DictationTarget {
     private fun hasMic() = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
     private fun label(text: String, size: Float) = ui.text(text, size)
-    private fun button(text: String, action: () -> Unit) = ui.button(text, action = action)
+    private fun button(text: String, primary: Boolean = false, action: () -> Unit) = ui.button(text, primary, action = action)
     private fun field(hint: String, value: String, type: Int) = ui.field(hint, value, type).apply {
         setSelection(text.length)
         imeOptions = EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
