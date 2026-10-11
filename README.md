@@ -11,8 +11,9 @@ talk; on release, it either sends what you said or types it into the text field:
   go, and nothing is sent, so you can edit first. A tap of the button sends it to Hermes.
 
 Hermes acts on the R1 through its `robotos` MCP tools: "text Sam I'm running late" is Hermes texting
-from the R1's SIM. Texts from your own number to the R1 go to Hermes, which texts back. Plugged in,
-the radios stay up so it's always reachable. OpenAI is used only for speech. See
+from the R1's SIM. When enabled, texts from your own number to the R1 go to Hermes, which texts back.
+Separate permissions allow announcements, Home notices, volume changes and saved recipients.
+Plugged in, configured radios stay available. OpenAI is used only for speech. See
 [docs/HERMES.md](docs/HERMES.md).
 
 robotOS was previously called R1 PTT. Its repository is
@@ -28,6 +29,11 @@ compatibility names.
 > The current reliability changes add offline-tested transport/capture limits, interruption isolation and
 > encrypted-save recovery. Its current-build hardware acceptance is pending; the observations above
 > describe the earlier device-tested implementation. See [docs/RELIABILITY.md](docs/RELIABILITY.md).
+>
+> The daily-driver redesign adds saved chats, contextual wheel navigation, quick controls and
+> recoverable Hermes task controls. Local automated coverage is in place; its physical UI,
+> acoustic, carrier and overnight battery acceptance remain pending. See
+> [docs/DAILY_DRIVER.md](docs/DAILY_DRIVER.md).
 
 ## What "firmware" means here
 
@@ -47,11 +53,13 @@ The R1 is an Android 13 phone underneath (MediaTek MT6765). The firmware is four
 | **Hold** | Talk; release to send. The reply streams and is spoken. | Dictate; release to insert at the cursor. |
 | **Tap** | Screen off. When speaking, stop. (A tap on a dark screen just wakes it.) | Send the typed text. |
 | **Double-tap** | New conversation. | — |
-| **Scroll wheel** | Volume (always). | Volume. |
+| **Scroll wheel** | Scroll the visible page; volume during speech or with its slider selected. | Scroll the visible page; volume during speech or with its slider selected. |
 
-Tap the text field on the touchscreen to bring up the keyboard. The gear icon opens settings.
+Tap the text field to bring up the keyboard. The chat title opens saved **Chats**, the battery
+control opens **Quick controls**, and the menu opens **Messages**, **Hermes** and **Settings**.
+While an approval review is open, button gestures cannot approve it or replace the pending task.
 
-The message icon opens **Messages**, a one-to-one SMS handler for texts you write yourself: drafts,
+**Menu → Messages** opens the one-to-one SMS handler for texts you write yourself: drafts,
 **Review text** and **Send SMS**, incoming texts, and Android's real send and delivery status. The
 R1 never decides to send a text on its own; with Hermes, Hermes does (above). No SMS permission is
 requested merely by opening Messages; Options can request Android's default SMS role. MMS is
@@ -59,8 +67,9 @@ explicitly unsupported; incoming MMS notices are retained locally and shown as w
 details exposes native failure codes without retrying a failed or uncertain attempt.
 MMS, RCS, old inbox import, and live carrier acceptance are not included. See [docs/MESSAGES.md](docs/MESSAGES.md).
 
-**Settings → Hermes** (also Messages → Options → Hermes) shows whether Hermes can reach the R1,
-how many texts it has sent today, and turns texting Hermes from your own number on or off.
+**Hermes** shows connection checks, saved task status, approvals, model selection, device permissions
+and the shared daily SMS count. **Stop speech** stops audio; **Stop task** requests cancellation
+on a compatible Hermes host. See [docs/DAILY_DRIVER.md](docs/DAILY_DRIVER.md) for controls and recovery.
 
 ## Battery
 
@@ -70,15 +79,17 @@ Idle time is where a 1000 mAh battery goes.
   data (SIM)** enabled, it wakes with the device and returns to airplane mode at the normal idle cut.
 - **Wi-Fi switches off** after 3 minutes with the screen dark. The next button press turns it back
   on, and it reconnects while you're still talking.
-- **Plugged in, the radios stay up.** On any external power the idle cut is skipped, so incoming texts
-  and Hermes reach the R1 anytime. Unplugged, the normal cut applies again.
+- **Plugged in, configured radios stay available.** On external power the idle cut is skipped.
+  **Stay reachable** extends that policy to battery operation; switching it off restores the saved
+  pocket-mode delay. Reachability still depends on coverage, connectivity and Tailscale.
 - **No continuous background polling in pocket mode:**
   - no polling, scanning, location or Bluetooth;
   - Rabbit's apps are removed;
   - Doze starts within seconds.
   - Optional incoming SMS use Android broadcasts while the modem is reachable. Messages does not
     keep it awake; carrier-queued delivery after wake is not guaranteed.
-- **The screen stays on only during a turn**, then times out after 15 s at low brightness.
+- **The screen is held on while listening.** It can time out during remote work, playback or an
+  approval wait; the default timeout is 15 s at low brightness.
 - **The network is used only when there's work:** a turn (voice streams only while you hold the
   button), a text to Hermes, or a request from Hermes.
 

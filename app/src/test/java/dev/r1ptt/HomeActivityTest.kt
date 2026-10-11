@@ -60,6 +60,28 @@ class HomeActivityTest {
         assertFalse(app.history.flow.value.followLatest)
     }
 
+    @Test fun passiveNotesStaySeparateFromTheConversationAndCanBeDismissed() {
+        app.history.saveDraft("Keep this draft")
+        val conversation = app.history.convId
+        val controller = Robolectric.buildActivity(HomeActivity::class.java).setup()
+        settle()
+        val notice = app.notices.add("The download finished.")
+        settle()
+        val banner = controller.get().findViewById<android.widget.TextView>(R.id.hermes_notice)
+        assertEquals(View.VISIBLE, banner.visibility)
+        assertTrue(banner.text.contains(notice.text))
+        assertEquals(conversation, app.history.convId)
+        assertEquals("Keep this draft", app.history.draft)
+        assertTrue(app.history.messages.isEmpty())
+        banner.performClick()
+        org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog()
+            .getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
+        settle()
+        assertEquals(View.GONE, banner.visibility)
+        assertTrue(app.notices.state.value.isEmpty())
+        controller.pause().stop().destroy()
+    }
+
     @Test @GraphicsMode(GraphicsMode.Mode.NATIVE)
     fun drawsNativeHomeAtDeviceProportions() {
         app.history.add(Msg.USER, "What is on my calendar today?")

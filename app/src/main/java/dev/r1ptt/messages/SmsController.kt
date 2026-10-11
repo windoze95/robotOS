@@ -145,11 +145,12 @@ class SmsController(
      * Consumes one explicit attempt (review button, assistant command, or Hermes through the device
      * API). Never automatically retries. An [agent] send runs while a voice turn waits on Hermes.
      */
-    fun send(review: SmsReview, clearDraft: Boolean = true, agent: Boolean = false, done: (Boolean, String) -> Unit) {
+    fun send(review: SmsReview, clearDraft: Boolean = true, agent: Boolean = false,
+             authorize: () -> Boolean = { true }, done: (Boolean, String) -> Unit) {
         if (dispatching || app.updates.installing || (!agent && app.turns.busy)) {
             done(false, "Finish the current action before sending."); return
         }
-        if (!canSend || !cellularEnabled() || SubscriptionManager.getDefaultSmsSubscriptionId() != review.record.subscriptionId) {
+        if (!authorize() || !canSend || !cellularEnabled() || SubscriptionManager.getDefaultSmsSubscriptionId() != review.record.subscriptionId) {
             done(false, "SMS access or the selected SIM changed. Nothing was sent. Try the command or review again."); return
         }
         dispatching = true
@@ -158,9 +159,18 @@ class SmsController(
         app.radio.onActivity()
         worker.execute {
             var persisted = false
+            var quotaReserved = false
             try {
-                check(canSend && !app.updates.installing && cellularEnabled())
+                check(authorize() && canSend && !app.updates.installing && cellularEnabled())
                 check(SubscriptionManager.getDefaultSmsSubscriptionId() == review.record.subscriptionId)
+                check(db.record(review.record.id) == null) { "This attempt was already recorded." }
+                if (agent) {
+                    if (!app.hermesQuota.claim(review.record.id, app.store.value.hermes.dailySendLimit)) {
+                        main.post { done(false, "The daily limit of texts from Hermes is reached. Nothing was sent.") }
+                        return@execute
+                    }
+                    quotaReserved = true
+                }
                 val record = review.record.copy(createdAt = System.currentTimeMillis(), systemOwned = SmsRole.held(app),
                     sendEvidence = SmsDiagnostics.current(app, cellularEnabled()))
                 db.outgoing(record, review.draft.takeIf { clearDraft })
@@ -171,6 +181,12 @@ class SmsController(
                 pendingUntil = pending.values.maxOrNull() ?: 0L
                 val sent = ArrayList(record.parts.indices.map { callback(record, it, false) })
                 val delivered = ArrayList(record.parts.indices.map { callback(record, it, true) })
+                if (!authorize()) {
+                    failBeforeSend(record, "Authorization revoked before handoff")
+                    if (quotaReserved) { app.hermesQuota.release(record.id); quotaReserved = false }
+                    main.post { done(true, "Device access changed. Nothing was sent.") }
+                    return@execute
+                }
                 transport.send(record, review.texts, sent, delivered)
                 changed()
                 main.post { done(true, "Sending…") }
@@ -185,7 +201,10 @@ class SmsController(
                 // Leave that attempt uncertain; never report it as safely retryable.
                 changed()
                 main.post { done(persisted, if (persisted) "Send status is uncertain. Check with the recipient before trying again." else "The text could not be saved, so it was not sent.") }
-            } finally { dispatching = false }
+            } finally {
+                if (quotaReserved && !persisted) app.hermesQuota.release(review.record.id)
+                dispatching = false
+            }
         }
     }
 

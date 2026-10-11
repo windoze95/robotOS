@@ -42,6 +42,8 @@ class DeviceApiTest {
         app = RuntimeEnvironment.getApplication() as App
         app.deleteDatabase("messages.db")
         app.getSharedPreferences("device_api", 0).edit().clear().commit()
+        app.getSharedPreferences("device_receipts", 0).edit().clear().commit()
+        app.getSharedPreferences("device_notices", 0).edit().clear().commit()
         shadowOf(app.packageManager).setSystemFeature(PackageManager.FEATURE_TELEPHONY_MESSAGING, true)
         shadowOf(app).grantPermissions(Manifest.permission.SEND_SMS)
         ShadowSubscriptionManager.setDefaultSmsSubscriptionId(1)
@@ -130,6 +132,64 @@ class DeviceApiTest {
         assertEquals(429, limited.first)
         assertEquals(2, sent.size)
         assertEquals(2, get("/v1/status").second.getInt("texts_sent_today"))
+    }
+
+    @Test fun receiptReplayDoesNotSendAgainAndIdentityCannotChange() {
+        val id = "send-request-id-1234"
+        val request = JSONObject().put("to", "Sam").put("body", "Once").put("request_id", id)
+        val first = post("/v1/sms", request)
+        assertEquals(200, first.first)
+        assertEquals(first.second.toString(), post("/v1/sms", request).second.toString())
+        assertEquals(1, sent.size)
+        assertEquals(first.second.toString(), get("/v1/requests/$id").second.toString())
+        assertEquals(409, post("/v1/sms", request.put("body", "Changed")).first)
+        assertEquals(1, sent.size)
+        assertEquals(1, api.sentToday())
+    }
+
+    @Test fun controlsRequireTheirOwnPermissionAndShowPersists() {
+        for ((path, body) in listOf("/v1/speak" to JSONObject().put("text", "Hi"),
+            "/v1/show" to JSONObject().put("text", "Hi"), "/v1/volume" to JSONObject().put("level", 0.5),
+            "/v1/recipients" to JSONObject().put("name", "Pat").put("number", "+15557654321")))
+            assertEquals(path, 403, post(path, body).first)
+        configure { it.copy(hermes = it.hermes.copy(allowShow = true, allowVolume = true, allowSaveRecipient = true)) }
+        val shown = post("/v1/show", JSONObject().put("text", "Meeting at 3"))
+        assertEquals(200, shown.first)
+        assertEquals("Meeting at 3", DeviceNotices(app).state.value.single().text)
+        app.notices.dismiss(shown.second.getString("id"))
+        assertTrue(DeviceNotices(app).state.value.isEmpty())
+        val volume = post("/v1/volume", JSONObject().put("level", 0.5))
+        assertEquals(200, volume.first)
+        assertTrue(volume.second.getDouble("level") in 0.0..1.0)
+        assertEquals(400, post("/v1/volume", JSONObject().put("level", 2)).first)
+        assertEquals(200, post("/v1/recipients", JSONObject().put("name", "Pat").put("number", "+15557654321")).first)
+        assertEquals(2, get("/v1/recipients").second.getJSONArray("recipients").length())
+    }
+
+    @Test fun revokedPermissionBlocksAnActionAlreadyQueuedToTheMainThread() {
+        configure { it.copy(hermes = it.hermes.copy(allowShow = true)) }
+        val body = JSONObject().put("text", "Do not show this").put("request_id", "queued-request-id-1234")
+        val request = DeviceApi.Request("POST", "/v1/show", emptyMap(), mapOf("authorization" to "Bearer $token"), body.toString())
+        val executor = Executors.newSingleThreadExecutor()
+        try {
+            val future = executor.submit<Pair<Int, JSONObject>> { api.handle(request) }
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+            while (app.getSharedPreferences("device_receipts", 0).all.isEmpty() && System.nanoTime() < deadline) Thread.sleep(5)
+            configure { it.copy(hermes = it.hermes.copy(allowShow = false)) }
+            while (!future.isDone && System.nanoTime() < deadline) { shadowOf(Looper.getMainLooper()).idle(); Thread.sleep(5) }
+            assertEquals(403, future.get(1, TimeUnit.SECONDS).first)
+            assertTrue(app.notices.state.value.isEmpty())
+        } finally { executor.shutdownNow() }
+    }
+
+    @Test fun speakingHonorsQuietAndPlaybackConflicts() {
+        configure { it.copy(quiet = true, hermes = it.hermes.copy(allowSpeak = true)) }
+        assertEquals(409, post("/v1/speak", JSONObject().put("text", "Hello")).first)
+        configure { it.copy(quiet = false) }
+        api = DeviceApi(app, speak = { false })
+        assertEquals(409, post("/v1/speak", JSONObject().put("text", "Hello")).first)
+        api = DeviceApi(app, speak = { true })
+        assertEquals(200, post("/v1/speak", JSONObject().put("text", "Hello")).first)
     }
 
     @Test fun statusTextsAndRecipientsDescribeTheDevice() {

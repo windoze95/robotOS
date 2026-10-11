@@ -11,8 +11,9 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 PROTOCOLS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 INSTRUCTIONS = (
     "These tools act on the user's Rabbit R1 (robotOS): its SIM sends and receives the user's texts. "
@@ -81,9 +82,42 @@ TOOLS = [
     },
 ]
 
+TOOLS.extend([
+    {"name": "speak", "title": "Speak on the R1",
+     "description": "Read text aloud on the R1. Requires device permission; Quiet mode and active microphone or speech block it.",
+     "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "minLength": 1, "maxLength": 2000}},
+                     "required": ["text"], "additionalProperties": False}},
+    {"name": "show", "title": "Show a notice on the R1",
+     "description": "Save a dismissible notice on Home without changing the conversation or waking the screen. Requires device permission.",
+     "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "minLength": 1, "maxLength": 2000}},
+                     "required": ["text"], "additionalProperties": False}},
+    {"name": "set_volume", "title": "Set R1 speech volume",
+     "description": "Set speech volume from 0 (silent) to 1 (maximum). Returns the applied level. Requires device permission.",
+     "inputSchema": {"type": "object", "properties": {"level": {"type": "number", "minimum": 0, "maximum": 1}},
+                     "required": ["level"], "additionalProperties": False}},
+    {"name": "save_recipient", "title": "Save an SMS recipient",
+     "description": "Save a name and phone number on the R1. Does not send a message. Requires device permission.",
+     "inputSchema": {"type": "object", "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 80},
+                                                     "number": {"type": "string"}},
+                     "required": ["name", "number"], "additionalProperties": False}},
+    {"name": "request_status", "title": "Recover a device action result",
+     "description": "Read a persisted receipt using its request_id. Receipts last at least seven days. Unknown is not proof an action did not run.",
+     "inputSchema": {"type": "object", "properties": {"request_id": {"type": "string"}},
+                     "required": ["request_id"], "additionalProperties": False}},
+])
+
+MUTATIONS = {"send_sms": "/v1/sms", "speak": "/v1/speak", "show": "/v1/show",
+             "set_volume": "/v1/volume", "save_recipient": "/v1/recipients"}
+for tool in TOOLS:
+    if tool["name"] in MUTATIONS:
+        tool["inputSchema"]["properties"]["request_id"] = {
+            "type": "string", "pattern": "^[A-Za-z0-9_-]{16,128}$",
+            "description": "Optional request identifier. Exact retries require r1_status to advertise request_receipt_retention_seconds, and must remain inside that window. Never change it to retry an unknown outcome.",
+        }
+
 ASLEEP = (
     "The R1 can't be reached: it is probably asleep on battery (radios off), out of coverage, or off Tailscale. "
-    "Nothing was done. Ask the user to press its button or plug it in, then try again."
+    "Ask the user to press its button or plug it in to check again."
 )
 
 
@@ -106,25 +140,62 @@ class R1:
         })
         try:
             with self.opener.open(request, timeout=timeout or self.timeout) as response:
-                return response.status, json.loads(response.read(1_048_576) or b"{}")
+                payload = json.loads(response.read(1_048_576) or b"{}")
+                if not isinstance(payload, dict):
+                    raise ValueError("Device response must be an object")
+                return response.status, payload
         except urllib.error.HTTPError as error:
             try:
                 payload = json.loads(error.read(65_536) or b"{}")
-            except ValueError:
+                if not isinstance(payload, dict):
+                    raise ValueError("Device error must be an object")
+            except (ValueError, OSError):
                 payload = {"error": "HTTP %d" % error.code}
+            if method == "POST":
+                request_id = (body or {}).get("request_id")
+                confirmed = request_id is not None and payload.get("request_id") == request_id
+                # A proxy can lose the result after forwarding a POST. A matching receipt is
+                # the only evidence tying an error to this action; never drop the lookup key.
+                if error.code != 401 and (not confirmed or (error.code >= 500 and payload.get("status") != "blocked")):
+                    payload = {"error": "The R1 action could not be confirmed (HTTP %d). The outcome is unknown; do not repeat it. Use request_status with this request_id." % error.code,
+                               "status": "unknown"}
+                payload["request_id"] = request_id
             return error.code, payload
         except (urllib.error.URLError, OSError, ValueError):
+            if method == "POST":
+                return None, {"error": "The R1 response was interrupted. The action outcome is unknown; do not repeat it. Use request_status with this request_id.",
+                              "status": "unknown", "request_id": (body or {}).get("request_id")}
             return None, {"error": ASLEEP}
 
 
 def run_tool(r1, name, arguments):
     """One tool call -> (text, is_error, structured)."""
     args = arguments or {}
+    if not isinstance(args, dict):
+        return "Tool arguments must be an object.", True, None
+    tool = next((tool for tool in TOOLS if tool["name"] == name), None)
+    if tool is None:
+        return "Unknown tool %s." % name, True, None
+    schema = tool["inputSchema"]
+    if set(args) - set(schema["properties"]) or any(k not in args for k in schema.get("required", [])):
+        return "Invalid or missing arguments for %s. No action was started." % name, True, None
+    if name in MUTATIONS:
+        payload = {k: v for k, v in args.items() if k != "request_id"}
+        payload["request_id"] = args.get("request_id") or str(uuid.uuid4())
     if name == "send_sms":
         to, body = str(args.get("to", "")).strip(), str(args.get("body", "")).strip()
         if not to or not body:
             return "send_sms needs both `to` and `body`. Nothing was sent.", True, None
-        status, payload = r1.call("POST", "/v1/sms", {"to": to, "body": body}, timeout=60)
+        payload.update(to=to, body=body)
+        status, payload = r1.call("POST", "/v1/sms", payload, timeout=60)
+    elif name in MUTATIONS:
+        if name in ("speak", "show") and (not isinstance(args["text"], str) or not 1 <= len(args["text"].strip()) <= 2000):
+            return "text must be 1–2000 characters. No action was started.", True, None
+        if name == "set_volume" and (isinstance(args["level"], bool) or not isinstance(args["level"], (float, int)) or not 0 <= args["level"] <= 1):
+            return "level must be between 0 and 1. No action was started.", True, None
+        status, payload = r1.call("POST", MUTATIONS[name], payload)
+    elif name == "request_status":
+        status, payload = r1.call("GET", "/v1/requests/" + urllib.parse.quote(str(args["request_id"]), safe=""))
     elif name == "sms_status":
         status, payload = r1.call("GET", "/v1/sms/" + urllib.parse.quote(str(args.get("id", "")), safe=""))
     elif name == "recent_texts":
@@ -139,8 +210,8 @@ def run_tool(r1, name, arguments):
     if status == 200:
         return json.dumps(payload, ensure_ascii=False), False, payload
     if status == 401:
-        return "The R1 rejected this server's token (robotOS → Settings → Hermes). Nothing was done.", True, None
-    return str(payload.get("error") or "The R1 returned HTTP %s." % status), True, None
+        return "The R1 rejected this server's token (robotOS → Settings → Hermes). Nothing was done.", True, payload
+    return str(payload.get("error") or "The R1 returned HTTP %s." % status), True, payload
 
 
 def handle(r1, message):

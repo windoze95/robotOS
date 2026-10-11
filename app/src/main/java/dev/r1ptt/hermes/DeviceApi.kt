@@ -5,6 +5,7 @@ import android.content.IntentFilter
 import android.os.BatteryManager
 import android.os.Handler
 import android.os.Looper
+import android.media.AudioManager
 import android.provider.Settings
 import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
@@ -17,6 +18,7 @@ import dev.r1ptt.messages.SmsRecipientText
 import dev.r1ptt.messages.SmsRecord
 import dev.r1ptt.messages.SmsResolution
 import dev.r1ptt.messages.SmsStatus
+import dev.r1ptt.messages.SmsStore
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedInputStream
@@ -31,7 +33,9 @@ import java.net.Socket
 import java.net.URLDecoder
 import java.security.MessageDigest
 import java.time.Instant
-import java.time.LocalDate
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -46,10 +50,11 @@ class DeviceApi(
     private val sms: dev.r1ptt.messages.SmsController = app.sms,
     private val clock: () -> Long = System::currentTimeMillis,
     private val settleMs: Long = 12_000L,
+    private val speak: ((String) -> Boolean)? = null,
 ) {
     private val main = Handler(Looper.getMainLooper())
     private val pool = Executors.newFixedThreadPool(3) { r -> Thread(r, "device-api").apply { isDaemon = true } }
-    private val prefs = app.getSharedPreferences("device_api", 0)
+    private val receipts = DeviceReceipts(app, clock)
     private val sendLock = Any()
     private var server: ServerSocket? = null
     private var port = 0
@@ -101,10 +106,28 @@ class DeviceApi(
         val link = app.store.value.hermes
         if (!link.deviceApi || !authorized(request.headers["authorization"], link.token)) return 401 to error("Unauthorized")
         lastCall = clock()
+        var requestId: String? = null
         return try {
             when {
                 request.method == "GET" && request.path == "/v1/status" -> 200 to status()
-                request.method == "POST" && request.path == "/v1/sms" -> send(JSONObject(request.body))
+                request.method == "POST" && request.path in MUTATIONS -> {
+                    val body = JSONObject(request.body)
+                    val id = body.optString("request_id").ifBlank { UUID.randomUUID().toString() }
+                    requestId = id
+                    body.put("request_id", id)
+                    // Capture the authenticated identity; recheck it at the actual execution boundary.
+                    receipts.perform(id, link.token, request.path + "\n" + body.toString()) {
+                        if (!permitted(link.token, request.path)) 403 to error("This device action is disabled.")
+                        else when (request.path) {
+                            "/v1/sms" -> send(body, link.token)
+                            "/v1/recipients" -> saveRecipient(body, link.token)
+                            else -> control(request.path, body, link.token)
+                        }
+                    }
+                }
+                request.method == "GET" && request.path.startsWith("/v1/requests/") ->
+                    receipts.get(request.path.removePrefix("/v1/requests/"), link.token)
+                        ?: (404 to error("No receipt with that request_id. This is not proof the action did not run; receipts are retained for seven days."))
                 request.method == "GET" && request.path.startsWith("/v1/sms/") -> sms(request.path.removePrefix("/v1/sms/"))
                 request.method == "GET" && request.path == "/v1/texts" ->
                     texts(request.query["with"], (request.query["limit"]?.toIntOrNull() ?: 20).coerceIn(1, 100))
@@ -116,7 +139,81 @@ class DeviceApi(
             400 to error("Invalid JSON")
         } catch (e: IllegalArgumentException) {
             400 to error(e.message ?: "Invalid request")
+        } catch (e: DeviceReceiptReadException) {
+            503 to error(e.message.orEmpty()).put("status", "blocked").put("request_id", requestId ?: JSONObject.NULL)
+        } catch (e: Exception) {
+            Log.w(TAG, "device action: ${e.javaClass.simpleName}")
+            503 to error("The action outcome is unknown. Check the request receipt before trying again.")
+                .put("status", "unknown").put("request_id", requestId ?: JSONObject.NULL)
         }
+    }
+
+    private fun permitted(token: String, path: String): Boolean {
+        val link = app.store.value.hermes
+        if (!link.deviceApi || link.token != token) return false
+        return when (path) {
+            "/v1/speak" -> link.allowSpeak
+            "/v1/show" -> link.allowShow
+            "/v1/volume" -> link.allowVolume
+            "/v1/recipients" -> link.allowSaveRecipient
+            "/v1/sms" -> true // Existing enabled SMS access is preserved.
+            else -> false
+        }
+    }
+
+    private fun control(path: String, body: JSONObject, token: String): Pair<Int, JSONObject> {
+        val text = body.optString("text").trim()
+        if (path in setOf("/v1/speak", "/v1/show"))
+            require(text.isNotEmpty() && text.length <= 2000) { "text must be 1–2000 characters." }
+        val level = if (path == "/v1/volume") body.getDouble("level").also {
+            require(it.isFinite() && it in 0.0..1.0) { "level must be between 0 and 1." }
+        } else 0.0
+        return onMain {
+            if (!permitted(token, path)) return@onMain 403 to error("This device action is disabled.")
+            when (path) {
+                "/v1/speak" -> when {
+                    app.store.value.quiet -> 409 to error("Quiet mode is on. Nothing was spoken.")
+                    !(speak?.invoke(text) ?: app.turns.speakText(text) { permitted(token, path) }) ->
+                        409 to error("The microphone or speech output is busy. Nothing was spoken.")
+                    else -> 200 to JSONObject().put("status", "speaking")
+                }
+                "/v1/show" -> 200 to JSONObject().put("status", "shown").put("id", app.notices.add(text).id)
+                else -> {
+                    val audio = app.getSystemService(AudioManager::class.java)
+                    val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                    audio.setStreamVolume(AudioManager.STREAM_MUSIC, kotlin.math.round(level * max).toInt(), 0)
+                    200 to JSONObject().put("status", "applied").put("level",
+                        if (max > 0) audio.getStreamVolume(AudioManager.STREAM_MUSIC).toDouble() / max else 0.0)
+                }
+            }
+        }
+    }
+
+    private fun saveRecipient(body: JSONObject, token: String): Pair<Int, JSONObject> {
+        val name = body.optString("name").trim()
+        val number = SmsRecipientText.number(body.optString("number"), SmsRecipientText.region(app))
+        require(name.isNotEmpty() && name.length <= 80 && number != null) { "Provide a name of 1–80 characters and one valid phone number." }
+        if (!permitted(token, "/v1/recipients")) return 403 to error("Saving recipients is disabled.")
+        SmsStore(app).use { db ->
+            if (db.recipients().none { it.name == name && it.number == number }) db.addRecipient(name, number)
+        }
+        return 200 to JSONObject().put("status", "saved").put("name", name).put("number", number)
+    }
+
+    /** A timed-out queued action cannot execute later without its caller knowing. */
+    private fun onMain(action: () -> Pair<Int, JSONObject>): Pair<Int, JSONObject> {
+        val latch = CountDownLatch(1)
+        val admitted = AtomicBoolean(false)
+        var result = 202 to error("The action outcome is unknown. Check its receipt; do not repeat it.").put("status", "unknown")
+        main.post {
+            if (!admitted.compareAndSet(false, true)) return@post
+            try { result = action() }
+            catch (_: Exception) { result = 503 to error("The action outcome is unknown.").put("status", "unknown") }
+            finally { latch.countDown() }
+        }
+        if (!latch.await(10, TimeUnit.SECONDS) && admitted.compareAndSet(false, true))
+            return 503 to error("The device was busy. No action was started.")
+        return result
     }
 
     private fun status(): JSONObject {
@@ -142,10 +239,13 @@ class DeviceApi(
             .put("texts_sent_today", sentToday())
             .put("daily_text_limit", link.dailySendLimit)
             .put("owner_texts_go_to_hermes", link.passthrough)
+            .put("permissions", JSONObject().put("speak", link.allowSpeak).put("show", link.allowShow)
+                .put("set_volume", link.allowVolume).put("save_recipient", link.allowSaveRecipient))
+            .put("request_receipt_retention_seconds", DeviceReceipts.RETENTION_MS / 1000)
     }
 
     /** One text, sent now. Serialized so parallel tool calls cannot collide in the native executor. */
-    private fun send(j: JSONObject): Pair<Int, JSONObject> {
+    private fun send(j: JSONObject, token: String): Pair<Int, JSONObject> {
         val to = j.optString("to").trim()
         val body = j.optString("body").trim()
         require(to.isNotEmpty() && to.length <= 80) { "`to` must be a phone number or a recipient name saved on the R1." }
@@ -159,34 +259,45 @@ class DeviceApi(
                     .put("matches", JSONArray(r.matches.map { JSONObject().put("name", it.name).put("number", it.number) }))
                 SmsResolution.Missing -> return 404 to error("No recipient named \"$to\" is saved on the R1. Nothing was sent; use a phone number.")
             }
-            var attempt = dispatch(number, body)
+            var attempt = dispatch(number, body, token)
             // Another send (e.g. the owner's own) may still be handing off; wait briefly, never re-send.
-            repeat(8) { if (!attempt.consumed && attempt.busy) { Thread.sleep(750); attempt = dispatch(number, body) } }
-            if (!attempt.consumed) return 409 to error("${attempt.message} Nothing was sent.")
-            countSend()
+            repeat(8) { if (!attempt.consumed && attempt.busy) { Thread.sleep(750); attempt = dispatch(number, body, token) } }
+            if (!attempt.consumed) return 409 to error(attempt.message)
+            if (attempt.unknown) return 202 to error("The SMS handoff outcome is unknown. Do not resend; check sms_status if an id is available.")
+                .put("status", "unknown").put("id", attempt.id ?: JSONObject.NULL)
             Log.i(TAG, "device api: text handed to Android")
-            val id = requireNotNull(attempt.id)
+            val id = attempt.id ?: return 202 to error("The SMS handoff outcome is unknown. Do not resend.").put("status", "unknown")
             return 200 to (settle(id)?.let(::describe) ?: JSONObject().put("id", id).put("to", number).put("status", "sending"))
         }
     }
 
-    private class Attempt(val consumed: Boolean, val message: String, val id: String?, val busy: Boolean)
+    private class Attempt(val consumed: Boolean, val message: String, val id: String?, val busy: Boolean, val unknown: Boolean = false)
 
-    private fun dispatch(number: String, body: String): Attempt {
+    private fun dispatch(number: String, body: String, token: String): Attempt {
         val latch = CountDownLatch(1)
         var result = Attempt(false, "SMS is unavailable.", null, false)
+        val admitted = AtomicBoolean(false)
+        val recordId = AtomicReference<String?>(null)
         main.post {
+            if (!admitted.compareAndSet(false, true)) return@post
+            if (!permitted(token, "/v1/sms")) {
+                result = Attempt(false, "Device access changed. Nothing was sent.", null, false)
+                latch.countDown(); return@post
+            }
             val review = try { sms.prepare(SmsDraft(number, body)) } catch (e: Exception) {
                 result = Attempt(false, e.message ?: "SMS is unavailable.", null, false)
                 latch.countDown()
                 return@post
             }
-            sms.send(review, clearDraft = false, agent = true) { consumed, message ->
+            recordId.set(review.record.id)
+            sms.send(review, clearDraft = false, agent = true, authorize = { permitted(token, "/v1/sms") }) { consumed, message ->
                 result = Attempt(consumed, message, review.record.id, !consumed && message.startsWith("Finish the current action"))
                 latch.countDown()
             }
         }
-        return if (latch.await(30, TimeUnit.SECONDS)) result else Attempt(false, "The R1 did not hand the text to Android in time.", null, false)
+        if (latch.await(30, TimeUnit.SECONDS)) return result
+        return if (admitted.compareAndSet(false, true)) Attempt(false, "The R1 was busy. Nothing was sent.", null, false)
+        else Attempt(true, "The SMS handoff outcome is unknown. Do not resend.", recordId.get(), false, unknown = true)
     }
 
     /** Android usually reports a send within a few seconds; report what is known by then. */
@@ -229,12 +340,11 @@ class DeviceApi(
         .put("status", r.status(clock()).name.lowercase())
         .put("error_codes", JSONArray(r.parts.mapNotNull { it.error }))
 
-    fun sentToday(): Int = if (prefs.getLong("day", -1) == LocalDate.now().toEpochDay()) prefs.getInt("count", 0) else 0
-    private fun countSend() = prefs.edit().putLong("day", LocalDate.now().toEpochDay()).putInt("count", sentToday() + 1).apply()
+    fun sentToday(): Int = app.hermesQuota.sentToday()
 
     private fun respond(socket: Socket, code: Int, body: JSONObject) {
         val bytes = body.toString().toByteArray(Charsets.UTF_8)
-        val reason = mapOf(200 to "OK", 400 to "Bad Request", 401 to "Unauthorized", 404 to "Not Found", 409 to "Conflict", 429 to "Too Many Requests")[code] ?: "Error"
+        val reason = mapOf(200 to "OK", 202 to "Accepted", 400 to "Bad Request", 401 to "Unauthorized", 403 to "Forbidden", 404 to "Not Found", 409 to "Conflict", 429 to "Too Many Requests", 503 to "Service Unavailable")[code] ?: "Error"
         socket.getOutputStream().apply {
             write("HTTP/1.1 $code $reason\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n"
                 .toByteArray(Charsets.ISO_8859_1))
@@ -290,6 +400,7 @@ class DeviceApi(
         private const val TAG = "r1ptt"
         private const val MAX_HEAD = 8 * 1024
         private const val MAX_BODY = 64 * 1024
+        private val MUTATIONS = setOf("/v1/sms", "/v1/speak", "/v1/show", "/v1/volume", "/v1/recipients")
 
         private fun error(message: String) = JSONObject().put("error", message)
 

@@ -10,24 +10,30 @@ arithmetic:
 
 So the work goes into making idle as close to "everything off" as possible.
 
-On external power (any charger) robotOS skips the idle cut: Wi-Fi and the modem stay up, so texts
-arrive and Hermes can reach the R1 at any time ([HERMES.md](HERMES.md)). Unplugging re-arms the normal
-cut. Plugging in only changes availability; it turns no feature on or off. An eight-hour powered soak
-and a matched unplugged battery comparison remain to be measured.
+On external power, robotOS skips the idle cut for configured radios. **Quick controls → Stay
+reachable** extends this behavior to battery operation; turning it off restores the saved
+pocket-mode delay. Unplugging re-arms that delay when Stay reachable is off. Cellular service,
+Hermes access and SMS relay still need their own settings ([HERMES.md](HERMES.md)). An eight-hour
+powered soak and matched unplugged comparisons remain to be measured.
+
+**Quiet mode** stops and mutes speech and feedback sounds. It does not change radio policy.
+The warm charcoal UI is designed for reading comfort. Battery improvements must be established
+by backlight, active-time, radio and background-work measurements.
 
 ## What robotOS does
 
 | Drain | Approach |
 |---|---|
 | Cellular modem | Kept off permanently (airplane mode set up to leave Wi-Fi alone). `power.cellular: true` turns it back on if a SIM is in. |
-| Wi-Fi | Off after `power.wifiIdleMinutes` (default 3) with the screen dark, never while on external power; on again at the next press or screen-on. Reconnection overlaps speaking; its latency on the current build still needs the read-only acceptance workflow in [ACCEPTANCE.md](ACCEPTANCE.md). While connecting, words are buffered within a bounded queue and failures are surfaced. |
+| Wi-Fi | Off after `power.wifiIdleMinutes` (default 3) with the screen dark, unless powered, actively needed or `power.stayReachable` is enabled; on again at the next press or screen-on. The saved delay survives reachability changes. Reconnection latency still needs current-build acceptance. While connecting, words are buffered within a bounded queue and failures are surfaced. |
 | Bluetooth, location, scanning | Off: no Wi-Fi or BLE "always scanning", no Wi-Fi auto-wakeup, no network recommendations. |
 | Background apps | Rabbit's product partition is removed and LineageOS extras are disabled (`tools/debloat.txt`). Screen-off pocket mode has no polling. VPN clients (Tailscale) have their own power behavior. |
 | Doze | Enters light idle immediately and deep idle about 30 s after screen-off (module `service.sh`). |
-| Screen | On only while a turn is active, then a 15 s timeout at brightness 60/255. No ambient display or lift/tap-to-wake. |
+| Screen | Held on while listening. Remote work, speech playback and approval waits allow the normal timeout (default 15 s, brightness 60/255). Brightness previews while dragging and persists after the gesture. No ambient display or lift/tap-to-wake. |
 | Button | Read by a root `dd` blocked on the input device: zero CPU until a press. The kernel's key interrupt wakes the SoC. |
 | Network per turn | A voice turn streams 24 kHz audio to `gpt-live-transcribe` only while you hold the button (about 64 KB per second of talking); the connection opens at the press and closes once the text is in. Then Hermes gets one request, and the reply is spoken with text-to-speech. Requests to the same host share one HTTP/2 connection. |
 | CPU per turn | No on-device speech models; the cloud (or your server) does the heavy work. |
+| UI and task status | Static screens do not animate continuously. Visible status follows state changes and Android events. Microphone/text rendering is bounded; task streams exist for active work or a visible task screen, with bounded reconnects. Idle mode does not poll Hermes. |
 
 ## Measuring
 
@@ -48,7 +54,7 @@ waking the device to take samples.
    - Android's screen-on and screen-off discharge;
    - the top kernel and app wakelocks.
 
-For a quick look on the device, go to Settings (gear icon) → Battery.
+For a quick look on the device, open **Settings → System → Battery record**.
 
 ## Results
 
@@ -56,9 +62,20 @@ To be filled in on hardware. These targets are first guesses, to be adjusted aft
 
 | Setup | Target idle drain | Measured |
 |---|---|---|
-| Wi-Fi cut after 3 min (default) | < 0.5 %/h | |
-| Wi-Fi always on (`wifiIdleMinutes: 0`) | < 1.5 %/h | |
-| Cellular on (`cellular: true`) | — | |
+| Pocket mode, radio cut after 3 min (default) | < 0.5 %/h | Pending |
+| Stay reachable (`stayReachable: true`) | < 1.5 %/h | Pending |
+| Cellular on (`cellular: true`) | — | Pending |
+
+Use three matched unplugged nights of at least eight hours for the baseline and three for the
+candidate. Keep brightness, timeout, radio policy, SIM, Wi-Fi placement, speech settings and
+starting battery range matched. Wake the R1 while still unplugged, record the outcome, then
+reconnect USB to retrieve evidence. Report each night and total drop divided by eligible hours.
+USB-powered checks and whole-percent synthetic fixtures do not establish standby performance.
+
+Automated policy, persistence and lifecycle tests run locally and in CI. They do not measure
+backlight power, real suspend behavior or audible response. Current-build physical UI, acoustic
+and overnight checks remain pending; use [DAILY_DRIVER.md](DAILY_DRIVER.md) for the added controls
+and [ACCEPTANCE.md](ACCEPTANCE.md) for the measurement procedure.
 
 ## If idle drain is high
 

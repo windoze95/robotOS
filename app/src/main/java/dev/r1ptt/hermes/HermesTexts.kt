@@ -6,6 +6,7 @@ import android.os.PowerManager
 import android.util.Log
 import dev.r1ptt.App
 import dev.r1ptt.data.Msg
+import dev.r1ptt.data.Config
 import dev.r1ptt.messages.SmsDraft
 import dev.r1ptt.messages.SmsRecipientText
 import dev.r1ptt.messages.SmsRecord
@@ -16,6 +17,8 @@ import kotlinx.coroutines.runBlocking
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.security.MessageDigest
 
 /**
  * The owner texting this R1's number is texting Hermes: each text goes to Hermes in its own SMS
@@ -28,8 +31,8 @@ import java.util.concurrent.TimeUnit
 class HermesTexts(
     private val app: App,
     private val sms: () -> dev.r1ptt.messages.SmsController = { app.sms },
-    private val ask: (String) -> String = { text -> askHermes(app, text) },
-    private val reply: (String, String) -> Boolean = { owner, body -> textOwner(app, owner, body) },
+    private val ask: ((String) -> String)? = null,
+    private val reply: ((String, String) -> Boolean)? = null,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     private val prefs = app.getSharedPreferences("hermes_texts", 0)
@@ -43,7 +46,11 @@ class HermesTexts(
         val link = cfg.hermes
         if (!record.incoming || !link.passthrough || record.body.isBlank()) return false
         if (!SmsRecipientText.sameNumber(record.peer, link.owner, SmsRecipientText.region(app))) return false
-        synchronized(prefs) { prefs.edit().putLong("pending.${record.id}", clock()).commit() }
+        synchronized(prefs) {
+            if (prefs.contains("pending.${record.id}") || prefs.getBoolean("done.${record.id}", false)) return true
+            prefs.edit().putLong("pending.${record.id}", clock()).putString("owner.${record.id}", link.owner)
+                .putString("connection.${record.id}", connection(app)).commit()
+        }
         Log.i(TAG, "hermes text: received from owner")
         worker.execute(::drain)
         return true
@@ -56,7 +63,20 @@ class HermesTexts(
         prefs.all.mapNotNull { (k, v) -> if (k.startsWith("pending.") && v is Long) k.removePrefix("pending.") to v else null }
     }.sortedBy { it.second }
 
-    private fun done(id: String) = synchronized(prefs) { prefs.edit().remove("pending.$id").remove("tries.$id").remove("answer.$id").commit() }
+    private fun done(id: String) = synchronized(prefs) {
+        val edit = prefs.edit().remove("pending.$id").remove("tries.$id").remove("answer.$id")
+            .remove("owner.$id").remove("connection.$id").remove("asking.$id").remove("replying.$id")
+            .putBoolean("done.$id", true)
+        // Incoming SMS records are the durable source; bound this additional deduplication cache.
+        prefs.all.keys.filter { it.startsWith("done.") }.dropLast(511).forEach { edit.remove(it) }
+        edit.commit()
+    }
+
+    private fun allowed(record: SmsRecord, owner: String, connection: String): Boolean {
+        val link = app.store.value.hermes
+        return link.passthrough && link.owner == owner && connection(app) == connection &&
+            SmsRecipientText.sameNumber(record.peer, owner, SmsRecipientText.region(app))
+    }
 
     private fun drain() {
         for ((id, since) in pending()) {
@@ -75,27 +95,60 @@ class HermesTexts(
 
     /** True when this text is finished: answered, or given up on with a notice. */
     private fun process(record: SmsRecord, since: Long): Boolean {
-        val link = app.store.value.hermes
+        val owner = prefs.getString("owner.${record.id}", null)
+        val connection = prefs.getString("connection.${record.id}", null)
+        // Old unbound queued work cannot safely acquire a different owner's authority on upgrade.
+        if (owner == null || connection == null || !allowed(record, owner, connection)) {
+            last = "A queued text was kept in Messages because relay access changed"
+            return true
+        }
+        if (prefs.getBoolean("replying.${record.id}", false)) {
+            last = "Reply status is unknown; check Messages before sending again"
+            return true
+        }
         val lock = app.getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "robotOS:hermes-text")
         lock.acquire(4 * 60_000L)
         try {
             // Hermes answers (and acts) once per text; a failed SMS handoff retries only the reply.
-            val answer = prefs.getString("answer.${record.id}", null) ?: try {
-                app.radio.onActivity()
-                if (!runBlocking { app.radio.awaitOnline(45_000) }) throw java.io.IOException("No network")
-                ask(record.body).trim().also { prefs.edit().putString("answer.${record.id}", it).commit() }
-            } catch (e: Exception) {
-                Log.w(TAG, "hermes text: ${e.javaClass.simpleName}")
-                last = "Couldn't reach Hermes: ${dev.r1ptt.net.friendly(e)}"
-                if (clock() - since < GIVE_UP_MS) return false
-                reply(link.owner, "robotOS couldn't reach Hermes (${dev.r1ptt.net.friendly(e)}). Your text is saved on the R1; send it again later.")
+            val answer = prefs.getString("answer.${record.id}", null) ?: run {
+                val answer = if (prefs.getBoolean("asking.${record.id}", false)) UNKNOWN else {
+                    app.radio.onActivity()
+                    if (!runBlocking { app.radio.awaitOnline(45_000) }) {
+                        last = "Waiting for a network to reach Hermes"
+                        if (clock() - since < GIVE_UP_MS) return false
+                        "robotOS couldn't reach Hermes. Your text is saved in Messages; no request was submitted."
+                    } else {
+                        val config = app.store.value
+                        if (!allowed(record, owner, connection) || connection(config) != connection) return true
+                        check(prefs.edit().putBoolean("asking.${record.id}", true).commit())
+                        try { (ask?.invoke(record.body) ?: askHermes(config, record.body)).trim() }
+                        catch (e: Exception) {
+                            Log.w(TAG, "hermes text: ${e.javaClass.simpleName}")
+                            // Legacy chat has no durable idempotency contract. Never replay possible actions.
+                            UNKNOWN
+                        }
+                    }
+                }
+                check(prefs.edit().putString("answer.${record.id}", answer).commit())
+                answer
+            }
+            if (!allowed(record, owner, connection)) {
+                last = "Reply cancelled because relay access changed"
                 return true
             }
-            if (answer.isEmpty() || reply(link.owner, fit(answer))) {
-                last = "Answered a text"
+            if (answer.isEmpty()) return true
+            check(prefs.edit().putBoolean("replying.${record.id}", true).commit())
+            val handedOff = try { reply?.invoke(owner, fit(answer)) ?: textOwner(app, owner, fit(answer), connection) } catch (_: Exception) {
+                last = "Reply status is unknown; check Messages before sending again"
+                return true
+            }
+            if (handedOff) {
+                last = "Reply attempt finished; check Messages for delivery"
                 Log.i(TAG, "hermes text: answered")
                 return true
             }
+            // False is an explicit rejection before handoff, which may safely retry only delivery.
+            prefs.edit().remove("replying.${record.id}").commit()
             last = "Hermes answered, but the reply text couldn't be sent"
             Log.w(TAG, "hermes text: reply not handed to Android")
             return clock() - since >= GIVE_UP_MS
@@ -109,6 +162,15 @@ class HermesTexts(
         const val GIVE_UP_MS = 30 * 60_000L
         /** Long agent answers become several SMS parts; past this, the text says it was cut. */
         const val MAX_REPLY_CHARS = 1200
+        private const val UNKNOWN = "Hermes's response was interrupted and the outcome is unknown. Your request may have run. Check Hermes before asking it to perform the action again."
+
+        private fun connection(app: App): String = connectionId(app.store.value)
+        private fun connection(cfg: Config): String = connectionId(cfg)
+        internal fun connectionId(cfg: Config): String {
+            val value = listOf(cfg.agent.baseUrl, cfg.agent.apiKey,
+                cfg.agent.headers.toSortedMap().toString(), cfg.hermes.smsSession).joinToString("\n")
+            return MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
+        }
 
         /** How Hermes should answer a text: it goes back as an SMS. */
         const val STYLE = "Your user is texting you from their own phone; robotOS on their Rabbit R1 relays it. " +
@@ -117,23 +179,30 @@ class HermesTexts(
 
         fun fit(text: String): String = if (text.length <= MAX_REPLY_CHARS) text else text.take(MAX_REPLY_CHARS - 1).trimEnd() + "…"
 
-        private fun askHermes(app: App, text: String): String {
-            val cfg = app.store.value
+        private fun askHermes(cfg: Config, text: String): String {
             val req = ChatRequest.build(cfg.copy(systemPrompt = STYLE), listOf(Msg(Msg.USER, text)), "", session = cfg.hermes.smsSession)
             return ChatClient().stream(req, CallRegistry(), {}, {})
         }
 
         /** Hands one reply to Android on the main thread, as a Hermes (agent) send. */
-        private fun textOwner(app: App, owner: String, body: String): Boolean {
+        internal fun replyAllowed(app: App, owner: String, originalConnection: String) =
+            app.store.value.let { cfg -> cfg.hermes.passthrough && cfg.hermes.owner == owner && connectionId(cfg) == originalConnection }
+
+        private fun textOwner(app: App, owner: String, body: String, originalConnection: String): Boolean {
             val latch = CountDownLatch(1)
             var consumed = false
+            val admitted = AtomicBoolean(false)
+            fun allowed() = replyAllowed(app, owner, originalConnection)
             Handler(Looper.getMainLooper()).post {
+                if (!admitted.compareAndSet(false, true)) return@post
+                if (!allowed()) { latch.countDown(); return@post }
                 val review = runCatching { app.sms.prepare(SmsDraft(owner, body)) }.getOrNull()
                 if (review == null) latch.countDown()
-                else app.sms.send(review, clearDraft = false, agent = true) { ok, _ -> consumed = ok; latch.countDown() }
+                else app.sms.send(review, clearDraft = false, agent = true, authorize = ::allowed) { ok, _ -> consumed = ok; latch.countDown() }
             }
-            latch.await(30, TimeUnit.SECONDS)
-            return consumed
+            if (latch.await(30, TimeUnit.SECONDS)) return consumed
+            // After admission the handoff is uncertain; report consumed to prevent another send.
+            return !admitted.compareAndSet(false, true)
         }
     }
 }
