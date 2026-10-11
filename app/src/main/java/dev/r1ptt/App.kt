@@ -49,8 +49,5 @@ class App : Application() {
         turns = TurnController(this)
         updates = UpdateManager(this)
         updates.recover()
-        // Leftovers of the retired SMS relay on devices that ran it.
-        deleteSharedPreferences("relay")
-        getSystemService(android.app.NotificationManager::class.java)?.deleteNotificationChannel("sms-relay")
     }
 }

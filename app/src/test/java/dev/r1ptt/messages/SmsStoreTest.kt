@@ -61,30 +61,16 @@ class SmsStoreTest {
         store.removeRecipient(store.recipients().last().id)
         assertEquals(SmsResolution.Number("+15551234567"), SmsRecipientResolver.resolve("Yana", store.recipients()))
     }
-    @Test fun versionThreeUpgradeDropsOnlyTheRelayTablesAndKeepsOldRecords() {
-        store.close(); val context = RuntimeEnvironment.getApplication(); context.deleteDatabase("messages.db")
-        SmsStore(context).writableDatabase.apply {
-            execSQL("CREATE TABLE bridge_jobs(id TEXT PRIMARY KEY)")
-            execSQL("CREATE TABLE bridge_peers(number TEXT PRIMARY KEY)")
-            version = 3
-            close()
-        }
-        val old = android.database.sqlite.SQLiteDatabase.openDatabase(context.getDatabasePath("messages.db").path, null, 0)
+    @Test fun recordsWrittenBeforeLaterFieldsExistedReadBackIntact() {
         val failed = record().sent(0, false, 32).sent(1, false, 32)
-        // Records written before later fields existed still read back intact.
         val legacy = org.json.JSONObject(failed.encode()).apply { remove("systemOwned"); remove("sendEvidence") }
         val parts = legacy.getJSONArray("parts")
         for (i in 0 until parts.length()) { parts.getJSONObject(i).remove("radioError"); parts.getJSONObject(i).remove("failureSource") }
-        old.execSQL("INSERT INTO messages VALUES (?,?,?,?,?)", arrayOf<Any>(failed.id, failed.peer, failed.createdAt, 0, legacy.toString()))
-        old.execSQL("INSERT INTO recipients (name, number) VALUES ('Yana', '+15551234567')")
-        old.close()
-        store = SmsStore(context)
+        store.writableDatabase.execSQL("INSERT INTO messages VALUES (?,?,?,?,?)", arrayOf<Any>(failed.id, failed.peer, failed.createdAt, 0, legacy.toString()))
         val restored = store.conversation(failed.peer).single()
         assertEquals(32, restored.parts[0].error); assertNull(restored.parts[0].radioError)
         assertEquals(SmsStatus.FAILED, restored.status(2000)); assertEquals(failed.token, restored.token)
         assertFalse(restored.systemOwned); assertTrue(store.pendingSystemCopies().isEmpty())
-        assertEquals("Yana", store.recipients().single().name)
-        store.readableDatabase.rawQuery("SELECT name FROM sqlite_master WHERE name LIKE 'bridge_%'", null).use { assertEquals(0, it.count) }
         assertEquals(4, store.readableDatabase.version)
     }
 

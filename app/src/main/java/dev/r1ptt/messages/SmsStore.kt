@@ -18,11 +18,8 @@ class SmsStore(context: Context) : SQLiteOpenHelper(context, "messages.db", null
         db.execSQL("CREATE TABLE reply_requests (id TEXT PRIMARY KEY, peer TEXT NOT NULL, body TEXT NOT NULL)")
     }
 
-    /** The only older database is the owner's R1 at version 3: drop the retired SMS relay's tables. */
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        db.execSQL("DROP TABLE IF EXISTS bridge_jobs")
-        db.execSQL("DROP TABLE IF EXISTS bridge_peers")
-    }
+    /** No older schema is in use; the database starts at version 4 or already is. */
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {}
 
     fun draft(): SmsDraft = readableDatabase.rawQuery("SELECT peer, body FROM draft WHERE id=1", null).use { c ->
         if (c.moveToFirst()) SmsDraft(c.getString(0), c.getString(1)) else SmsDraft()
