@@ -1,7 +1,14 @@
 package dev.r1ptt
 
 import android.Manifest
-import android.app.Activity
+import android.app.AlertDialog
+import android.content.BroadcastReceiver
+import android.content.IntentFilter
+import android.os.BatteryManager
+import android.text.TextWatcher
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -31,6 +38,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import dev.r1ptt.audio.AudioPlayback
 import kotlin.math.sqrt
 
 /**
@@ -53,6 +61,26 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
     private var textSp = 17f
     private var renderedConv = ""
     private var lastRendered: Msg? = null
+    private var followLatest = true
+    private var changingDraft = false
+    private var submittedDraft: String? = null
+    private var batteryLevel: Int? = null
+    private var networkAvailable = false
+    private var connectionRegistered = false
+    private val batteryEvents = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
+            batteryLevel = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1).takeIf { it >= 0 }?.let { it * 100 / scale.coerceAtLeast(1) }
+            renderConnectivity()
+        }
+    }
+    private val connectionEvents = object : ConnectivityManager.NetworkCallback() {
+        override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+            networkAvailable = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            runOnUiThread { renderConnectivity() }
+        }
+        override fun onLost(network: Network) { networkAvailable = false; runOnUiThread { renderConnectivity() } }
+    }
     /** Marks live dictation's provisional words in the text field (dim until the final transcript). */
     private val provisional by lazy { ForegroundColorSpan(getColor(R.color.dim)) }
 
@@ -78,8 +106,24 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
             } else false
         }
         findViewById<View>(R.id.send).setOnClickListener { if (!sendTyped()) showKeyboard() }
-        findViewById<View>(R.id.settings).setOnClickListener { startActivity(Intent(this, SettingsActivity::class.java)) }
-        findViewById<View>(R.id.messages).setOnClickListener { startActivity(Intent(this, dev.r1ptt.messages.MessagesActivity::class.java)) }
+        findViewById<View>(R.id.chat_title).setOnClickListener { startActivity(Intent(this, ChatsActivity::class.java)) }
+        findViewById<View>(R.id.controls).setOnClickListener { startActivity(Intent(this, QuickControlsActivity::class.java)) }
+        findViewById<View>(R.id.menu).setOnClickListener { openMenu() }
+        findViewById<View>(R.id.stop).setOnClickListener { app.turns.cancelTurn() }
+        findViewById<View>(R.id.latest).setOnClickListener { followLatest = true; scrollToEnd() }
+        scroll.setOnScrollChangeListener { _, _, y, _, _ ->
+            val bottom = scroll.getChildAt(0)?.height ?: 0
+            followLatest = y + scroll.height >= bottom - dp(48)
+            findViewById<View>(R.id.latest).visibility = if (followLatest) View.GONE else View.VISIBLE
+            if (renderedConv.isNotEmpty()) app.history.savePosition(y, followLatest, renderedConv)
+        }
+        input.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                if (!changingDraft) app.history.saveDraft(s?.toString().orEmpty())
+            }
+        })
         window.decorView.setOnApplyWindowInsetsListener { v, insets ->
             val ime = insets.isVisible(WindowInsets.Type.ime())
             if (ime != imeVisible) {
@@ -88,7 +132,7 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
             }
             v.onApplyWindowInsets(insets)
         }
-        // Volume keys (the wheel) adjust speech, not the ringer, even when nothing is playing.
+        // Contextual wheel routing is shared with every robotOS screen.
         volumeControlStream = AudioManager.STREAM_MUSIC
 
         val missing = listOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS)
@@ -106,11 +150,22 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
         observations = MainScope().also { s ->
             s.launch { app.store.flow.collect(::applyConfig) }
             s.launch { app.history.flow.collect(::renderHistory) }
-            s.launch { app.turns.state.collect(::render) }
+            s.launch { app.turns.state.collect { render(it); kotlinx.coroutines.delay(50) } }
+            s.launch { AudioPlayback.flow.collect { render(app.turns.state.value) } }
+            s.launch { app.history.errors.collect { if (it != null) status.text = it } }
         }
+        render(app.turns.state.value)
+        registerReceiver(batteryEvents, IntentFilter(Intent.ACTION_BATTERY_CHANGED), RECEIVER_NOT_EXPORTED)
+        runCatching { getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(connectionEvents) }
+            .onSuccess { connectionRegistered = true }
     }
 
     override fun onPause() {
+        app.history.savePosition(scroll.scrollY, followLatest)
+        app.history.flush()
+        unregisterReceiver(batteryEvents)
+        if (connectionRegistered) getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(connectionEvents)
+        connectionRegistered = false
         app.turns.detachTarget(this)
         resumed = false
         visible = false
@@ -182,10 +237,11 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
 
     override fun sendTyped(): Boolean {
         if (app.updates.installing) return false // retain unsent text during the installer handoff
-        if (app.store.loadError != null) { render(app.turns.state.value); return false }
+        if (app.store.loadError != null || app.history.errors.value != null) { render(app.turns.state.value); return false }
         val text = input.text.toString().trim()
         if (text.isEmpty()) return false
-        input.text.clear()
+        if (submittedDraft == text && app.turns.busy) return true
+        submittedDraft = text
         hideKeyboard()
         app.turns.sendText(text)
         return true
@@ -204,15 +260,20 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
     // ---- rendering ----
 
     private fun render(s: TurnState) {
-        status.setTextColor(getColor(if (s.phase == Phase.ERROR) R.color.error else R.color.accent))
+        status.setTextColor(getColor(if (s.phase == Phase.ERROR) R.color.error else R.color.dim))
+        val stop = findViewById<TextView>(R.id.stop)
+        stop.visibility = if (s.phase.active) View.VISIBLE else View.GONE
+        stop.text = if (AudioPlayback.active) "Stop speech" else "Disconnect"
+        stop.setOnClickListener { if (AudioPlayback.active) app.turns.stopSpeech() else app.turns.cancelTurn() }
+        if (!s.phase.active) submittedDraft = null
         status.text = when (s.phase) {
             Phase.IDLE -> s.note.ifEmpty { idleHint() }
-            Phase.LISTENING -> if (s.note.isNotEmpty()) "Listening · ${s.note.lowercase()}" else "Listening… release to send"
+            Phase.LISTENING -> if (s.note.isNotEmpty()) "Listening: ${s.note.lowercase()}" else "Listening… release to send"
             Phase.DICTATING -> "Dictating… release to insert"
             Phase.TRANSCRIBING -> "Transcribing…"
             Phase.THINKING -> s.note.ifEmpty { "Thinking…" }
             Phase.ANSWERING -> s.note.ifEmpty { "Hermes" }
-            Phase.SPEAKING -> "Speaking · tap to stop"
+            Phase.SPEAKING -> "Speaking"
             Phase.ERROR -> s.note
         }
         val listening = s.phase == Phase.LISTENING || s.phase == Phase.DICTATING
@@ -230,59 +291,104 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
                 }
                 append(s.reply.ifEmpty { if (s.phase == Phase.LISTENING) "" else "…" })
             }
-            scrollToEnd()
+            if (followLatest) scrollToEnd()
         } else {
             live.visibility = View.GONE
         }
-        // The screen stays on for a turn; otherwise the short system timeout turns it off.
-        if (s.phase.active) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // Remote work and spoken replies do not need the backlight held on.
+        if (listening) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
     private fun idleHint(): String {
         app.store.loadError?.let { return it }
+        app.history.errors.value?.let { return it }
         val cfg = app.store.value
         return when {
             cfg.agent.baseUrl.isBlank() || cfg.agent.apiKey.isBlank() -> getString(R.string.need_hermes)
             cfg.missingSpeechKey -> getString(R.string.need_key)
-            imeVisible -> "Hold to dictate · tap to send"
-            else -> "Hold the side button to talk"
+            imeVisible -> "Hold to dictate; tap to send"
+            else -> if (networkAvailable) "Ready" else "Network unavailable"
         }
     }
 
     private fun renderHistory(snap: History.Snapshot) {
+        val switched = snap.convId != renderedConv
         val msgs = snap.messages
         val from = msgs.indexOfLast { it === lastRendered }
-        if (snap.convId != renderedConv || from < 0 && lastRendered != null || list.childCount > 150) {
+        if (switched || from < 0 && lastRendered != null) {
             list.removeAllViews()
             renderedConv = snap.convId
             lastRendered = null
         }
+        while (list.childCount > 0 && list.getChildAt(0).tag !== msgs.firstOrNull()) list.removeViewAt(0)
         val start = if (lastRendered == null) 0 else msgs.indexOfLast { it === lastRendered } + 1
         for (m in msgs.drop(start)) list.addView(bubble(m))
         lastRendered = msgs.lastOrNull()
-        scrollToEnd()
+        findViewById<TextView>(R.id.chat_title).text = snap.title
+        findViewById<View>(R.id.empty).visibility = if (msgs.isEmpty()) View.VISIBLE else View.GONE
+        if (input.text.toString() != snap.draft) {
+            changingDraft = true
+            input.setText(snap.draft)
+            input.setSelection(input.text.length)
+            changingDraft = false
+        }
+        if (switched) {
+            followLatest = snap.followLatest
+            scroll.post { if (renderedConv == snap.convId) { if (followLatest) scrollToEnd() else scroll.scrollTo(0, snap.scrollY) } }
+        } else if (msgs.size > start && followLatest) scrollToEnd()
     }
 
-    private fun bubble(m: Msg) = TextView(this).apply {
+    private fun bubble(m: Msg) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        tag = m
         val user = m.role == Msg.USER
-        text = m.text
-        textSize = textSp
-        setTextColor(getColor(if (user) R.color.dim else R.color.fg))
-        gravity = if (user) Gravity.END else Gravity.START
-        setPadding(if (user) dp(32) else 0, dp(7), if (user) 0 else dp(16), 0)
-        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        setPadding(0, dp(if (user) 20 else 12), 0, dp(8))
+        addView(ui.text(if (user) "You" else "Hermes", 13f, muted = true).apply {
+            setPadding(0, 0, 0, dp(4))
+        })
+        addView(TextView(this@HomeActivity).apply {
+            text = m.text
+            textSize = textSp
+            setTextColor(getColor(R.color.fg))
+            setTextIsSelectable(true)
+            setLineSpacing(dp(3).toFloat(), 1f)
+            gravity = Gravity.START
+        })
+    }
+
+    private fun openMenu() {
+        val options = arrayOf("New chat", "Saved chats", "Read last reply", "Messages", "Hermes", "Settings")
+        showDeviceDialog(AlertDialog.Builder(this).setTitle("robotOS").setItems(options) { _, index ->
+            when (index) {
+                0 -> app.turns.newConversation()
+                1 -> startActivity(Intent(this, ChatsActivity::class.java))
+                2 -> app.history.messages.lastOrNull { it.role == Msg.ASSISTANT }?.let {
+                    if (!app.turns.speakText(it.text)) android.widget.Toast.makeText(this, "Speech is unavailable while busy or quiet", android.widget.Toast.LENGTH_SHORT).show()
+                }
+                3 -> startActivity(Intent(this, dev.r1ptt.messages.MessagesActivity::class.java))
+                4 -> startActivity(Intent(this, dev.r1ptt.hermes.HermesActivity::class.java))
+                5 -> startActivity(Intent(this, SettingsActivity::class.java))
+            }
+        })
+    }
+
+    private fun renderConnectivity() {
+        if (!resumed) return
+        findViewById<TextView>(R.id.controls).text = batteryLevel?.let { "$it%" } ?: "Controls"
+        findViewById<View>(R.id.controls).contentDescription = "Quick controls. Battery ${batteryLevel ?: "unknown"} percent"
+        if (!app.turns.state.value.phase.active) render(app.turns.state.value)
     }
 
     private fun applyConfig(c: Config) {
-        if (c.textSizeSp.toFloat() == textSp) return
-        textSp = c.textSizeSp.toFloat()
+        textSp = c.textSizeSp.coerceIn(14, 24).toFloat()
         live.textSize = textSp
-        for (i in 0 until list.childCount) (list.getChildAt(i) as? TextView)?.textSize = textSp
+        input.textSize = textSp
+        for (i in 0 until list.childCount) ((list.getChildAt(i) as? LinearLayout)?.getChildAt(1) as? TextView)?.textSize = textSp
     }
 
     private fun scrollToEnd() {
-        scroll.post { scroll.scrollTo(0, scroll.getChildAt(0).height) }
+        scroll.post { if (followLatest) { scroll.scrollTo(0, scroll.getChildAt(0).height); findViewById<View>(R.id.latest).visibility = View.GONE } }
     }
 
     private fun hideSystemBars() {

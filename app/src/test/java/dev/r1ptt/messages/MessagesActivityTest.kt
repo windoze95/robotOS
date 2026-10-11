@@ -98,4 +98,36 @@ class MessagesActivityTest {
         preview.outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
         c.pause().stop().destroy()
     }
+
+    @Test fun typingUpdatesTheDraftCountWithoutReplacingTheComposeContent() {
+        val intent = Intent(app, MessagesActivity::class.java).putExtra(SmsExternalDraft.PEER, "+15551234567")
+        val c = Robolectric.buildActivity(MessagesActivity::class.java, intent).setup()
+        val a = c.get()
+        await { views(a.window.decorView).filterIsInstance<EditText>().any { it.contentDescription == "SMS draft" } }
+        val count = views(a.window.decorView).filterIsInstance<TextView>().single { it.text.contains("/1600 characters") }
+        val draft = views(a.window.decorView).filterIsInstance<EditText>().single { it.contentDescription == "SMS draft" }
+        draft.setText("Hello")
+        assertTrue(count.text.contains("5/1600 characters"))
+        assertTrue(views(a.window.decorView).any { it === count })
+        assertSame(draft, views(a.window.decorView).filterIsInstance<EditText>().single { it.contentDescription == "SMS draft" })
+        c.pause().stop().destroy()
+    }
+
+    @Test fun savedNamesAppearAndUnknownReceiptsDoNotContinuouslyRebuildTheConversation() {
+        val db = SmsStore(app)
+        db.addRecipient("Sam", "+15551234567")
+        db.insert(SmsRecord("unknown", "+15551234567", "Are you on your way?", System.currentTimeMillis() - SmsRecord.SEND_WAIT_MS - 1,
+            1, false, parts = listOf(SmsPart())))
+        val c = Robolectric.buildActivity(MessagesActivity::class.java).setup()
+        val a = c.get()
+        await { views(a.window.decorView).any { it.contentDescription?.toString()?.startsWith("Sam.") == true } }
+        views(a.window.decorView).first { it.contentDescription?.toString()?.startsWith("Sam.") == true }.performClick()
+        await { views(a.window.decorView).filterIsInstance<TextView>().any { it.text.startsWith("Send status unknown") } }
+        val metadata = views(a.window.decorView).filterIsInstance<TextView>().single { it.text.startsWith("Send status unknown") }
+        assertTrue(views(a.window.decorView).filterIsInstance<TextView>().any { it.text == "+15551234567" })
+        shadowOf(Looper.getMainLooper()).idleFor(3, TimeUnit.SECONDS)
+        assertTrue(views(a.window.decorView).any { it === metadata })
+        c.pause().stop().destroy()
+        db.close()
+    }
 }

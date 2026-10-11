@@ -1,90 +1,100 @@
 package dev.r1ptt.update
 
-import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
+import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import dev.r1ptt.App
 import dev.r1ptt.R
+import dev.r1ptt.ui.DeviceActivity
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
-class UpdateActivity : Activity() {
+class UpdateActivity : DeviceActivity() {
     private val updates get() = (application as App).updates
-    private var ui: kotlinx.coroutines.CoroutineScope? = null
+    private var uiScope: kotlinx.coroutines.CoroutineScope? = null
     private lateinit var status: TextView
     private lateinit var check: Button
     private lateinit var download: Button
     private lateinit var install: Button
     private lateinit var confirm: Button
     private lateinit var cancel: Button
+    private lateinit var release: TextView
+    private lateinit var notes: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            val padding = (16 * resources.displayMetrics.density).toInt()
-            setPadding(padding, padding, padding, padding)
-        }
-        setContentView(ScrollView(this).apply { setBackgroundColor(getColor(R.color.bg)); addView(root) })
-        fun label(text: String) = TextView(this).apply {
-            this.text = text; textSize = 16f; setTextColor(getColor(R.color.fg)); root.addView(this)
-        }
-        fun button(text: String, action: () -> Unit) = Button(this).apply {
-            this.text = text; isAllCaps = false; setOnClickListener { action() }; root.addView(this)
-        }
-        label("robotOS ${updates.installedVersion()}")
-        status = label("")
-        check = button("Check for updates") { updates.check() }
-        download = button("Download update") { updates.download() }
-        install = button("Install update") {
+        val page = ui.page("App updates") { updates.cancel(); finish() }
+        setContentView(page.root)
+        wheelScrollTarget = page.scroll
+        val root = page.body
+        fun button(text: String, primary: Boolean = false, action: () -> Unit) = ui.button(text, primary, action).also(root::addView)
+        root.addView(ui.text("Installed", 14f, true))
+        root.addView(ui.text("robotOS ${updates.installedVersion()}", 20f))
+        status = ui.text("").apply { setPadding(0, ui.dp(20), 0, ui.dp(20)); root.addView(this) }
+        release = ui.text("", 14f, true).apply { setPadding(0, 0, 0, ui.dp(16)); root.addView(this) }
+        check = button("Check for updates", primary = true) { updates.check() }
+        download = button("Download update", primary = true) { updates.download() }
+        install = button("Install update", primary = true) {
             if (!packageManager.canRequestPackageInstalls()) {
-                AlertDialog.Builder(this).setTitle("Allow robotOS update requests?")
+                showDeviceDialog(AlertDialog.Builder(this).setTitle("Allow robotOS update requests?")
                     .setMessage("Android requires you to allow this source before robotOS can request an update. You will still confirm each installation. You can turn this off again in Android settings.")
                     .setPositiveButton("Open Android settings") { _, _ ->
                         try { startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName"))) }
                         catch (_: Exception) { status.setText(R.string.update_permission_hint) }
-                    }.setNegativeButton("Cancel", null).show()
+                    }.setNegativeButton("Cancel", null))
             } else {
-                AlertDialog.Builder(this).setTitle("Install the verified update?")
+                showDeviceDialog(AlertDialog.Builder(this).setTitle("Install the verified update?")
                     .setMessage("Finish your conversation first. Voice will pause while Android confirms and installs the update. Your conversations and settings stay in place.")
                     .setPositiveButton("Continue") { _, _ -> updates.install() }
-                    .setNegativeButton("Cancel", null).show()
+                    .setNegativeButton("Cancel", null))
             }
         }
-        confirm = button("Continue to Android confirmation") {
+        confirm = button("Continue to Android confirmation", primary = true) {
             updates.confirmation()?.let {
                 try { @Suppress("DEPRECATION") startActivityForResult(it, CONFIRM_INSTALL) }
                 catch (_: Exception) { updates.confirmationReturned(cancelled = true) }
             }
         }
         cancel = button("Cancel update") { updates.cancel() }
-        button("Back") { updates.cancel(); finish() }
+        notes = button("Release notes") {
+            updates.state.value.release?.let { version ->
+                runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/${ReleaseManifest.REPOSITORY}/releases/tag/${version.tag}"))) }
+                    .onFailure { status.text = "No browser is available to open release notes." }
+            }
+        }
+        root.addView(ui.text("Updates are checked only when you ask. Downloads stop when you leave this screen.", 14f, true))
+        render(updates.state.value)
     }
 
     override fun onResume() {
         super.onResume()
         updates.foreground(true)
-        ui = MainScope().also { scope -> scope.launch { updates.state.collect { s ->
-            status.text = s.message
-            val working = s.phase in setOf(UpdatePhase.CHECKING, UpdatePhase.DOWNLOADING) || updates.installing
-            check.isEnabled = !working
-            download.isEnabled = s.phase == UpdatePhase.AVAILABLE && !working
-            install.isEnabled = s.phase == UpdatePhase.READY && !working
-            confirm.isEnabled = s.phase == UpdatePhase.CONFIRM && updates.installing
-            cancel.isEnabled = working
-        } } }
+        uiScope = MainScope().also { scope -> scope.launch { updates.state.collect(::render) } }
+    }
+
+    private fun render(s: UpdateState) {
+        status.text = s.message
+        val working = s.phase in setOf(UpdatePhase.CHECKING, UpdatePhase.DOWNLOADING) || updates.installing
+        check.visibility = if (s.phase == UpdatePhase.IDLE && !working) View.VISIBLE else View.GONE
+        download.visibility = if (s.phase == UpdatePhase.AVAILABLE && !working) View.VISIBLE else View.GONE
+        install.visibility = if (s.phase == UpdatePhase.READY && !working) View.VISIBLE else View.GONE
+        confirm.visibility = if (s.phase == UpdatePhase.CONFIRM && updates.installing) View.VISIBLE else View.GONE
+        cancel.visibility = if (working) View.VISIBLE else View.GONE
+        notes.visibility = if (s.release != null && !working) View.VISIBLE else View.GONE
+        release.visibility = if (s.release != null) View.VISIBLE else View.GONE
+        release.text = s.release?.let { "Version ${it.versionName}\nDownload ${android.text.format.Formatter.formatShortFileSize(this, it.apkSize)}" }.orEmpty()
     }
 
     override fun onPause() {
-        ui?.cancel(); ui = null
+        uiScope?.cancel(); uiScope = null
         updates.foreground(false)
         super.onPause()
     }

@@ -1,7 +1,6 @@
 package dev.r1ptt.messages
 
 import android.Manifest
-import android.app.Activity
 import android.app.AlertDialog
 import android.app.NotificationManager
 import android.content.Intent
@@ -35,18 +34,17 @@ import dev.r1ptt.Phase
 import dev.r1ptt.PttService
 import dev.r1ptt.R
 import dev.r1ptt.SettingsActivity
+import dev.r1ptt.ui.DeviceActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.net.URI
 import java.text.DateFormat
 import java.util.Date
 
 /** One-to-one SMS UI. Manual drafts and external compose requests require review. */
-class MessagesActivity : Activity(), DictationTarget {
+class MessagesActivity : DeviceActivity(), DictationTarget {
     private val app get() = application as App
     private val sms get() = app.sms
     private lateinit var root: LinearLayout
@@ -65,7 +63,7 @@ class MessagesActivity : Activity(), DictationTarget {
     private var imeVisible = false
     private var generation = 0L
     private var draftRevision = 0L
-    private var ui: CoroutineScope? = null
+    private var uiScope: CoroutineScope? = null
     private var dialog: AlertDialog? = null
     private var dictationConsent: String? = null
     private var rows = emptyList<SmsRecord>()
@@ -74,8 +72,11 @@ class MessagesActivity : Activity(), DictationTarget {
     private var pendingNotice: String? = null
     private var mmsNotices = 0
     private var replyRequests = emptyList<Pair<String, SmsDraft>>()
+    private var recipientNames = emptyMap<String, String>()
+    private var draftInfo: TextView? = null
     private val main = Handler(Looper.getMainLooper())
     private val save = Runnable { persistDraft() }
+    private val statusDeadline = Runnable { if (resumed) renderRows() }
     private val provisional by lazy { ForegroundColorSpan(getColor(R.color.dim)) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -87,7 +88,8 @@ class MessagesActivity : Activity(), DictationTarget {
         pendingNotice = intent.getStringExtra(SmsExternalDraft.NOTICE)?.take(300)
         root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(10), dp(4), dp(10), dp(6))
+            setPadding(dp(12), dp(4), dp(12), dp(8))
+            setBackgroundColor(getColor(R.color.bg))
             isFocusableInTouchMode = true
         }
         setContentView(root)
@@ -108,12 +110,11 @@ class MessagesActivity : Activity(), DictationTarget {
             it.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
         if (hasMic()) PttService.start(this)
-        ui = MainScope().also { scope ->
+        uiScope = MainScope().also { scope ->
             scope.launch { sms.revision.collect { refresh() } }
             scope.launch { app.turns.state.collect { renderTurn() } }
-            // Refresh uncertain status only while this screen is visible. This does not touch radios.
-            scope.launch { while (isActive) { delay(2000); if (rows.any { it.status(System.currentTimeMillis()) == SmsStatus.SENDING || it.status(System.currentTimeMillis()) == SmsStatus.UNKNOWN }) renderRows() } }
         }
+        loadRecipientNames()
         refresh(reloadDraft = true)
     }
 
@@ -122,10 +123,11 @@ class MessagesActivity : Activity(), DictationTarget {
         dialog?.dismiss(); dialog = null
         hideKeyboard()
         main.removeCallbacks(save)
+        main.removeCallbacks(statusDeadline)
         if (loaded && !sending) persistDraft()
         resumed = false
         generation++
-        ui?.cancel(); ui = null
+        uiScope?.cancel(); uiScope = null
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         super.onPause()
     }
@@ -133,6 +135,7 @@ class MessagesActivity : Activity(), DictationTarget {
     override fun onDestroy() {
         app.turns.detachTarget(this)
         main.removeCallbacks(save)
+        main.removeCallbacks(statusDeadline)
         super.onDestroy()
     }
 
@@ -145,7 +148,7 @@ class MessagesActivity : Activity(), DictationTarget {
     }
 
     @Deprecated("Platform Activity back handling")
-    override fun onBackPressed() = goBack()
+    override fun onBackPressed() { if (imeVisible) hideKeyboard() else goBack() }
 
     private fun goBack() {
         if (screen == Screen.THREADS) finish() else navigate(Screen.THREADS)
@@ -162,13 +165,13 @@ class MessagesActivity : Activity(), DictationTarget {
 
     private fun renderScreen() {
         building = true
-        root.removeAllViews(); list = null; recipient = null; body = null; reviewButton = null
+        root.removeAllViews(); list = null; recipient = null; body = null; reviewButton = null; draftInfo = null
         val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         root.addView(header)
-        header.addView(button("‹", ::goBack).apply { contentDescription = "Back" }, LinearLayout.LayoutParams(dp(48), dp(44)))
-        header.addView(label("Messages", 19f), LinearLayout.LayoutParams(0, dp(44), 1f))
-        header.addView(button("Options", ::options), LinearLayout.LayoutParams(dp(88), dp(44)))
-        status = label(if (loaded) idleHint() else "Opening Messages…", 12f).apply {
+        header.addView(button("‹", ::goBack).apply { contentDescription = "Back" }, LinearLayout.LayoutParams(dp(48), dp(48)))
+        header.addView(label("Messages", 20f).apply { setPadding(dp(10), 0, 0, 0) }, LinearLayout.LayoutParams(0, dp(48), 1f))
+        header.addView(button("Options", ::options), LinearLayout.LayoutParams(dp(104), dp(48)))
+        status = label(if (loaded) idleHint() else "Opening Messages…", 14f).apply {
             setTextColor(getColor(R.color.dim)); setPadding(0, dp(4), 0, dp(4))
         }
         root.addView(status)
@@ -181,6 +184,7 @@ class MessagesActivity : Activity(), DictationTarget {
             }
         }
         val scroll = ScrollView(this).apply { isFillViewport = true }
+        wheelScrollTarget = scroll
         list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; scroll.addView(this) }
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
         when (screen) {
@@ -228,6 +232,7 @@ class MessagesActivity : Activity(), DictationTarget {
 
     private fun renderRows() {
         val container = list ?: return
+        val oldScroll = wheelScrollTarget?.scrollY ?: 0
         container.removeAllViews()
         when (screen) {
             Screen.THREADS -> {
@@ -235,37 +240,70 @@ class MessagesActivity : Activity(), DictationTarget {
                 replyRequests.forEach { (id, requested) -> container.addView(button("Review saved draft · ${requested.peer}") {
                     replaceDraft(requested) { sms.removeReplyRequest(id) }
                 }) }
-                if (threads.isEmpty()) container.addView(label("Your texts will appear here.\n\nSMS only · one recipient at a time. Pictures, group MMS, RCS, and old inbox import are not included.", 15f))
+                if (threads.isEmpty()) container.addView(label("No texts yet.\n\nNew SMS will appear here. Pictures and group messages aren't supported.", 15f))
                 threads.forEach { thread ->
-                    container.addView(button("${if (thread.unread) "● " else ""}${thread.peer}\n${thread.last.body.take(70)}") { navigate(Screen.CONVERSATION, thread.peer) }.apply { gravity = Gravity.START; maxLines = 3 })
+                    container.addView(ui.actionRow("${if (thread.unread) "● " else ""}${displayName(thread.peer)}", thread.last.body.take(90)) {
+                        navigate(Screen.CONVERSATION, thread.peer)
+                    })
                 }
                 if (threads.size == 100) container.addView(label("Showing the 100 most recent conversations.", 12f))
             }
             Screen.CONVERSATION -> {
-                container.addView(label(peer.orEmpty(), 17f).apply { setTextColor(getColor(R.color.accent)) })
+                container.addView(label(displayName(peer.orEmpty()), 18f))
+                if (recipientNames.containsKey(peer)) container.addView(ui.text(peer.orEmpty(), 14f, true))
                 if (rows.size == 100) container.addView(label("Showing the newest 100 texts. Older texts remain stored on this device.", 12f))
                 rows.forEach { record ->
-                    container.addView(label(record.body, 16f).apply {
-                        setTextIsSelectable(true); setPadding(0, dp(12), 0, dp(3))
+                    val message = label(record.body, 17f).apply {
+                        setTextIsSelectable(true); setPadding(dp(10), dp(10), dp(10), dp(10))
+                        background = ui.background()
                         gravity = if (record.incoming) Gravity.START else Gravity.END
-                    })
+                    }
+                    container.addView(message, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
                     val time = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(record.createdAt))
                     val count = if (record.parts.size > 1) " · ${record.parts.count { it.sent == SentPart.SENT }}/${record.parts.size} parts sent" else ""
-                    container.addView(label("${record.status(System.currentTimeMillis()).label()}$count\n$time", 11f).apply { setTextColor(getColor(R.color.dim)) })
-                    if (!record.incoming) container.addView(button("Use as a new draft") {
-                        showDialog(AlertDialog.Builder(this).setTitle("Create another text?")
-                            .setMessage("The earlier text may already have arrived, even if its status is unknown. This creates a draft; review it before sending again.")
-                            .setPositiveButton("Create draft") { _, _ -> replaceDraft(SmsDraft(record.peer, record.body)) }
-                            .setNegativeButton("Cancel", null))
-                    })
-                    if (!record.incoming) container.addView(button("Message details") { details(record) })
+                    val metadata = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+                    metadata.addView(ui.text("${record.status(System.currentTimeMillis()).label()}$count\n$time", 13f, true), LinearLayout.LayoutParams(0, -2, 1f))
+                    if (!record.incoming) metadata.addView(button("⋯") { messageOptions(record) }.apply { contentDescription = "Message options" }, LinearLayout.LayoutParams(dp(48), dp(48)))
+                    container.addView(metadata)
                 }
             }
-            Screen.COMPOSE -> container.addView(label(
-                "Hold to dictate after enabling it in Options. Release inserts words into this draft. Tap opens review.\n\n${draft.body.length}/${SmsRecord.MAX_DRAFT_CHARS} characters · up to ${SmsRecord.MAX_PARTS} SMS parts",
-                13f,
-            ).apply { setTextColor(getColor(R.color.dim)); setPadding(0, dp(8), 0, dp(8)) })
+            Screen.COMPOSE -> {
+                draftInfo = ui.text(composeHint(), 14f, true).apply { setPadding(0, dp(8), 0, dp(8)) }
+                container.addView(draftInfo)
+            }
         }
+        wheelScrollTarget?.post { wheelScrollTarget?.scrollTo(0, oldScroll) }
+        scheduleStatusDeadline()
+    }
+
+    private fun composeHint() = "${if (dictationConsent == consentKey()) "Hold to dictate. Release inserts words. Tap to review." else "Type a text, or enable dictation in Options."}\n\n${draft.body.length}/${SmsRecord.MAX_DRAFT_CHARS} characters"
+
+    private fun displayName(number: String) = recipientNames[number] ?: number
+
+    private fun loadRecipientNames() {
+        sms.recipients { saved, _ ->
+            if (resumed && saved != null) {
+                val names = saved.groupBy { it.number }.mapValues { (_, entries) -> entries.map { it.name }.distinct().joinToString(" / ") }
+                if (names != recipientNames) { recipientNames = names; renderRows() }
+            }
+        }
+    }
+
+    /** One wake-up at the next pending receipt deadline; unknown receipts never keep a ticker alive. */
+    private fun scheduleStatusDeadline() {
+        main.removeCallbacks(statusDeadline)
+        if (!resumed || screen != Screen.CONVERSATION) return
+        val now = System.currentTimeMillis()
+        val deadline = rows.filter { it.status(now) == SmsStatus.SENDING }.minOfOrNull { it.createdAt + SmsRecord.SEND_WAIT_MS } ?: return
+        main.postDelayed(statusDeadline, (deadline - now + 1).coerceAtLeast(1))
+    }
+
+    private fun messageOptions(record: SmsRecord) {
+        showDialog(AlertDialog.Builder(this).setTitle("Message options").setItems(arrayOf("Use as a new draft", "Message details")) { _, which ->
+            if (which == 1) details(record) else showDialog(AlertDialog.Builder(this).setTitle("Create another text?")
+                .setMessage("The earlier text may already have arrived, even if its status is unknown. This creates a draft; review it before sending again.")
+                .setPositiveButton("Create draft") { _, _ -> replaceDraft(SmsDraft(record.peer, record.body)) }.setNegativeButton("Cancel", null))
+        })
     }
 
     private fun reply() { peer?.let { replaceDraft(SmsDraft(it, "")) } }
@@ -283,7 +321,7 @@ class MessagesActivity : Activity(), DictationTarget {
         if (building) return
         draftRevision++
         main.removeCallbacks(save); main.postDelayed(save, 250)
-        renderRows()
+        draftInfo?.text = composeHint()
     }
 
     private fun persistDraft() {
@@ -448,7 +486,7 @@ class MessagesActivity : Activity(), DictationTarget {
                     val selected = saved[which]
                     showDialog(AlertDialog.Builder(this).setTitle(selected.name).setMessage(selected.number)
                         .setPositiveButton("Write a text") { _, _ -> replaceDraft(SmsDraft(selected.number, "")) }
-                        .setNeutralButton("Remove") { _, _ -> sms.removeRecipient(selected.id) { if (resumed) savedRecipients() } }
+                        .setNeutralButton("Remove") { _, _ -> sms.removeRecipient(selected.id) { if (resumed) { loadRecipientNames(); savedRecipients() } } }
                         .setNegativeButton("Cancel", null))
                 }.setPositiveButton("Add recipient") { _, _ -> addRecipient() }.setNegativeButton("Done", null))
         }
@@ -469,7 +507,7 @@ class MessagesActivity : Activity(), DictationTarget {
             if (label.isBlank()) { name.error = "Enter a name"; return@setOnClickListener }
             if (phone == null) { number.error = "Enter one exact phone number"; return@setOnClickListener }
             sms.saveRecipient(label, phone) { saved ->
-                if (resumed) { if (saved) { shown.dismiss(); status.setText(R.string.sms_recipient_saved) } else number.error = "Could not save. Check storage." }
+                if (resumed) { if (saved) { shown.dismiss(); loadRecipientNames(); status.setText(R.string.sms_recipient_saved) } else number.error = "Could not save. Check storage." }
             }
         }
     }
@@ -484,10 +522,9 @@ class MessagesActivity : Activity(), DictationTarget {
 
     private fun showDialog(builder: AlertDialog.Builder) {
         dialog?.dismiss()
-        val shown = builder.create()
+        val shown = showDeviceDialog(builder)
         dialog = shown
         shown.setOnDismissListener { if (dialog === shown) dialog = null }
-        shown.show()
     }
 
     private fun renderTurn() {
@@ -519,17 +556,16 @@ class MessagesActivity : Activity(), DictationTarget {
     private fun idleHint(): String {
         if (!sms.supported) return "SMS unavailable · drafts only"
         val incoming = if (sms.receiveEnabled && sms.permitted(Manifest.permission.RECEIVE_SMS)) "incoming on when modem is awake" else "incoming off"
-        return "SMS · $incoming\n${if (dictationConsent == consentKey()) "Dictation on for this visit" else "Typing only · dictation off"}"
+        return "${incoming.replaceFirstChar { it.uppercase() }}\n${if (dictationConsent == consentKey()) "Dictation on for this visit" else "Dictation off"}"
     }
 
     private fun consentKey(): String = app.store.value.let { c -> listOf(c.stt.baseUrl, c.stt.model, c.liveStt.toString(), c.sttLiveUrl, c.sttLiveModel).joinToString("\n") }
     private fun hasMic() = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
-    private fun label(text: String, size: Float) = TextView(this).apply { this.text = text; textSize = size; setTextColor(getColor(R.color.fg)); gravity = Gravity.CENTER_VERTICAL }
-    private fun button(text: String, action: () -> Unit) = Button(this).apply { this.text = text; isAllCaps = false; textSize = 14f; setOnClickListener { action() } }
-    private fun field(hint: String, value: String, type: Int) = EditText(this).apply {
-        this.hint = hint; inputType = type; textSize = 16f; setTextColor(getColor(R.color.fg)); setHintTextColor(getColor(R.color.dim))
-        setText(value); setSelection(text.length); importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
+    private fun label(text: String, size: Float) = ui.text(text, size)
+    private fun button(text: String, action: () -> Unit) = ui.button(text, action = action)
+    private fun field(hint: String, value: String, type: Int) = ui.field(hint, value, type).apply {
+        setSelection(text.length)
         imeOptions = EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
     }
     private fun watch(field: EditText, update: (String) -> Unit) { field.addTextChangedListener(object : TextWatcher {
