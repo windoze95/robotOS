@@ -1,0 +1,479 @@
+import concurrent.futures
+import http.client
+import json
+import os
+from pathlib import Path
+import socket
+import tempfile
+import threading
+import unittest
+from unittest.mock import patch
+
+from robotos_hub.config import Config
+from robotos_hub.store import Store, HubError, canonical, now
+from robotos_hub.http import HubServer
+from robotos_hub.upstream import Workers, UpstreamError, Client
+
+
+class FakeHermes:
+    identity = 'fixed-server-identity'
+    def __init__(self):
+        self.submissions = []
+        self.fail_submission = False
+        self.durable = True
+        self.state = 'running'
+        self.transcript = 'transcribed words'
+        self.on_transcribe = lambda: None
+
+    def capabilities(self):
+        return {'runs': True, 'durable': self.durable, 'retention_seconds': 3600, 'stop': True, 'approval': True}
+
+    def hermes(self, method, path, payload=None, headers=None):
+        if path == '/v1/runs':
+            self.submissions.append((payload, headers['Idempotency-Key']))
+            if self.fail_submission:
+                raise UpstreamError()
+            return {'run_id': 'remote-' + headers['Idempotency-Key']}
+        if path.endswith('/stop'):
+            self.state = 'cancelled'
+            return {'status': 'cancelled'}
+        return {'run_id': path.split('/')[-1], 'status': self.state, 'output': 'saved result' if self.state == 'completed' else '', 'error': ''}
+
+    def transcribe(self, media, data):
+        self.on_transcribe()
+        return self.transcript
+
+
+class HubFixture(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.config = Config(Path(self.temp.name), 'correct horse battery staple', owner_token='o' * 40, mcp_token='m' * 40, port=0)
+        self.store = Store(self.config)
+        self.owner = self.store.authenticate_token('o' * 40)
+        self.mcp = self.store.authenticate_token('m' * 40)
+        self.a = self.enroll('One')
+        self.b = self.enroll('Two')
+        self.fake = FakeHermes()
+        self.workers = Workers(self.store, self.fake)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def enroll(self, name):
+        code = self.store.enrollment(self.owner, {'name': name})
+        claimed = self.store.claim({'code': code['code']})
+        return dict(claimed, workspace=self.store.authenticate_token(claimed['device_token']), recovery=self.store.authenticate_token(claimed['recovery_token']))
+
+    def prompt(self, actor=None):
+        return self.store.create_prompt(actor or self.a['workspace'], {'id': 'prompt', 'title': 'Test', 'instruction': 'Do the work', 'blocks': []})
+
+    def assertError(self, code, function, *args, **kwargs):
+        with self.assertRaises(HubError) as caught:
+            function(*args, **kwargs)
+        self.assertEqual(code, caught.exception.code)
+        return caught.exception
+
+    def checkin(self, device=None, **extra):
+        device = device or self.a
+        body = dict(app_version='1.0', battery=70, charging=True, capabilities={k: True for k in ['ring', 'stop_ring', 'show_message', 'lock', 'locate', 'clear_workspace', 'factory_reset', 'update_app', 'reboot', 'device_tool']},
+                    settings={'remote_management': True, 'location_reporting': True, 'secure_lock': True, 'allow_clear_workspace': True})
+        body.update(extra)
+        return self.store.check_in(device['recovery'], body)
+
+
+class HubTest(HubFixture):
+    def test_claim_consumed_once_and_credentials_hashed(self):
+        code = self.store.enrollment(self.owner, {})['code']
+        claim = self.store.claim({'code': code})
+        self.assertError('invalid_enrollment', self.store.claim, {'code': code})
+        with self.store.connection() as db:
+            row = dict(db.execute('SELECT * FROM devices WHERE id=?', (claim['device_id'],)).fetchone())
+            self.assertNotIn(claim['device_token'], canonical(row))
+            self.assertNotIn(claim['recovery_token'], canonical(row))
+
+    def test_wrong_scopes_and_mcp_admin_denied(self):
+        self.assertError('wrong_scope', self.store.notes, self.a['recovery'])
+        self.assertError('wrong_scope', self.store.check_in, self.a['workspace'], {})
+        self.assertError('wrong_scope', self.store.enrollment, self.mcp, {})
+        self.assertError('wrong_scope', self.store.devices, self.b['workspace'])
+        self.assertError('wrong_scope', self.store.patch_device, self.mcp, self.a['device_id'], {'base_revision': 1})
+
+    def test_lease_takeover_fences_delayed_writer_and_stale_revision(self):
+        self.prompt()
+        a = self.store.lease(self.a['workspace'], 'prompt')
+        self.assertError('lease_held', self.store.lease, self.b['workspace'], 'prompt')
+        b = self.store.lease(self.b['workspace'], 'prompt', True)
+        self.assertNotEqual(a['lease_token'], b['lease_token'])
+        self.assertError('lease_lost', self.store.update_prompt, self.a['workspace'], 'prompt', dict(base_revision=1, lease_token=a['lease_token'], title='old', instruction='old', blocks=[]))
+        self.store.update_prompt(self.b['workspace'], 'prompt', dict(base_revision=1, lease_token=b['lease_token'], title='new', instruction='new', blocks=[]))
+        self.assertError('revision_conflict', self.store.update_prompt, self.b['workspace'], 'prompt', dict(base_revision=1, lease_token=b['lease_token'], title='old', instruction='old', blocks=[]))
+        self.assertEqual('new', self.store.prompts(self.a['workspace'], 'prompt')['instruction'])
+
+    def test_same_device_renews_and_expired_lease_fenced(self):
+        self.prompt()
+        a = self.store.lease(self.a['workspace'], 'prompt')
+        self.assertEqual(a['lease_token'], self.store.lease(self.a['workspace'], 'prompt')['lease_token'])
+        with self.store.transaction() as db:
+            db.execute('UPDATE leases SET expires_at=0')
+        fresh = self.store.lease(self.a['workspace'], 'prompt')
+        self.assertNotEqual(a['lease_token'], fresh['lease_token'])
+
+    def test_two_devices_race_one_run_and_request_payload_binding(self):
+        self.prompt()
+        barrier = threading.Barrier(2)
+        def reserve(pair):
+            actor, request = pair
+            barrier.wait()
+            return self.store.reserve_run(actor, 'prompt', dict(revision=1, request_id=request))
+        with concurrent.futures.ThreadPoolExecutor(2) as executor:
+            runs = list(executor.map(reserve, [(self.a['workspace'], 'a-request'), (self.b['workspace'], 'b-request')]))
+        self.assertEqual(runs[0]['id'], runs[1]['id'])
+        self.assertError('idempotency_conflict', self.store.reserve_run, self.a['workspace'], 'prompt', dict(revision=1, request_id='a-request', run_again=True))
+        self.workers.tick()
+        self.assertEqual(1, len(self.fake.submissions))
+        self.fake.state = 'completed'
+        self.workers.tick()
+        prompt = self.store.prompts(self.b['workspace'], 'prompt')
+        self.assertEqual('ran', prompt['state'])
+        self.assertEqual('saved result', self.store.runs(self.b['workspace'], runs[0]['id'])['output'])
+
+    def test_active_session_prevents_new_revision_or_run_again_overlap(self):
+        self.prompt()
+        run = self.store.reserve_run(self.owner, 'prompt', dict(revision=1, request_id='first'))
+        self.assertError('run_active', self.store.reserve_run, self.owner, 'prompt', dict(revision=1, request_id='again', run_again=True))
+        lease = self.store.lease(self.owner, 'prompt')
+        self.store.update_prompt(self.owner, 'prompt', dict(base_revision=1, lease_token=lease['lease_token'], instruction='Follow-up', title='Chat', blocks=[]))
+        self.assertError('run_active', self.store.reserve_run, self.owner, 'prompt', dict(revision=2, request_id='new-revision'))
+        self.workers.tick()
+        self.fake.state = 'completed'
+        self.workers.tick()
+        second = self.store.reserve_run(self.owner, 'prompt', dict(revision=2, request_id='new-revision'))
+        self.assertNotEqual(run['id'], second['id'])
+        self.workers.tick()
+        self.assertEqual(self.fake.submissions[0][0]['session_id'], self.fake.submissions[1][0]['session_id'])
+
+    def test_completed_requires_an_explicit_string_result_before_ran(self):
+        self.prompt()
+        run = self.store.reserve_run(self.owner, 'prompt', dict(revision=1, request_id='first'))
+        self.workers.tick()
+        remote = 'remote-' + run['id']
+        for invalid in ({'run_id': remote, 'status': 'completed'}, {'run_id': remote, 'status': 'completed', 'output': None}):
+            with patch.object(self.fake, 'hermes', return_value=invalid):
+                self.workers.tick()
+            self.assertEqual('running', self.store.runs(self.owner, run['id'])['status'])
+            self.assertNotEqual('ran', self.store.prompts(self.owner, 'prompt')['state'])
+        self.fake.state = 'completed'
+        self.workers.tick()
+        self.assertEqual('ran', self.store.prompts(self.owner, 'prompt')['state'])
+        self.assertEqual('saved result', self.store.runs(self.owner, run['id'])['output'])
+
+    def test_malformed_hermes_capabilities_are_rejected_explicitly(self):
+        client = Client(self.config)
+        for mutation in ({'features': {'runs_idempotency': []}}, {'features': {'runs_idempotency': {'retention_seconds': '3600'}}},
+                         {'features': {'runs_idempotency': {'retention_seconds': float('inf')}}}, {'features': {}, 'endpoints': []}):
+            value = dict(object='hermes.api_server.capabilities', **mutation)
+            with patch.object(client, 'hermes', return_value=value):
+                self.assertError('unsupported_hermes', client.capabilities)
+
+    def test_controls_return_run_shape_and_stable_receipt(self):
+        self.prompt()
+        run = self.store.reserve_run(self.owner, 'prompt', dict(revision=1, request_id='first'))
+        self.workers.tick()
+        stopped = self.workers.control(self.owner, run['id'], 'stop', {'request_id': 'stop-identity'})
+        self.assertEqual(run['id'], stopped['id'])
+        self.assertEqual('cancelled', stopped['status'])
+        self.assertEqual('applied', stopped['control']['status'])
+        self.assertEqual(stopped, self.workers.control(self.owner, run['id'], 'stop', {'request_id': 'stop-identity'}))
+
+    def test_clear_command_immediately_revokes_workspace_and_preserves_recovery(self):
+        self.checkin()
+        token, _ = self.store.login(self.config.owner_password)
+        actor = self.store.session(token)
+        self.store.create_command(actor, self.a['device_id'], dict(id='clear', type='clear_workspace', payload={}, expires_at=now()+60000, confirmation=self.a['device_id']))
+        self.assertError('device_quarantined', self.store.authenticate_token, self.a['device_token'])
+        self.assertTrue(self.checkin()['revoked'])
+        self.assertEqual('clear', self.checkin()['commands'][0]['id'])
+
+    def test_run_preview_matches_visible_text_including_whitespace(self):
+        self.store.create_prompt(self.owner, dict(id='prompt', title='Exact preview', instruction='  Instruction\n',
+                                                 blocks=[dict(id='text', kind='text', text='  first line\nsecond line  '),
+                                                         dict(id='blank', kind='text', text=' \n ')]))
+        run = self.store.reserve_run(self.owner, 'prompt', dict(revision=1, request_id='preview'))
+        expected = '  Instruction\n\n\n  first line\nsecond line  '
+        self.assertEqual(expected, run['snapshot']['preview'])
+        self.workers.tick()
+        self.assertEqual(expected, self.fake.submissions[0][0]['input'])
+
+    def test_immutable_run_snapshot_and_changed_since_run(self):
+        self.prompt()
+        run = self.store.reserve_run(self.a['workspace'], 'prompt', dict(revision=1, request_id='first'))
+        lease = self.store.lease(self.a['workspace'], 'prompt')
+        self.store.update_prompt(self.a['workspace'], 'prompt', dict(base_revision=1, lease_token=lease['lease_token'], title='changed', instruction='New instructions', blocks=[]))
+        self.workers.tick()
+        self.assertEqual('Do the work', self.fake.submissions[0][0]['input'])
+        self.assertEqual('Do the work', self.store.runs(self.owner, run['id'])['snapshot']['instruction'])
+        self.assertTrue(self.store.prompts(self.owner, 'prompt')['changed_since_run'])
+
+    def test_unknown_submission_never_blindly_retried_and_safe_reconciliation(self):
+        self.prompt()
+        run = self.store.reserve_run(self.a['workspace'], 'prompt', dict(revision=1, request_id='first'))
+        self.fake.fail_submission = True
+        self.workers.tick()
+        self.assertEqual('submission_unknown', self.store.runs(self.owner, run['id'])['status'])
+        self.workers.tick()
+        self.assertEqual(1, len(self.fake.submissions))
+        self.assertError('submission_unknown', self.store.reserve_run, self.owner, 'prompt', dict(revision=1, request_id='second', run_again=True))
+        self.fake.durable = False
+        self.assertError('unsafe_retry', self.workers.reconcile, self.owner, run['id'])
+        self.fake.durable = True
+        self.fake.fail_submission = False
+        self.workers.reconcile(self.owner, run['id'])
+        self.assertEqual(self.fake.submissions[0], self.fake.submissions[1])
+        self.assertEqual('running', self.store.runs(self.owner, run['id'])['status'])
+
+    def test_reconcile_expired_retention_rejected(self):
+        self.prompt()
+        run = self.store.reserve_run(self.owner, 'prompt', dict(revision=1, request_id='first'))
+        self.fake.fail_submission = True
+        self.workers.tick()
+        with self.store.transaction() as db:
+            db.execute('UPDATE runs SET submitted_at=?', (now() - 3600001,))
+        self.assertError('unsafe_retry', self.workers.reconcile, self.owner, run['id'])
+
+    def test_restart_turns_inflight_submission_unknown(self):
+        self.prompt()
+        run = self.store.reserve_run(self.owner, 'prompt', dict(revision=1, request_id='first'))
+        with self.store.transaction() as db:
+            db.execute("UPDATE runs SET status='submitting'")
+        reopened = Store(self.config)
+        self.assertEqual('submission_unknown', reopened.runs(self.owner, run['id'])['status'])
+        self.workers.tick()
+        self.assertEqual([], self.fake.submissions)
+
+    def test_audio_idempotence_transcription_and_source_preservation(self):
+        media = self.store.save_media(self.a['workspace'], 'audio-one', 'audio/wav', b'RIFFexample')
+        self.assertEqual(media, self.store.save_media(self.b['workspace'], 'audio-one', 'audio/wav', b'RIFFexample'))
+        self.assertError('idempotency_conflict', self.store.save_media, self.owner, 'audio-one', 'audio/wav', b'different')
+        note = self.store.create_note(self.a['workspace'], dict(id='voice', kind='audio', title='Voice', media_id='audio-one'))
+        prompt = self.store.create_prompt(self.owner, dict(id='audio-prompt', blocks=[dict(id='block', kind='audio', note_id='voice', media_id='audio-one', text='')]))
+        self.assertError('transcript_required', self.store.reserve_run, self.owner, prompt['id'], dict(request_id='no-transcript', revision=1))
+        updated = self.workers.transcribe(self.b['workspace'], note['id'], {'base_revision': 1})
+        self.assertEqual('transcribed words', updated['text'])
+        self.store.delete_note(self.owner, 'voice', 2)
+        self.assertEqual(b'RIFFexample', self.store.read_media(self.b['workspace'], 'audio-one')[1])
+        self.assertEqual('voice', self.store.prompts(self.owner, 'audio-prompt')['blocks'][0]['note_id'])
+
+    def test_transcription_does_not_overwrite_concurrent_note_edit(self):
+        self.store.save_media(self.owner, 'audio', 'audio/wav', b'audio')
+        self.store.create_note(self.owner, dict(id='voice', kind='audio', media_id='audio'))
+        self.fake.on_transcribe = lambda: self.store.update_note(self.owner, 'voice', dict(base_revision=1, title='Edited', text='hand corrected'))
+        self.assertError('revision_conflict', self.workers.transcribe, self.owner, 'voice', {'base_revision': 1})
+        self.assertEqual('hand corrected', self.store.notes(self.owner, 'voice')['text'])
+
+    def test_media_failure_never_exposes_partial_file(self):
+        with patch('robotos_hub.store.os.fsync', side_effect=OSError('disk failure')):
+            with self.assertRaises(OSError):
+                self.store.save_media(self.owner, 'interrupted', 'audio/wav', b'audio')
+        self.assertError('not_found', self.store.read_media, self.owner, 'interrupted')
+        self.assertEqual([], list(self.store.media_dir.glob('.upload-*')))
+
+    def test_lost_revokes_workspace_and_leases_but_preserves_recovery(self):
+        self.prompt()
+        self.store.lease(self.a['workspace'], 'prompt')
+        self.store.patch_device(self.owner, self.a['device_id'], dict(base_revision=1, lost=True, lost_message='Call owner'))
+        self.assertError('device_quarantined', self.store.authenticate_token, self.a['device_token'])
+        self.assertError('device_quarantined', self.store.notes, self.a['workspace'])
+        result = self.checkin()
+        self.assertTrue(result['lost'])
+        self.assertEqual('Call owner', result['lost_message'])
+        self.assertEqual('prompt', self.store.prompts(self.b['workspace'])['items'][0]['id'])
+        with self.store.connection() as db:
+            self.assertEqual(0, db.execute('SELECT count(*) FROM leases').fetchone()[0])
+
+    def test_lost_cancels_queued_device_run_before_upstream(self):
+        self.prompt()
+        run = self.store.reserve_run(self.a['workspace'], 'prompt', dict(revision=1, request_id='first'))
+        self.store.patch_device(self.owner, self.a['device_id'], dict(base_revision=1, revoked=True))
+        self.workers.tick()
+        self.assertEqual([], self.fake.submissions)
+        self.assertEqual('cancelled', self.store.runs(self.owner, run['id'])['status'])
+
+    def test_commands_require_capability_local_permission_recent_auth_exact_target(self):
+        command = dict(id='clear', type='clear_workspace', payload={}, expires_at=now() + 60000, confirmation=self.a['device_id'])
+        self.assertError('recent_auth_required', self.store.create_command, self.owner, self.a['device_id'], command)
+        session, _ = self.store.login(self.config.owner_password)
+        recent = self.store.session(session)
+        self.assertError('unsupported_capability', self.store.create_command, recent, self.a['device_id'], command)
+        self.checkin()
+        self.assertError('confirmation_required', self.store.create_command, recent, self.a['device_id'], dict(command, confirmation=self.b['device_id']))
+        created = self.store.create_command(recent, self.a['device_id'], command)
+        self.assertEqual('queued', created['status'])
+        self.assertError('wrong_scope', self.store.create_command, self.mcp, self.a['device_id'], command)
+        self.assertEqual(created, self.store.create_command(recent, self.a['device_id'], command))
+        self.assertError('idempotency_conflict', self.store.create_command, recent, self.a['device_id'], dict(command, payload={'x': 1}))
+
+    def test_command_receipts_exact_target_and_unknown_not_reissued(self):
+        self.checkin()
+        created = self.store.create_command(self.owner, self.a['device_id'], dict(id='ring', type='ring', payload={}, expires_at=now() + 60000))
+        self.assertError('not_found', self.store.ack, self.b['recovery'], created['id'], {'status': 'applied'})
+        self.store.ack(self.a['recovery'], created['id'], {'status': 'received'})
+        self.store.ack(self.a['recovery'], created['id'], {'status': 'unknown'})
+        self.assertEqual([], self.checkin()['commands'])
+        self.assertError('receipt_conflict', self.store.ack, self.a['recovery'], created['id'], {'status': 'received'})
+        self.store.ack(self.a['recovery'], created['id'], {'status': 'applied', 'result': {'stopped': True}})
+        self.assertError('receipt_conflict', self.store.ack, self.a['recovery'], created['id'], {'status': 'failed'})
+
+    def test_location_consent_and_expiry_honest_status(self):
+        location = dict(latitude=1.2, longitude=3.4, accuracy=10, observed_at=now())
+        self.checkin(location=location)
+        self.assertEqual(location, self.store.devices(self.owner, self.a['device_id'])['location'])
+        self.checkin(settings={'remote_management': True, 'location_reporting': False})
+        self.assertIsNone(self.store.devices(self.owner, self.a['device_id'])['location'])
+        self.assertError('location_not_permitted', self.checkin, settings={'location_reporting': False}, location=location)
+        self.checkin()
+        self.store.create_command(self.owner, self.a['device_id'], dict(id='ring', type='ring', payload={}, expires_at=now() + 1000))
+        with self.store.transaction() as db:
+            db.execute('UPDATE commands SET expires_at=0')
+        self.assertEqual('expired', self.store.commands(self.owner, self.a['device_id'])['items'][0]['status'])
+
+    def test_owner_name_is_canonical_across_stale_device_checkins(self):
+        self.store.patch_device(self.owner, self.a['device_id'], dict(base_revision=1, name='New owner name'))
+        checkin = self.checkin(name='Stale device name')
+        self.assertEqual('New owner name', checkin['name'])
+        self.assertEqual('New owner name', self.store.devices(self.owner, self.a['device_id'])['name'])
+
+    def test_full_snapshot_lists_do_not_silently_discard_old_saved_items(self):
+        with self.store.transaction() as db:
+            for index in range(1005):
+                identity = 'item-' + str(index)
+                db.execute("INSERT INTO notes VALUES(?,?,?,'',NULL,1,0,0,'hash')", (identity, 'Title', 'text'))
+                db.execute("INSERT INTO prompts VALUES(?,?,'','[]',1,0,0,'hash')", (identity, 'Title'))
+                db.execute("INSERT INTO runs(id,prompt_id,prompt_revision,snapshot,status,created_at,updated_at) VALUES(?,?,1,'{}','completed',0,0)", (identity, identity))
+        self.assertEqual(1005, len(self.store.notes(self.owner)['items']))
+        self.assertEqual(1005, len(self.store.prompts(self.owner)['items']))
+        self.assertEqual(1005, len(self.store.runs(self.owner)['items']))
+
+    def test_safe_settings_only_and_applied_state_separate(self):
+        self.assertError('local_permission_required', self.store.patch_device, self.owner, self.a['device_id'], dict(base_revision=1, settings={'remote_management': True}))
+        self.assertError('invalid_settings', self.store.patch_device, self.owner, self.a['device_id'], dict(base_revision=1, settings={'credential': 'bad'}))
+        row = self.store.patch_device(self.owner, self.a['device_id'], dict(base_revision=1, settings={'brightness': 100}))
+        self.assertEqual({'brightness': 100}, row['desired_settings'])
+        self.assertEqual({}, row['applied_settings'])
+        self.checkin(settings_revision=1, settings={'brightness': 100})
+        self.assertEqual(1, self.store.devices(self.owner, self.a['device_id'])['applied_settings_revision'])
+
+    def test_device_tools_allowlist_identity_and_revocation(self):
+        self.checkin()
+        action = dict(id='speak', device_id=self.a['device_id'], tool='speak', arguments={'text': 'hello', 'request_id': 'speak'}, expires_at=now() + 60000)
+        first = self.store.device_action(self.mcp, action)
+        self.assertEqual('queued', first['status'])
+        self.assertEqual(first, self.store.device_action(self.mcp, dict(action, expires_at=action['expires_at'] + 30000)))
+        self.assertError('request_identity_required', self.store.device_action, self.mcp, dict(action, id='other'))
+        self.assertError('tool_not_allowed', self.store.device_action, self.mcp, dict(action, tool='factory_reset'))
+        self.store.patch_device(self.owner, self.a['device_id'], dict(base_revision=1, lost=True))
+        self.assertEqual('cancelled', self.store.device_action(self.mcp, action_id='speak')['status'])
+        self.assertError('device_quarantined', self.store.device_action, self.mcp, action)
+
+    def test_native_device_tools_independent_of_mdm_opt_in(self):
+        self.checkin(settings={'remote_management': False}, capabilities={'device_tool': True, 'ring': True})
+        self.assertEqual('queued', self.store.device_action(self.mcp, dict(id='status', device_id=self.a['device_id'], tool='r1_status', arguments={}, expires_at=now()+60000))['status'])
+        self.assertError('local_permission_required', self.store.create_command, self.owner, self.a['device_id'], dict(id='ring', type='ring', payload={}, expires_at=now()+60000))
+
+    def test_resume_revision_and_change_feed(self):
+        self.prompt()
+        self.store.resume(self.a['workspace'], dict(base_revision=0, prompt_id='prompt', scroll_y=20))
+        self.assertError('revision_conflict', self.store.resume, self.b['workspace'], dict(base_revision=0, prompt_id='prompt'))
+        self.assertEqual(20, self.store.resume(self.b['workspace'])['scroll_y'])
+        changes = self.store.changes(self.b['workspace'], 0)
+        self.assertTrue(changes['cursor'] > 0)
+        self.assertNotIn('device', {item['kind'] for item in changes['items']})
+
+
+class HttpTest(HubFixture):
+    def setUp(self):
+        super().setUp()
+        self.server = HubServer(self.config, self.store, self.workers)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.port = self.server.server_address[1]
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(2)
+        super().tearDown()
+
+    def request(self, method, path, body=None, headers=None):
+        connection = http.client.HTTPConnection('127.0.0.1', self.port, timeout=5)
+        headers = dict(headers or {})
+        if body is not None and not isinstance(body, bytes):
+            headers.setdefault('Content-Type', 'application/json')
+            body = canonical(body).encode()
+        connection.request(method, '/api/v1/' + path, body=body, headers=headers)
+        result = connection.getresponse()
+        data = result.read()
+        status, response_headers = result.status, dict(result.getheaders())
+        connection.close()
+        return status, json.loads(data), response_headers
+
+    def test_cookie_csrf_origin_and_no_secret_session_body(self):
+        status, body, headers = self.request('POST', 'session', {'password': self.config.owner_password})
+        self.assertEqual(200, status)
+        cookie = headers['Set-Cookie'].split(';')[0]
+        self.assertIn('HttpOnly', headers['Set-Cookie'])
+        self.assertIn('SameSite=Strict', headers['Set-Cookie'])
+        self.assertNotIn(self.config.owner_password, canonical(body))
+        self.assertEqual(403, self.request('POST', 'enrollments', {}, {'Cookie': cookie})[0])
+        self.assertEqual(403, self.request('POST', 'enrollments', {}, {'Cookie': cookie, 'X-CSRF-Token': body['csrf_token'], 'Origin': 'https://evil.example'})[0])
+        self.assertEqual(200, self.request('POST', 'enrollments', {}, {'Cookie': cookie, 'X-CSRF-Token': body['csrf_token']})[0])
+        self.assertEqual(200, self.request('GET', 'session', headers={'Cookie': cookie})[0])
+        self.assertEqual(200, self.request('POST', 'logout', {}, {'Cookie': cookie, 'X-CSRF-Token': body['csrf_token']})[0])
+        self.assertEqual(401, self.request('GET', 'session', headers={'Cookie': cookie})[0])
+
+    def test_http_scopes_dns_rebinding_limits_and_upload(self):
+        self.assertEqual(421, self.request('GET', 'health', headers={'Host': 'evil.example'})[0])
+        self.assertEqual(403, self.request('GET', 'notes', headers={'Authorization': 'Bearer ' + self.a['recovery_token']})[0])
+        self.assertEqual(413, self.request('POST', 'notes', b'', {'Authorization': 'Bearer ' + self.a['device_token'], 'Content-Type': 'application/json', 'Content-Length': str(self.config.max_json_bytes + 1)})[0])
+        status, media, _ = self.request('POST', 'media', b'audio', {'Authorization': 'Bearer ' + self.a['device_token'], 'Content-Type': 'audio/wav', 'X-Upload-Id': 'voice'})
+        self.assertEqual(200, status)
+        self.assertEqual(5, media['size'])
+        self.assertEqual(403, self.request('GET', 'media/voice', headers={'Authorization': 'Bearer ' + self.a['recovery_token']})[0])
+
+    def test_real_mcp_http_adapter_preserves_expiry_on_duplicate_and_receipt(self):
+        from types import SimpleNamespace
+        from server.robotos_mcp import TOOLS
+        from server.robotos_mcp.hub import Hub
+        self.checkin()
+        adapter = Hub('http://127.0.0.1:' + str(self.port), self.config.mcp_token, TOOLS, receipt_wait_seconds=0)
+        arguments = {'device_id': self.a['device_id'], 'text': 'Hello', 'request_id': 'speak-request'}
+        timestamp = now() / 1000
+        with patch('server.robotos_mcp.hub.time', SimpleNamespace(time=lambda: timestamp)):
+            _, failed, first = adapter.run_tool('speak', arguments)
+        self.assertFalse(failed, first)
+        with patch('server.robotos_mcp.hub.time', SimpleNamespace(time=lambda: timestamp + 30)):
+            _, failed, repeated = adapter.run_tool('speak', arguments)
+        self.assertFalse(failed, repeated)
+        self.assertEqual(first['expires_at'], repeated['expires_at'])
+        self.assertEqual(first['id'], repeated['id'])
+        headers = {'Authorization': 'Bearer ' + self.a['recovery_token']}
+        status, _, _ = self.request('POST', 'devices/self/commands/speak-request/ack',
+                                   {'status': 'applied', 'result': {'http_status': 200, 'body': {'spoken': True}}}, headers)
+        self.assertEqual(200, status)
+        _, failed, receipt = adapter.run_tool('device_action_status', {'id': 'speak-request'})
+        self.assertFalse(failed)
+        self.assertEqual('applied', receipt['status'])
+        self.assertEqual({'spoken': True}, receipt['result']['body'])
+
+    def test_interrupted_http_upload_not_registered(self):
+        client = socket.create_connection(('127.0.0.1', self.port))
+        request = ('POST /api/v1/media HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nAuthorization: Bearer %s\r\nContent-Type: audio/wav\r\nX-Upload-Id: truncated\r\nContent-Length: 100\r\n\r\nabc' % (self.port, self.a['device_token'])).encode()
+        client.sendall(request)
+        client.shutdown(socket.SHUT_WR)
+        response = client.recv(4096)
+        client.close()
+        self.assertIn(b'400', response)
+        self.assertError('not_found', self.store.read_media, self.owner, 'truncated')
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -197,7 +197,14 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
         app.turns.attachTarget(this)
         hideSystemBars()
         if (hasMic()) PttService.start(this) // the microphone service may only start from the foreground
+        var recoveryOpened = false
         observations = MainScope().also { s ->
+            s.launch { app.workspace.status.collect {
+                if (app.workspace.blocked && !recoveryOpened) {
+                    recoveryOpened = true
+                    startActivity(Intent(this@HomeActivity, dev.r1ptt.workspace.WorkspaceActivity::class.java))
+                }
+            } }
             s.launch { app.store.flow.collect(::applyConfig) }
             s.launch { app.history.flow.collect(::renderHistory) }
             s.launch { app.turns.state.collect { render(it); kotlinx.coroutines.delay(50) } }
@@ -618,7 +625,9 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
     private fun openMenu() {
         if (stage.showing) return
         menuSheet.removeAllViews()
-        menuSheet.addView(menuContent(), FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
+        val menuScroll = android.widget.ScrollView(this).apply { addView(menuContent()) }
+        menuSheet.addView(menuScroll, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
+        wheelScrollTarget = menuScroll
         menuSheet.visibility = View.VISIBLE
         menuSheet.alpha = 0f
         menuSheet.animate().alpha(1f).setDuration(140).start()
@@ -627,6 +636,7 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
 
     private fun closeMenu() {
         if (menuSheet.visibility != View.VISIBLE) return
+        wheelScrollTarget = scroll
         menuSheet.animate().alpha(0f).setDuration(120).withEndAction { menuSheet.visibility = View.GONE; menuSheet.removeAllViews() }.start()
     }
 
@@ -655,6 +665,7 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
             }.apply { isEnabled = lastReply != null; alpha = if (lastReply != null) 1f else .4f },
             tile("Messages", R.drawable.ic_sms, action = open(dev.r1ptt.messages.MessagesActivity::class.java)),
             tile("Hermes", R.drawable.ic_hermes, action = open(dev.r1ptt.hermes.HermesActivity::class.java)),
+            tile("Workspace", R.drawable.ic_chats, action = open(dev.r1ptt.workspace.WorkspaceActivity::class.java)),
             tile("Settings", R.drawable.ic_settings, action = open(SettingsActivity::class.java)),
         )))
     }

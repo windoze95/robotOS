@@ -13,6 +13,7 @@ import dev.r1ptt.messages.SmsRecord
 import dev.r1ptt.net.CallRegistry
 import dev.r1ptt.net.ChatClient
 import dev.r1ptt.net.ChatRequest
+import dev.r1ptt.workspace.SharedChat
 import kotlinx.coroutines.runBlocking
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -42,6 +43,7 @@ class HermesTexts(
 
     /** Called for each newly saved incoming text. True when it is the owner's and went to Hermes. */
     fun received(record: SmsRecord): Boolean {
+        if (app.workspace.blocked) return false
         val cfg = app.store.value
         val link = cfg.hermes
         if (!record.incoming || !link.passthrough || record.body.isBlank()) return false
@@ -74,7 +76,7 @@ class HermesTexts(
 
     private fun allowed(record: SmsRecord, owner: String, connection: String): Boolean {
         val link = app.store.value.hermes
-        return link.passthrough && link.owner == owner && connection(app) == connection &&
+        return !app.workspace.blocked && link.passthrough && link.owner == owner && connection(app) == connection &&
             SmsRecipientText.sameNumber(record.peer, owner, SmsRecipientText.region(app))
     }
 
@@ -119,9 +121,13 @@ class HermesTexts(
                         "robotOS couldn't reach Hermes. Your text is saved in Messages; no request was submitted."
                     } else {
                         val config = app.store.value
-                        if (!allowed(record, owner, connection) || connection(config) != connection) return true
+                        if (!allowed(record, owner, connection)) return true
                         check(prefs.edit().putBoolean("asking.${record.id}", true).commit())
-                        try { (ask?.invoke(record.body) ?: askHermes(config, record.body)).trim() }
+                        try { (ask?.invoke(record.body) ?: if (app.workspace.identity.paired) runBlocking {
+                            val deviceId = app.workspace.identity.value.getString("device_id")
+                            SharedChat.ask(app, "shared-sms-$deviceId", record.body,
+                                STYLE + " This request came through robotOS device_id=$deviceId. Target that exact device_id for device tools unless the user explicitly chooses another device.")
+                        } else askHermes(config, record.body)).trim() }
                         catch (e: Exception) {
                             Log.w(TAG, "hermes text: ${e.javaClass.simpleName}")
                             // Legacy chat has no durable idempotency contract. Never replay possible actions.
@@ -164,8 +170,9 @@ class HermesTexts(
         const val MAX_REPLY_CHARS = 1200
         private const val UNKNOWN = "Hermes's response was interrupted and the outcome is unknown. Your request may have run. Check Hermes before asking it to perform the action again."
 
-        private fun connection(app: App): String = connectionId(app.store.value)
-        private fun connection(cfg: Config): String = connectionId(cfg)
+        private fun connection(app: App): String = if (app.workspace.identity.paired)
+            app.workspace.identity.value.let { "hub:${it.optString("base_url")}:${it.optString("device_id")}:${app.store.value.hermes.smsSession}" }
+            else connectionId(app.store.value)
         internal fun connectionId(cfg: Config): String {
             val value = listOf(cfg.agent.baseUrl, cfg.agent.apiKey,
                 cfg.agent.headers.toSortedMap().toString(), cfg.hermes.smsSession).joinToString("\n")
@@ -186,7 +193,7 @@ class HermesTexts(
 
         /** Hands one reply to Android on the main thread, as a Hermes (agent) send. */
         internal fun replyAllowed(app: App, owner: String, originalConnection: String) =
-            app.store.value.let { cfg -> cfg.hermes.passthrough && cfg.hermes.owner == owner && connectionId(cfg) == originalConnection }
+            app.store.value.let { cfg -> !app.workspace.blocked && cfg.hermes.passthrough && cfg.hermes.owner == owner && connection(app) == originalConnection }
 
         private fun textOwner(app: App, owner: String, body: String, originalConnection: String): Boolean {
             val latch = CountDownLatch(1)

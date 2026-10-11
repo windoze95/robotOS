@@ -106,6 +106,7 @@ class DeviceApi(
     internal fun handle(request: Request): Pair<Int, JSONObject> {
         val link = app.store.value.hermes
         if (!link.deviceApi || !authorized(request.headers["authorization"], link.token)) return 401 to error("Unauthorized")
+        if (app.workspace.blocked) return 403 to error("Workspace access is restricted on this R1")
         lastCall = clock()
         var requestId: String? = null
         return try {
@@ -152,7 +153,7 @@ class DeviceApi(
 
     private fun permitted(token: String, path: String): Boolean {
         val link = app.store.value.hermes
-        if (!link.deviceApi || link.token != token) return false
+        if (!link.deviceApi || link.token != token || app.workspace.blocked) return false
         return when (path) {
             "/v1/speak" -> link.allowSpeak
             "/v1/show" -> link.allowShow

@@ -22,6 +22,7 @@ class App : Application() {
     /** The owner's texts to the R1's number, passed through to Hermes. */
     val hermesTexts by lazy { dev.r1ptt.hermes.HermesTexts(this) }
     val hermesRuns by lazy { dev.r1ptt.hermes.HermesRuns(filesDir) { store.value } }
+    val workspace by lazy { dev.r1ptt.workspace.WorkspaceClient(this) }
     val notices by lazy { dev.r1ptt.hermes.DeviceNotices(this) }
     val hermesQuota by lazy { dev.r1ptt.hermes.HermesSmsQuota(this) }
     lateinit var store: ConfigStore

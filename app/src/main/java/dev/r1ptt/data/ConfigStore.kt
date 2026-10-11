@@ -81,7 +81,7 @@ class ConfigStore(ctx: Context) {
 }
 
 /** AES-GCM with a non-exportable Android Keystore key, so the keys aren't sitting in plain XML. */
-private object Sealed : ConfigCipher {
+internal object Sealed : ConfigCipher {
     private const val ALIAS = "r1ptt-config"
 
     override fun seal(plain: String, allowKeyCreation: Boolean): String {

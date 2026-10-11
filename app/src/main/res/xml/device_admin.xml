@@ -2,5 +2,7 @@
 <device-admin>
     <uses-policies>
         <force-lock />
+        <!-- Used only with device-owner enrollment AND the separate local reset permission. -->
+        <wipe-data />
     </uses-policies>
 </device-admin>

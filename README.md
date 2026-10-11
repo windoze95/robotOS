@@ -16,6 +16,12 @@ Separate permissions allow announcements, Home notices, volume changes and saved
 Plugged in, configured radios stay available. OpenAI is used only for speech. See
 [docs/HERMES.md](docs/HERMES.md).
 
+The optional **shared workspace** adds written notes, voice recordings and a Prompt Builder on
+the R1 and in a self-hosted web console. Combine several notes, add more while editing, preview the
+request, save it for later and track the reply. Two enrolled R1s use the same saved revisions and
+run history. The console also manages device enrollment, settings and permissioned recovery
+commands. See [docs/HUB.md](docs/HUB.md) for setup, synchronization and lost-device limits.
+
 ## Screenshots
 
 The app at the R1's 480×640 screen size, rendered with staged demo data.
@@ -46,6 +52,10 @@ compatibility names.
 > recoverable Hermes task controls. Local automated coverage is in place; its physical UI,
 > acoustic, carrier and overnight battery acceptance remain pending. See
 > [docs/DAILY_DRIVER.md](docs/DAILY_DRIVER.md).
+>
+> Shared workspace and device management have automated persistence, conflict and permission tests.
+> Two-device handoff and physical recovery actions still need R1 acceptance; no remote reset,
+> location fix, secure lock or battery result is implied by those tests.
 
 ## What "firmware" means here
 
@@ -87,6 +97,12 @@ MMS, RCS, old inbox import, and live carrier acceptance are not included. See [d
 and the shared daily SMS count. **Stop speech** stops audio; **Stop task** requests cancellation
 on a compatible Hermes host. See [docs/DAILY_DRIVER.md](docs/DAILY_DRIVER.md) for controls and recovery.
 
+**Workspace** holds notes, recordings, saved prompts and host-owned runs. **Workspace settings**
+pairs each R1 separately and exposes local management permissions. Once paired, new PTT and
+owner-SMS conversations use the host's durable run API; shared chats appear in **Chats**. Existing
+local conversations remain available. **Synced** means the host acknowledged the content;
+**Saved on this R1** means another device may not have it yet.
+
 ## Battery
 
 Idle time is where a 1000 mAh battery goes.
@@ -98,7 +114,7 @@ Idle time is where a 1000 mAh battery goes.
 - **Plugged in, configured radios stay available.** On external power the idle cut is skipped.
   **Stay reachable** extends that policy to battery operation; switching it off restores the saved
   pocket-mode delay. Reachability still depends on coverage, connectivity and Tailscale.
-- **No continuous background polling in pocket mode:**
+- **No network polling while pocket-mode radios are off:**
   - no polling, scanning, location or Bluetooth;
   - Rabbit's apps are removed;
   - Doze starts within seconds.
@@ -106,8 +122,9 @@ Idle time is where a 1000 mAh battery goes.
     keep it awake; carrier-queued delivery after wake is not guaranteed.
 - **The screen is held on while listening.** It can time out during remote work, playback or an
   approval wait; the default timeout is 15 s at low brightness.
-- **The network is used only when there's work:** a turn (voice streams only while you hold the
-  button), a text to Hermes, or a request from Hermes.
+- **Paired devices sync while connected.** Optional recovery check-ins briefly wake configured
+  radios and may obtain a permitted location fix. They are off by default and need separate battery
+  measurement. Voice streams only while you hold the button.
 
 [docs/BATTERY.md](docs/BATTERY.md) covers the design and how to measure the idle drain.
 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) defines current-build latency, interruption, reconnect,
@@ -124,6 +141,8 @@ the read-only capture and offline analyzer include synthetic fixtures, not hardw
 2. **Follow [docs/INSTALL.md](docs/INSTALL.md):** unlock (Rabbit's developer mode) → stock baseline →
    LineageOS GSI → Magisk → `tools/provision.sh --config tools/r1ptt.json`.
 3. **Connect Hermes:** `tools/hermes-setup.sh --host you@hermes-host` ([docs/HERMES.md](docs/HERMES.md)).
+4. **Optional shared workspace:** install the persistent host service with `tools/hub-setup.sh`,
+   configure its private HTTPS route, and enroll each R1 separately ([docs/HUB.md](docs/HUB.md)).
 
 For self-hosted speech instead of OpenAI, see [server/speaches.md](server/speaches.md).
 
@@ -133,14 +152,16 @@ For self-hosted speech instead of OpenAI, see [server/speaches.md](server/speach
 app/                    native Android app (Kotlin, OkHttp + coroutines; Robolectric tests)
 magisk/r1ptt-system/    Magisk module: keylayout + boot-time power settings
 tools/                  build, smoke-test, flash, provision, battery-report scripts
-server/                 Hermes's robotos MCP server, skill and setup script; Hermes and Speaches notes
+server/                 shared workspace service and web console, Hermes MCP adapter and setup
 docs/                   install guide, Hermes remote, messages, battery notes
 ```
 
 Build: `tools/build.sh` (JDK 17+ and the Android SDK; writes `out/r1ptt.apk` and
 `out/r1ptt-system.zip`).
 Tests: `./gradlew :app:testDebugUnitTest` and
-`python3 -m unittest server.robotos_mcp.tests.test_robotos_mcp server.hermes.tests.test_setup_macos`.
+`PYTHONPATH=server python3 -m unittest discover -s server/robotos_hub/tests`, with MCP and installer
+suites under `server/robotos_mcp/tests` and `server/hermes/tests`. Browser model tests run with
+`node --test server/robotos_hub/web/tests/*.test.mjs`.
 
 App updates: **Settings → App updates** checks for signed APK releases when requested. The
 release workflow is disabled until signing continuity and owner-controlled bootstrap are set up.
