@@ -81,31 +81,6 @@ data class Power(
     val cellular: Boolean = false,
 )
 
-/** Only this per-device credential crosses to the R1; the Hermes key stays on the bridge. */
-data class BridgeConfig(
-    val enabled: Boolean = false,
-    val baseUrl: String = "",
-    val deviceId: String = "",
-    val token: String = "",
-    val docked: Boolean = false,
-    val paused: Boolean = false,
-    val wireguardUrl: String = "",
-    val useWireguard: Boolean = false,
-    val wireguardAddress: String = "",
-) {
-    val activeUrl: String get() = if (useWireguard) wireguardUrl else baseUrl
-    private fun https(value: String): Boolean {
-        val uri = URI(value)
-        return uri.scheme == "https" && !uri.host.isNullOrBlank() && uri.rawUserInfo == null &&
-            uri.rawQuery == null && uri.rawFragment == null && uri.path.orEmpty() in setOf("", "/")
-    }
-    fun valid(): Boolean = runCatching {
-        https(baseUrl) && (wireguardUrl.isBlank() || https(wireguardUrl)) && https(activeUrl) &&
-            (wireguardAddress.isBlank() || wireguardAddress.split('.').let { parts -> parts.size == 4 && parts.all { it.toIntOrNull() in 0..255 } }) &&
-            java.util.UUID.fromString(deviceId).toString() == deviceId && token.length in 32..256
-    }.getOrDefault(false)
-}
-
 /**
  * Hermes as the agent and this R1 as its remote. Hermes's `robotos` MCP server reaches [port] over
  * the tailnet with [token] to send texts and read device state; texts from [owner] pass through to
@@ -149,7 +124,6 @@ data class Config(
     val tts: Tts = Tts(),
     val live: Live = Live(),
     val power: Power = Power(),
-    val bridge: BridgeConfig = BridgeConfig(),
     val hermes: HermesLink = HermesLink(),
     /** Short beeps when listening starts and on errors. */
     val earcons: Boolean = true,

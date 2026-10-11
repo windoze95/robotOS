@@ -19,7 +19,6 @@ class App : Application() {
     val sms: SmsController get() = smsInstance.value
     val smsBusy: Boolean get() = smsInstance.isInitialized() && smsInstance.value.busy
     val smsAssistant by lazy { SmsAssistant(this) }
-    val bridge by lazy { dev.r1ptt.bridge.BridgeController(this) }
     /** Hermes's way into the R1 (texts, status) over the tailnet. */
     val deviceApi by lazy { dev.r1ptt.hermes.DeviceApi(this) }
     /** The owner's texts to the R1's number, passed through to Hermes. */
@@ -50,5 +49,8 @@ class App : Application() {
         turns = TurnController(this)
         updates = UpdateManager(this)
         updates.recover()
+        // Leftovers of the retired SMS relay on devices that ran it.
+        deleteSharedPreferences("relay")
+        getSystemService(android.app.NotificationManager::class.java)?.deleteNotificationChannel("sms-relay")
     }
 }

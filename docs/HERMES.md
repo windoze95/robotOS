@@ -8,7 +8,7 @@ the agent; the R1 only relays and acts:
   interpretation of its own in this mode.
 - **Hermes acts on the R1:** Hermes's `robotos` MCP server gives it `send_sms`, `sms_status`,
   `recent_texts`, `list_recipients` and `r1_status`. "Text Sam I'm running late" is Hermes calling
-  `mcp_robotos_send_sms`, which the R1 carries out with its own SIM and number.
+  `mcp__robotos__send_sms`, which the R1 carries out with its own SIM and number.
 - **Texting Hermes:** texts from your own number to the R1 go to Hermes (session `robotos-sms`), and
   Hermes's reply is texted back. Texts from anyone else stay in Messages.
 - **Plugged in = radios stay up.** On external power the Wi-Fi/airplane idle cut is skipped, so texts
@@ -44,60 +44,55 @@ get `+1` on a US SIM. Hermes may send at most `hermes.dailySendLimit` texts a da
 
 ## Setup
 
-On the Hermes host, as its user:
+You need:
+
+- the R1 running robotOS (docs/INSTALL.md), on USB, with the **Tailscale** app signed in to your
+  tailnet and its VPN allowed;
+- a Mac that runs **Hermes Agent**, reachable over SSH, with Homebrew's `tailscale`
+  (`brew install tailscale`; it runs as its own private node and doesn't touch the Mac's networking);
+- HTTPS certificates enabled for your tailnet (Tailscale admin console → DNS → HTTPS). If they
+  aren't, the script prints the link to turn them on.
+
+Then, from this repository on the Mac the R1 is plugged into:
 
 ```sh
-# 1. MCP server and skill (from this repository)
-rsync -a --exclude tests server/robotos_mcp/ HOST:robotOS-r1/server/robotos_mcp/
-rsync -a server/hermes/skills/robotos/ HOST:.hermes/skills/robotos/
-
-# 2. ~/.hermes/.env (0600): API server and the R1 device token (32+ random characters each)
-API_SERVER_ENABLED=true
-API_SERVER_HOST=127.0.0.1
-API_SERVER_PORT=8642
-API_SERVER_KEY=…
-ROBOTOS_R1_TOKEN=…
-
-# 3. Register the MCP server (answer y to both prompts); the token stays a ${…} reference
-hermes mcp add robotos --command /opt/homebrew/bin/python3 --connect-timeout 30 \
-  --env PYTHONPATH=$HOME/robotOS-r1 ROBOTOS_R1_URL=http://<R1 tailnet IP>:8765 \
-  'ROBOTOS_R1_TOKEN=${ROBOTOS_R1_TOKEN}' ROBOTOS_PROXY=http://127.0.0.1:1056 \
-  --args -m server.robotos_mcp
-hermes config set mcp_servers.robotos.timeout 90
-
-# 4. The userspace tailscaled gets an outbound proxy so the MCP server can reach the R1:
-#    add --outbound-http-proxy-listen=127.0.0.1:1056 to ai.robotos.tailscale's ProgramArguments,
-#    then launchctl bootout/bootstrap it.
-
-# 5. Expose Hermes's API to the tailnet only, and run the gateway
-tailscale --socket="$HOME/Library/Application Support/robotOS/tailscale/tailscaled.sock" \
-  serve --bg --https=443 http://127.0.0.1:8642
-hermes gateway install --start-now --start-on-login
+tools/hermes-setup.sh --host you@hermes-host --owner +1XXXXXXXXXX
 ```
 
-On the Mac, provision the R1 through the config receiver (keys are never printed):
+`--owner` is your own phone number: its texts to the R1 go to Hermes. Leave it out to set it later
+on the R1 (Settings → Hermes). The first run prints a Tailscale link to approve the Hermes host as a
+new node. Re-running is safe: existing keys are kept, so the R1 keeps working.
 
-```json
-{
-  "activeProvider": "hermes",
-  "providers": {"hermes": {"baseUrl": "https://HOST.TAILNET.ts.net/v1", "apiKey": "<API_SERVER_KEY>",
-                "model": "hermes-agent", "session": "hermes-session", "timeoutSec": 300}},
-  "hermes": {"deviceApi": true, "token": "<ROBOTOS_R1_TOKEN>", "port": 8765, "passthrough": true, "owner": "+1XXXXXXXXXX"},
-  "bridge": {"enabled": false}
-}
-```
+### What it changes on the Hermes host
 
-```sh
-adb shell am broadcast -n dev.r1ptt/.data.ConfigReceiver -a dev.r1ptt.CONFIG --es json_b64 "$(base64 < hermes.json)"
-```
+| Where | Change |
+|---|---|
+| `~/Library/Application Support/robotOS/mcp/` | The `robotos` MCP server (standard library Python). |
+| `~/.hermes/skills/robotos/SKILL.md` | The skill. |
+| `~/.hermes/.env` (0600) | `API_SERVER_ENABLED=true`, `API_SERVER_HOST=127.0.0.1`, `API_SERVER_PORT=8642`, and generated `API_SERVER_KEY` and `ROBOTOS_R1_TOKEN`. Other lines are untouched. |
+| `~/.hermes/config.yaml` | An `mcp_servers.robotos` entry; its token is a `${ROBOTOS_R1_TOKEN}` reference, not the value. Hermes may re-indent a few lists when it saves. |
+| `~/Library/LaunchAgents/ai.robotos.tailscale.plist` | A private userspace Tailscale node (state under `…/robotOS/tailscale/`), with a localhost-only proxy the MCP server uses to reach the R1. |
+| Tailscale Serve | `https://<that node>.<tailnet>.ts.net` → `http://127.0.0.1:8642`, tailnet only. |
+| `~/Library/LaunchAgents/ai.hermes.gateway.plist` | `hermes gateway install`: the gateway runs at login (restarted if it was already installed). |
+| `~/Library/Application Support/robotOS/r1-hermes.json` (0600) | The R1's settings, including the key and token. The Mac script reads it to configure the R1. |
 
-The R1 needs the Tailscale app signed in to the same tailnet. Run the MCP tests with
-`python3 -m unittest server.robotos_mcp.tests.test_robotos_mcp`.
+To undo: remove the `mcp_servers.robotos` entry and the `API_SERVER_*`/`ROBOTOS_R1_TOKEN` lines,
+`launchctl bootout gui/$(id -u)/ai.robotos.tailscale` and delete its plist and
+`~/Library/Application Support/robotOS`, and `hermes gateway uninstall` if you don't otherwise use it.
+On the R1, choose another backend in Settings.
+
+### By hand
+
+`server/hermes/setup_macos.py --r1 <R1 tailnet IP> [--owner …]` is the host half, runnable from any
+copy of `server/`. It prints where it wrote the R1's settings; push them with
+`adb shell am broadcast -n dev.r1ptt/.data.ConfigReceiver -a dev.r1ptt.CONFIG --es json_b64 "$(base64 < r1-hermes.json)"`.
+Tests: `python3 -m unittest server.robotos_mcp.tests.test_robotos_mcp server.hermes.tests.test_setup_macos`.
 
 ## Checks
 
-- From the Hermes host: `curl -x http://127.0.0.1:1056 -H "Authorization: Bearer $ROBOTOS_R1_TOKEN" http://<R1 IP>:8765/v1/status`
-- Ask Hermes "what's my R1's battery level?": it should call `mcp_robotos_r1_status`.
+- The setup script ends by checking both directions. To repeat the Hermes → R1 half by hand:
+  `curl -x http://127.0.0.1:1056 -H "Authorization: Bearer $ROBOTOS_R1_TOKEN" http://<R1 IP>:8765/v1/status`
+- Ask Hermes "what's my R1's battery level?": it should call `mcp__robotos__r1_status`.
 - `adb logcat -s r1ptt` shows content-free events: `device api: …`, `hermes text: …`.
 
 ## Security notes
@@ -110,6 +105,3 @@ The R1 needs the Tailscale app signed in to the same tailnet. Run the MCP tests 
   could talk to your agent. Turn off `hermes.passthrough` if that matters for your Hermes's tools.
 - Incoming texts from other people are never forwarded. When Hermes reads them with
   `recent_texts`, the skill tells it to treat them as information, not instructions.
-
-This replaces the earlier [Hermes SMS relay](RELAY.md); its services are stopped and disabled on
-the Hermes host.

@@ -36,10 +36,8 @@ sealed interface SmsIntent {
         private const val LEAD = "(?:ok(?:ay)?|alright|all right|so|um+|uh+|uhm+|hmm+|erm?|yeah|yes|yep|now|then|and|well|oh|hey|hi|hello|" +
             "robot(?:os)?|assistant|just|actually|also|quickly|go ahead and|try again|again|i said|please|can you|could you|would you mind|" +
             "would you|will you|i need (?:you )?to|i want (?:you )?to|i wanna|i(?:'d|’d| would) like (?:you )?to|i was wondering if you could)"
-        private val directed = Regex("(?:^|(?<=[.!?])\\s+)(?:$LEAD[\\s,.!?;:-]+)*(send(?:ing)?|text(?:ing)?|sms|messag(?:e|ing)|tell(?:ing)?|let|reply|respond|shoot|drop)\\b(\\s+me\\b)?", RegexOption.IGNORE_CASE)
+        private val directed = Regex("(?:^|(?<=[.!?])\\s+)(?:$LEAD[\\s,.!?;:-]+)*(send(?:ing)?|text(?:ing)?|sms|messag(?:e|ing)|tell(?:ing)?|let|reply|respond|shoot|drop)\\b", RegexOption.IGNORE_CASE)
         fun directed(text: String) = directed.containsMatchIn(text.trim())
-        /** "Tell me…", "send me…", "let me…": messaging words aimed at the user are ordinary chat. */
-        fun toUser(text: String) = directed.findAll(text.trim()).toList().let { it.isNotEmpty() && it.all { m -> m.groups[2] != null } }
         private fun ensure(condition: Boolean, reason: SmsIntentRejected.Reason = SmsIntentRejected.Reason.INVALID) {
             if (!condition) throw SmsIntentRejected(reason)
         }

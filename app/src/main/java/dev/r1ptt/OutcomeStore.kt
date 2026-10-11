@@ -35,11 +35,8 @@ class OutcomeStore(context: Context, private val now: () -> Long = System::curre
         if (rows.size != j.length()) save(rows)
         rows
     }.getOrDefault(emptyList())
-    /** True when this closed a still-open outcome. */
-    @Synchronized fun finishIfOpen(id: String, status: OutcomeStatus): Boolean {
-        if (list().none { it.id == id && it.status == OutcomeStatus.RESOLVING }) return false
-        update(id, status)
-        return true
+    @Synchronized fun finishIfOpen(id: String, status: OutcomeStatus) {
+        if (list().any { it.id == id && it.status == OutcomeStatus.RESOLVING }) update(id, status)
     }
     private fun save(rows: List<Outcome>) {
         val j = JSONArray()

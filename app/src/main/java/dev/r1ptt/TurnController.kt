@@ -59,8 +59,6 @@ data class TurnState(
     val reply: String = "",
     /** A short status line: errors, "New conversation", agent progress. */
     val note: String = "",
-    /** Waiting for the SMS relay: keep the screen on, though no turn is busy. */
-    val waiting: Boolean = false,
 )
 
 /** Foreground chat or private-draft context: where dictation and button gestures go. */
@@ -157,9 +155,6 @@ class TurnController(
     private var dictationBlockedPress = false
     private var destination = CapturedInput<DictationTarget>(null)
     private var transcriptionConfig = app.store.value
-    /** The SMS relay command awaiting its result, with the press that issued it. */
-    private var relayCommand: Pair<String, Long>? = null
-    private var relayWait: Job? = null
 
     private class Turn(val id: Long, val conversation: String, val input: CapturedInput<DictationTarget>, val sttConfig: Config, val outcome: String) {
         var job: Job? = null
@@ -167,7 +162,6 @@ class TurnController(
         val reply = StringBuffer()
         var replySaved = false
         var sms: SmsAssistant.Request? = null
-        var bridgeCommand: String? = null
     }
 
     init {
@@ -384,7 +378,6 @@ class TurnController(
                 block(turn)
                 completed = true
             } catch (e: CancellationException) {
-                turn.bridgeCommand?.let { withContext(NonCancellable) { app.bridge.cancel(it) } }
                 app.outcomes.finishIfOpen(turn.outcome, OutcomeStatus.CANCELLED)
                 throw e
             } catch (e: Throwable) {
@@ -403,7 +396,7 @@ class TurnController(
                     settle()
                     if (completed) {
                         if (turn.sms != null) sendSms(turn.sms!!)
-                        else if (turn.bridgeCommand == null) app.outcomes.finishIfOpen(turn.outcome, OutcomeStatus.COMPLETED)
+                        else app.outcomes.finishIfOpen(turn.outcome, OutcomeStatus.COMPLETED)
                     }
                 }
             }
@@ -520,22 +513,6 @@ class TurnController(
 
     /** The on-device SMS assistant (non-Hermes providers). True when it handled this turn. */
     private suspend fun interceptSms(turn: Turn, text: String, cfg: Config): Boolean {
-        // A paused or incomplete relay leaves commands with the on-device assistant, so texting keeps working.
-        if (assistant.enabled && cfg.bridge.enabled && !cfg.bridge.paused && cfg.bridge.valid() && dev.r1ptt.bridge.BridgePolicy.request(text)) {
-            try {
-                turn.bridgeCommand = turn.outcome
-                app.bridge.enqueueOwner(text, turn.outcome)
-                // No speech here: the relay cannot dispatch while a turn is busy. Its result is spoken
-                // when it arrives (relayResult), and the screen stays on until then.
-                Log.i(TAG, "sms action: relay")
-                awaitRelay(turn.outcome)
-            } catch (e: CancellationException) { throw e }
-            catch (e: Exception) {
-                app.outcomes.update(turn.outcome, OutcomeStatus.FAILED, OutcomeReason.UNAVAILABLE)
-                replyLocally(turn, e.message?.let { "$it No text was sent." } ?: "The request could not be saved. No text was sent.")
-            }
-            return true
-        }
         if (assistant.enabled) {
             val decision = try {
                 _state.value = TurnState(phase = Phase.THINKING, note = "Checking the requested action…")
@@ -650,37 +627,6 @@ class TurnController(
 
     // ---- state helpers ----
 
-    private fun awaitRelay(outcome: String) {
-        relayCommand = outcome to pressGeneration
-        noteJob?.cancel()
-        _state.value = TurnState(note = "Sending through the SMS relay…", waiting = true)
-        relayWait?.cancel()
-        relayWait = scope.launch {
-            delay(RELAY_WAIT_MS)
-            if (relayCommand?.first != outcome) return@launch
-            relayCommand = null
-            if (_state.value.waiting) note("The SMS relay hasn't answered yet. Check Messages for the result.")
-        }
-    }
-
-    /**
-     * The relay's result for this controller's latest owner command, spoken like a native SMS outcome.
-     * Main thread. A newer press or turn keeps it silent; Messages and the relay screen still show it.
-     */
-    fun relayResult(outcome: String, message: String) {
-        val (id, generation) = relayCommand ?: return
-        if (id != outcome) return
-        relayCommand = null
-        relayWait?.cancel()
-        if (generation != pressGeneration || busy) {
-            if (_state.value.waiting) _state.value = TurnState()
-            return
-        }
-        Log.i(TAG, "sms relay result reported")
-        app.screen.holdAwake()
-        launch(emitStart = false, source = OutcomeSource.SMS, outcomeId = outcome) { turn -> replyLocally(turn, message) }
-    }
-
     private fun sendSms(request: SmsAssistant.Request) {
         val generation = pressGeneration
         assistant.execute(request, current = { generation == pressGeneration && !busy }, report = { message ->
@@ -747,7 +693,5 @@ class TurnController(
         /** What Hermes is told about this device on every push-to-talk turn. */
         private const val HERMES_DEVICE = " You are the agent behind this Rabbit R1 (robotOS); it relays what the user says and speaks your reply. " +
             "Act on it with your robotos tools, for example to text someone: do what was asked, then say briefly what happened."
-        /** Hermes' run budget is 60 s; a little longer covers the freeze, grant and handoff. */
-        private const val RELAY_WAIT_MS = 75_000L
     }
 }

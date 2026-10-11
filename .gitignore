@@ -21,8 +21,5 @@ firmware/
 *.p12
 *.pfx
 
-# Bridge runtime state and generated per-device enrollment files are private.
 __pycache__/
 *.pyc
-server/bridge/state/
-*.enrollment.json

@@ -1,4 +1,0 @@
-US fixed/mobile number pattern derived from Google libphonenumber.
-Copyright The Libphonenumber Authors.
-Source: https://raw.githubusercontent.com/google/libphonenumber/d1457634c3d95e570dad433ee0ab400beb343a56/resources/PhoneNumberMetadata.xml
-See LICENSE for the Apache License, Version 2.0.

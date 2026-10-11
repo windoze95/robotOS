@@ -126,8 +126,8 @@ The script makes these changes:
 It's safe to re-run, e.g. after editing the config or rebuilding. `--undo-debloat` re-enables the
 disabled apps.
 
-To make the R1 a remote for your Hermes agent, follow [HERMES.md](HERMES.md) next: it sets up Hermes's
-side and pushes the `hermes` settings the same way.
+To make the R1 a remote for your Hermes agent, run `tools/hermes-setup.sh --host you@hermes-host`
+next ([HERMES.md](HERMES.md)): it sets up Hermes's side and pushes the R1's `hermes` settings.
 
 ## 6. Check that it works
 

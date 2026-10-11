@@ -251,13 +251,6 @@ class MessagesActivity : Activity(), DictationTarget {
             }
             Screen.CONVERSATION -> {
                 container.addView(label(peer.orEmpty(), 17f).apply { setTextColor(getColor(R.color.accent)) })
-                if (app.store.value.bridge.enabled) container.addView(button("Block this recipient in relay") {
-                    val number = peer ?: return@button
-                    ui?.launch {
-                        app.bridge.block(number)
-                        status.text = "Recipient blocked in relay. Queued relay sends are cancelled."
-                    }
-                })
                 if (rows.size == 100) container.addView(label("Showing the newest 100 texts. Older texts remain stored on this device.", 12f))
                 rows.forEach { record ->
                     container.addView(label(record.body, 16f).apply {
@@ -274,7 +267,6 @@ class MessagesActivity : Activity(), DictationTarget {
                             .setNegativeButton("Cancel", null))
                     })
                     if (!record.incoming) container.addView(button("Message details") { details(record) })
-                    if (record.incoming && app.store.value.bridge.enabled) container.addView(button("Ask Hermes about this") { selectedMessage(record) })
                 }
             }
             Screen.COMPOSE -> container.addView(label(
@@ -425,25 +417,6 @@ class MessagesActivity : Activity(), DictationTarget {
                 9 -> startActivity(Intent(this, dev.r1ptt.hermes.HermesActivity::class.java))
             }
         })
-    }
-
-    private fun selectedMessage(record: SmsRecord) {
-        if (dev.r1ptt.bridge.BridgePolicy.sensitive(record.body) || !dev.r1ptt.bridge.BridgePolicy.destination(record.peer)) {
-            status.text = "Security texts and service numbers stay on the R1."
-            return
-        }
-        val host = runCatching { java.net.URI(app.store.value.bridge.baseUrl).host }.getOrNull().orEmpty()
-        showDialog(AlertDialog.Builder(this).setTitle("Share this one text?")
-            .setMessage("Send only this selected message to the restricted Hermes profile through $host for an explanation? Check that it contains no codes or private credentials. The sender must be saved locally. This does not authorize a reply. Request content expires after 24 hours; replay-protection IDs remain.")
-            .setNegativeButton("Keep local", null)
-            .setPositiveButton("Ask Hermes") { _, _ ->
-                ui?.launch {
-                    try {
-                        app.bridge.select(record)
-                        startActivity(Intent(this@MessagesActivity, dev.r1ptt.bridge.BridgeActivity::class.java))
-                    } catch (_: Exception) { status.text = "This message could not be shared. Check relay settings and saved recipients." }
-                }
-            })
     }
 
     private fun details(record: SmsRecord?) {

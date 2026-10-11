@@ -1,6 +1,6 @@
 # Using Hermes Agent as the backend
 
-Follow [docs/HERMES.md](../docs/HERMES.md). It makes Hermes the agent: every push-to-talk turn goes to
+Run `tools/hermes-setup.sh --host you@hermes-host` ([docs/HERMES.md](../docs/HERMES.md)). It makes Hermes the agent: every push-to-talk turn goes to
 Hermes, Hermes texts people through the R1 with its `robotos` MCP tools, and texts from your own number
 reach Hermes. It connects the R1 and Hermes over Tailscale (tailnet-only HTTPS through Tailscale Serve)
 and keeps Hermes's API server bound to `127.0.0.1`.

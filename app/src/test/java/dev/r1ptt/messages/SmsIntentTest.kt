@@ -161,15 +161,6 @@ class SmsIntentTest {
         assertEquals(SmsIntentRejected.Reason.NOT_A_REQUEST, e.reason)
     }
 
-    @Test fun messagingWordsAimedAtTheUserAreNotRelayCommands() {
-        for (text in listOf("Tell me a joke", "Okay tell me about SMS", "Send me five tips for sleeping.", "Let me know when it rains")) {
-            assertTrue(text, SmsIntent.toUser(text))
-        }
-        for (text in listOf("Tell Sam I'm late", "Text Sam hello", "Let Sam know I'm late", "Send a text to 405 555 0123")) {
-            assertFalse(text, SmsIntent.toUser(text))
-        }
-    }
-
     @Test fun rejectionsSayWhatToFixWithoutRepeatingTheRequest() {
         assertEquals(SmsIntentRejected.Reason.INVALID, assertThrows(SmsIntentRejected::class.java) { SmsIntent.decode("```json\n{}\n```", "Text Sam hi") }.reason)
         assertEquals(SmsIntentRejected.Reason.EXACT_WORDING, assertThrows(SmsIntentRejected::class.java) {

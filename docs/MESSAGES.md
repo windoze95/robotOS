@@ -4,8 +4,6 @@ With the **Hermes Agent** provider, robotOS does not interpret texting requests 
 sends texts through its `robotos` tools, and your own texts to the R1 go to Hermes. See
 [HERMES.md](HERMES.md). The on-device assistant below applies to the other providers.
 
-The earlier [Hermes SMS relay](RELAY.md) is retired.
-
 Messages is a personal SMS handler inside the existing robotOS APK. It uses Android’s SMS
 service and your SIM. You can choose robotOS as the default SMS app through Android’s role
 dialog, or use its optional SMS companion controls. It does not replace the GSI, enable the stock

@@ -256,8 +256,8 @@ class HomeActivity : Activity(), DictationTarget {
         } else {
             live.visibility = View.GONE
         }
-        // The screen stays on for a turn (or an SMS relay result); otherwise the short system timeout turns it off.
-        if (s.phase.active || s.waiting) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // The screen stays on for a turn; otherwise the short system timeout turns it off.
+        if (s.phase.active) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 

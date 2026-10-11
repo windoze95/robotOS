@@ -34,7 +34,7 @@ class RadioPolicy(private val ctx: Context, private val store: ConfigStore) {
     private val cm = ctx.getSystemService(ConnectivityManager::class.java)
     private val alarms = ctx.getSystemService(AlarmManager::class.java)
     private val io = Executors.newSingleThreadExecutor()
-    /** Reasons to keep the radios up (external power, the relay); the idle cut waits for none. */
+    /** Reasons to keep the radios up (external power); the idle cut waits for none. */
     private val holds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val held: Boolean get() = holds.isNotEmpty()
     val deliberateAirplane: Boolean get() = store.value.power.cellular && (prefs.getBoolean("manual_airplane", false) || !cutByUs) &&
@@ -47,7 +47,6 @@ class RadioPolicy(private val ctx: Context, private val store: ConfigStore) {
         else if (changed && !held && !ctx.getSystemService(PowerManager::class.java).isInteractive) schedule()
     }
 
-    fun relay(active: Boolean) = hold("relay", active)
 
     /** Whether Wi-Fi is off because we turned it off (so we know to turn it back on). */
     private var cutByUs: Boolean

@@ -78,8 +78,7 @@ recipient numbers.
 MMS, RCS, old inbox import, and live carrier acceptance are not included. See [docs/MESSAGES.md](docs/MESSAGES.md).
 
 **Settings → Hermes** (also Messages → Options → Hermes) shows whether Hermes can reach the R1,
-how many texts it has sent today, and turns texting Hermes from your own number on or off. The
-earlier [Hermes SMS relay](docs/RELAY.md) is retired.
+how many texts it has sent today, and turns texting Hermes from your own number on or off.
 
 ## Battery
 
@@ -116,8 +115,8 @@ the read-only capture and offline analyzer include synthetic fixtures, not hardw
 2. **Follow [docs/INSTALL.md](docs/INSTALL.md):** unlock (Rabbit's developer mode) → stock baseline →
    LineageOS GSI → Magisk → `tools/provision.sh --config tools/r1ptt.json`.
 
-To make Hermes the agent, follow [docs/HERMES.md](docs/HERMES.md) (background in
-[server/hermes.md](server/hermes.md)); for self-hosted speech, see [server/speaches.md](server/speaches.md).
+To make Hermes the agent, run `tools/hermes-setup.sh --host you@hermes-host` ([docs/HERMES.md](docs/HERMES.md));
+for self-hosted speech, see [server/speaches.md](server/speaches.md).
 
 ## Repo layout
 
@@ -125,13 +124,14 @@ To make Hermes the agent, follow [docs/HERMES.md](docs/HERMES.md) (background in
 app/                    native Android app (Kotlin, OkHttp + coroutines; Robolectric tests)
 magisk/r1ptt-system/    Magisk module: keylayout + boot-time power settings
 tools/                  build, smoke-test, flash, provision, battery-report scripts
-server/                 Hermes's robotos MCP server and skill, backend notes (Hermes, Speaches), retired relay
+server/                 Hermes's robotos MCP server, skill and setup script; backend notes (Hermes, Speaches)
 docs/                   install guide, Hermes remote, messages, battery notes
 ```
 
 Build: `tools/build.sh` (JDK 17+ and the Android SDK; writes `out/r1ptt.apk` and
 `out/r1ptt-system.zip`).
-Tests: `./gradlew :app:testDebugUnitTest` and `python3 -m unittest server.robotos_mcp.tests.test_robotos_mcp`.
+Tests: `./gradlew :app:testDebugUnitTest` and
+`python3 -m unittest server.robotos_mcp.tests.test_robotos_mcp server.hermes.tests.test_setup_macos`.
 
 App updates: **Settings → App updates** checks for signed APK releases when requested. The
 release workflow is disabled until signing continuity and owner-controlled bootstrap are set up.
