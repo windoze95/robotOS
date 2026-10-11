@@ -252,6 +252,9 @@ class ScreensSnapshotTest {
         repeat(24) { turn(TurnState(phase = Phase.LISTENING, level = (it % 7) * .05f + .02f, heard = "What's on my calendar today and can you move the gym")) }
         assertTrue(home.findViewById<VoiceStage>(R.id.stage).showing)
         snap(home, "home-02-listening")
+        // A tap on the stage keeps the words to edit instead of sending them.
+        turn(TurnState(phase = Phase.LISTENING, level = .12f, heard = "What's on my calendar today and can you move the gym", editing = true))
+        snap(home, "home-02-listening-edit")
         app.history.add(Msg.USER, "What's on my calendar today and can you move the gym?")
         turn(TurnState(phase = Phase.THINKING, note = "Checking your calendar"))
         assertFalse(home.findViewById<VoiceStage>(R.id.stage).showing)

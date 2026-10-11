@@ -67,6 +67,10 @@ The R1 is an Android 13 phone underneath (MediaTek MT6765). The firmware is four
 | **Double-tap** | New conversation. | — |
 | **Scroll wheel** | Scroll the visible page; volume during speech or with its slider selected. | Scroll the visible page; volume during speech or with its slider selected. |
 
+While you hold the button, the screen is orange and shows your words as they're heard. Until
+they're sent, tap it to put them in the text field instead, so you can edit them and tap the
+button to send. Or swipe it away to cancel: the microphone closes and nothing is sent.
+
 Tap the text field to bring up the keyboard. The chat title opens saved **Chats**, the battery
 readout opens **Quick controls**, and the menu opens **Messages**, **Hermes** and **Settings**.
 While an approval review is open, button gestures cannot approve it or replace the pending task.

@@ -137,6 +137,12 @@ class History(dir: File) {
         publish(); persist(conversation, 300)
     }
 
+    /** Adds words to the end of a chat's draft, after a space if needed. */
+    @Synchronized fun appendDraft(text: String, conversation: String = convId) {
+        val old = records[conversation]?.draft ?: return
+        saveDraft(if (old.isEmpty() || old.last().isWhitespace()) old + text else "$old $text", conversation)
+    }
+
     @Synchronized fun confirmDraft(text: String, conversation: String = convId) {
         val old = records[conversation] ?: return
         if (old.draft.trim() != text.trim()) return
