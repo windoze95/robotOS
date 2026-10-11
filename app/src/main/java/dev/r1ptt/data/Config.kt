@@ -10,6 +10,8 @@ data class Agent(
     val baseUrl: String = "",
     val apiKey: String = "",
     val model: String = "hermes-agent",
+    /** Optional explicit provider paired with [model]; blank keeps the gateway's default. */
+    val provider: String = "",
     /** Extra request headers, e.g. an access proxy's service-token headers. */
     val headers: Map<String, String> = emptyMap(),
     /** Read timeout for the streamed reply; an agent can work for minutes. */
@@ -37,14 +39,23 @@ data class Tts(
 )
 
 data class Power(
-    /** Turn Wi-Fi off after this many minutes with the screen off; 0 keeps it on. */
+    /** Pocket-mode delay. Legacy 0 means stay reachable and is normalized when settings load. */
     val wifiIdleMinutes: Int = 3,
     val screenTimeoutSec: Int = 15,
     /** Manual backlight level, 1..255. */
     val brightness: Int = 60,
     /** Keep the cellular modem on (needs a SIM). Off by default: an idle modem is the biggest drain. */
     val cellular: Boolean = false,
-)
+    /** Keep radios available on battery without discarding the pocket-mode idle interval. */
+    val stayReachable: Boolean = false,
+) {
+    val reachableOnBattery: Boolean get() = stayReachable || wifiIdleMinutes <= 0
+    val pocketIdleMinutes: Int get() = wifiIdleMinutes.takeIf { it > 0 } ?: 3
+
+    /** An explicit mode change always leaves a usable, remembered pocket-mode delay. */
+    fun withReachability(enabled: Boolean) = copy(stayReachable = enabled, wifiIdleMinutes = pocketIdleMinutes)
+    fun normalized() = withReachability(reachableOnBattery)
+}
 
 /**
  * Hermes as the agent and this R1 as its remote. Hermes's `robotos` MCP server reaches [port] over
@@ -65,6 +76,10 @@ data class HermesLink(
     val smsSession: String = "robotos-sms",
     /** Texts Hermes may send through this R1 per day (0 = no limit). */
     val dailySendLimit: Int = 100,
+    val allowSpeak: Boolean = false,
+    val allowShow: Boolean = false,
+    val allowVolume: Boolean = false,
+    val allowSaveRecipient: Boolean = false,
 ) {
     fun valid(): Boolean = (!deviceApi || (token.length in 32..256 && port in 1024..65535)) &&
         (!passthrough || dev.r1ptt.messages.SmsAddress.normalize(owner) == owner) && smsSession.length in 1..128
@@ -91,6 +106,8 @@ data class Config(
     val hermes: HermesLink = HermesLink(),
     /** Short beeps when listening starts and on errors. */
     val earcons: Boolean = true,
+    /** Mute speech and feedback sounds; independent of automatic reply playback. */
+    val quiet: Boolean = false,
     val textSizeSp: Int = 17,
     /** Keep each recorded clip under Android/data/dev.r1ptt/files/clips, for tuning the mic. */
     val saveClips: Boolean = false,

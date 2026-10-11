@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="bg">#000000</color>
-    <color name="fg">#F2F2F2</color>
-    <color name="dim">#8E949C</color>
-    <color name="accent">#FF6B1A</color>
-    <color name="error">#FF5C5C</color>
-    <color name="field">#1A1A1A</color>
+    <color name="bg">#11100E</color>
+    <color name="fg">#F3EEE5</color>
+    <color name="dim">#B9B1A5</color>
+    <color name="accent">#F18A4B</color>
+    <color name="error">#ED8D7B</color>
+    <color name="field">#211F1B</color>
+    <color name="outline">#5B554B</color>
+    <color name="press">#40F18A4B</color>
 </resources>

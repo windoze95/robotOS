@@ -62,6 +62,9 @@
             android:screenOrientation="portrait"
             android:windowSoftInputMode="adjustResize" />
 
+        <activity android:name=".QuickControlsActivity" android:exported="false"
+            android:screenOrientation="portrait" android:windowSoftInputMode="adjustResize" />
+
         <service
             android:name=".PttService"
             android:exported="false"

@@ -102,6 +102,7 @@ class PttService : Service() {
         val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         app.radio.hold("power", (battery?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0)
         scope.launch { app.store.flow.map { it.hermes }.distinctUntilChanged().collect { app.deviceApi.apply(it) } }
+        scope.launch { app.store.flow.map { it.quiet }.distinctUntilChanged().collect { if (it) app.turns.stopSpeech() } }
         app.hermesTexts.resume()
         app.radio.applyBaseline()
         DeviceSettings.apply(app.store.value)

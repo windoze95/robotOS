@@ -11,6 +11,7 @@ object ConfigJson {
     fun toJson(c: Config): JSONObject = JSONObject().apply {
         put("agent", JSONObject().apply {
             put("baseUrl", c.agent.baseUrl); put("apiKey", c.agent.apiKey); put("model", c.agent.model)
+            put("provider", c.agent.provider)
             put("headers", JSONObject(c.agent.headers)); put("timeoutSec", c.agent.timeoutSec)
         })
         put("openaiKey", c.openaiKey)
@@ -25,17 +26,22 @@ object ConfigJson {
             put("instructions", c.tts.instructions)
         })
         put("power", JSONObject().apply {
-            put("wifiIdleMinutes", c.power.wifiIdleMinutes)
-            put("screenTimeoutSec", c.power.screenTimeoutSec)
-            put("brightness", c.power.brightness)
-            put("cellular", c.power.cellular)
+            val power = c.power.normalized()
+            put("wifiIdleMinutes", power.wifiIdleMinutes)
+            put("screenTimeoutSec", power.screenTimeoutSec)
+            put("brightness", power.brightness)
+            put("cellular", power.cellular)
+            put("stayReachable", power.stayReachable)
         })
         put("hermes", JSONObject().apply {
             put("deviceApi", c.hermes.deviceApi); put("token", c.hermes.token); put("port", c.hermes.port)
             put("passthrough", c.hermes.passthrough); put("owner", c.hermes.owner)
             put("smsSession", c.hermes.smsSession); put("dailySendLimit", c.hermes.dailySendLimit)
+            put("allowSpeak", c.hermes.allowSpeak); put("allowShow", c.hermes.allowShow)
+            put("allowVolume", c.hermes.allowVolume); put("allowSaveRecipient", c.hermes.allowSaveRecipient)
         })
         put("earcons", c.earcons)
+        put("quiet", c.quiet)
         put("textSizeSp", c.textSizeSp)
         put("saveClips", c.saveClips)
         put("buttonDevice", c.buttonDevice)
@@ -51,6 +57,7 @@ object ConfigJson {
             agent = agent?.let { a -> base.agent.copy(
                 baseUrl = a.str("baseUrl", base.agent.baseUrl), apiKey = a.str("apiKey", base.agent.apiKey),
                 model = a.str("model", base.agent.model), timeoutSec = a.int("timeoutSec", base.agent.timeoutSec),
+                provider = a.str("provider", base.agent.provider),
                 headers = a.optJSONObject("headers")?.let { h -> h.keys().asSequence().associateWith { h.getString(it) } } ?: base.agent.headers,
             ) } ?: base.agent,
             openaiKey = j.str("openaiKey", base.openaiKey),
@@ -72,21 +79,30 @@ object ConfigJson {
                 )
             } ?: base.tts,
             power = power?.let { p ->
-                base.power.copy(
-                    wifiIdleMinutes = p.int("wifiIdleMinutes", base.power.wifiIdleMinutes),
+                val previous = base.power.normalized()
+                val idle = p.int("wifiIdleMinutes", previous.wifiIdleMinutes)
+                previous.copy(
+                    wifiIdleMinutes = idle.takeIf { it > 0 } ?: previous.wifiIdleMinutes,
                     screenTimeoutSec = p.int("screenTimeoutSec", base.power.screenTimeoutSec),
                     brightness = p.int("brightness", base.power.brightness),
                     cellular = p.bool("cellular", base.power.cellular),
+                    // Zero is the old "never sleep" setting, including files saved before this
+                    // migration with stayReachable=false. Keep that behavior and the prior delay.
+                    stayReachable = idle <= 0 || p.bool("stayReachable", previous.stayReachable),
                 )
-            } ?: base.power,
+            } ?: base.power.normalized(),
             hermes = hermes?.let { h -> base.hermes.copy(
                 deviceApi = h.bool("deviceApi", base.hermes.deviceApi), token = h.str("token", base.hermes.token),
                 port = h.int("port", base.hermes.port), passthrough = h.bool("passthrough", base.hermes.passthrough),
                 owner = h.str("owner", base.hermes.owner).let { dev.r1ptt.messages.SmsAddress.normalize(it) ?: it },
                 smsSession = h.str("smsSession", base.hermes.smsSession),
                 dailySendLimit = h.int("dailySendLimit", base.hermes.dailySendLimit),
+                allowSpeak = h.bool("allowSpeak", base.hermes.allowSpeak), allowShow = h.bool("allowShow", base.hermes.allowShow),
+                allowVolume = h.bool("allowVolume", base.hermes.allowVolume),
+                allowSaveRecipient = h.bool("allowSaveRecipient", base.hermes.allowSaveRecipient),
             ).also { require(it.valid()) { "Hermes needs a 32+ character device token and the owner's full phone number." } } } ?: base.hermes,
             earcons = j.bool("earcons", base.earcons),
+            quiet = j.bool("quiet", base.quiet),
             textSizeSp = j.int("textSizeSp", base.textSizeSp),
             saveClips = j.bool("saveClips", base.saveClips),
             buttonDevice = j.str("buttonDevice", base.buttonDevice),
