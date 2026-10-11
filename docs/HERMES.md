@@ -10,6 +10,9 @@ only relays and acts:
   `recent_texts`, `list_recipients` and `r1_status`, plus separately permitted `speak`, `show`,
   `set_volume` and `save_recipient` controls. "Text Sam I'm running late" is Hermes calling
   `mcp__robotos__send_sms`, which the R1 carries out with its own SIM and number.
+- **Its name:** robotOS shows the name you call your agent in chats, hints and notes (Settings →
+  Hermes → Name; empty shows "Hermes"). While the name is empty, Hermes may set it once with
+  `set_name`; setup asks it to (below). After that only you can change it.
 - **Texting Hermes:** texts from your own number to the R1 go to Hermes (session `robotos-sms`), and
   Hermes's reply is texted back. Texts from anyone else stay in Messages.
 - **Reachability:** external power skips the Wi-Fi/airplane idle cut. **Stay reachable** does the
@@ -78,6 +81,7 @@ Device API endpoints all require `Authorization: Bearer <token>`:
 | `POST /v1/show` | `text`, up to 2000 characters; a dismissible Home notice without waking the display. |
 | `POST /v1/volume` | `level` from 0 to 1; returns the applied speech volume. |
 | `POST /v1/recipients` | `name` and `number`; validates and saves a recipient. |
+| `POST /v1/name` | `name`, 1–24 letters or digits with spaces, apostrophes, hyphens or periods. Accepted only while the R1 has no name (`status.name_settable`); otherwise HTTP 403. |
 | `GET /v1/requests/<request_id>` | Recovers the original device-action receipt (`request_status` in MCP). |
 
 `to` is a phone number (spoken digits are fine) or an exact saved recipient name; ten-digit numbers
@@ -121,6 +125,10 @@ tools/hermes-setup.sh --host you@hermes-host --owner +1XXXXXXXXXX
 `--owner` is your own phone number: its texts to the R1 go to Hermes. Leave it out to set it later
 on the R1 (Settings → Hermes). The first run prints a Tailscale link to approve the Hermes host as a
 new node. Re-running is safe: existing keys are kept, so the R1 keeps working.
+
+Last, while the R1 has no name for your agent, the script asks Hermes once (in its own
+`robotos-setup` session) to tell the R1 the name you call it, with `set_name`. If the R1 already has
+a name, Hermes isn't asked. `setup_macos.py --r1 <R1 tailnet IP> --introduce` repeats just this step.
 
 ### What it changes on the Hermes host
 

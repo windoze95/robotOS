@@ -76,6 +76,24 @@ class HermesActivityTest {
         assertEquals("t".repeat(40), link.token)
     }
 
+    @Test fun theAgentsNameSavesOnlyWhenValidAndEmptyMeansHermes() {
+        val (activity, root) = screen()
+        val name = views<EditText>(root).single { it.contentDescription == "What you call Hermes" }
+        name.setText("<b>")
+        views<Button>(root).first { it.text == "Save" }.performClick()
+        assertFalse(activity.isFinishing)
+        assertEquals("", app.store.value.agent.name)
+        name.setText("  Robot ")
+        views<Button>(root).first { it.text == "Save" }.performClick()
+        assertTrue(activity.isFinishing)
+        assertEquals("Robot", app.store.value.agent.name)
+        val (_, renamed) = screen()
+        assertTrue(views<Switch>(renamed).any { it.text == "Let Robot access this R1" })
+        views<EditText>(renamed).single { it.contentDescription == "What you call Hermes" }.setText("")
+        views<Button>(renamed).first { it.text == "Save" }.performClick()
+        assertEquals("Hermes", app.store.value.agent.displayName)
+    }
+
     @Test fun badNumbersAndMissingTokensChangeNothing() {
         configure { it.copy(hermes = HermesLink()) }
         val (activity, root) = screen()

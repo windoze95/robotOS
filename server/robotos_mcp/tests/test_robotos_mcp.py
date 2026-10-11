@@ -93,7 +93,7 @@ class RobotosMcpTest(unittest.TestCase):
     def test_tools_list_is_static_and_schemas_are_closed(self):
         tools = self.rpc({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})[0]["result"]["tools"]
         self.assertEqual(["send_sms", "sms_status", "recent_texts", "list_recipients", "r1_status",
-                          "speak", "show", "set_volume", "save_recipient", "request_status"], [t["name"] for t in tools])
+                          "speak", "show", "set_volume", "save_recipient", "set_name", "request_status"], [t["name"] for t in tools])
         for tool in tools:
             self.assertEqual("object", tool["inputSchema"]["type"])
             self.assertFalse(tool["inputSchema"]["additionalProperties"])
@@ -111,7 +111,8 @@ class RobotosMcpTest(unittest.TestCase):
         for name, args, path in (("speak", {"text": "Dinner is ready"}, "/v1/speak"),
                                  ("show", {"text": "Meeting at 3"}, "/v1/show"),
                                  ("set_volume", {"level": 0.4}, "/v1/volume"),
-                                 ("save_recipient", {"name": "Sam", "number": "+14055550123"}, "/v1/recipients")):
+                                 ("save_recipient", {"name": "Sam", "number": "+14055550123"}, "/v1/recipients"),
+                                 ("set_name", {"name": "Robot"}, "/v1/name")):
             args["request_id"] = "stable-request-id-1234"
             _, error, result = mcp.run_tool(self.r1, name, args)
             self.assertFalse(error)
@@ -134,7 +135,8 @@ class RobotosMcpTest(unittest.TestCase):
     def test_invalid_control_arguments_do_not_make_requests(self):
         for name, args in (("speak", {"text": ""}), ("show", {"text": "x" * 2001}),
                            ("set_volume", {"level": 2}), ("set_volume", {"level": True}),
-                           ("save_recipient", {"name": "Sam"}), ("show", {"text": "Hi", "wake": True})):
+                           ("save_recipient", {"name": "Sam"}), ("show", {"text": "Hi", "wake": True}),
+                           ("set_name", {"name": "   "}), ("set_name", {"name": "x" * 25}), ("set_name", {"name": 7})):
             self.assertTrue(mcp.run_tool(self.r1, name, args)[1])
         self.assertEqual([], FakeR1.sent)
 

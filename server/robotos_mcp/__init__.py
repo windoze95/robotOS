@@ -13,7 +13,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 PROTOCOLS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 INSTRUCTIONS = (
     "These tools act on the user's Rabbit R1 (robotOS): its SIM sends and receives the user's texts. "
@@ -77,7 +77,7 @@ TOOLS = [
     {
         "name": "r1_status",
         "title": "R1 status",
-        "description": "Battery, charging, connectivity, whether it can text, and today's text count.",
+        "description": "Battery, charging, connectivity, whether it can text, today's text count, and the name the R1 shows for you.",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
 ]
@@ -100,6 +100,12 @@ TOOLS.extend([
      "inputSchema": {"type": "object", "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 80},
                                                      "number": {"type": "string"}},
                      "required": ["name", "number"], "additionalProperties": False}},
+    {"name": "set_name", "title": "Tell the R1 your name",
+     "description": "Set the name the R1 shows for you in chats, hints and notes: the name the user calls you. Works only while "
+                    "the R1 has no name for you (r1_status: name_settable), normally once during robotOS setup; after that only "
+                    "the user can change it on the R1. Use it only when asked to.",
+     "inputSchema": {"type": "object", "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 24}},
+                     "required": ["name"], "additionalProperties": False}},
     {"name": "request_status", "title": "Recover a device action result",
      "description": "Read a persisted receipt using its request_id. Receipts last at least seven days. Unknown is not proof an action did not run.",
      "inputSchema": {"type": "object", "properties": {"request_id": {"type": "string"}},
@@ -107,7 +113,7 @@ TOOLS.extend([
 ])
 
 MUTATIONS = {"send_sms": "/v1/sms", "speak": "/v1/speak", "show": "/v1/show",
-             "set_volume": "/v1/volume", "save_recipient": "/v1/recipients"}
+             "set_volume": "/v1/volume", "save_recipient": "/v1/recipients", "set_name": "/v1/name"}
 for tool in TOOLS:
     if tool["name"] in MUTATIONS:
         tool["inputSchema"]["properties"]["request_id"] = {
@@ -193,6 +199,8 @@ def run_tool(r1, name, arguments):
             return "text must be 1–2000 characters. No action was started.", True, None
         if name == "set_volume" and (isinstance(args["level"], bool) or not isinstance(args["level"], (float, int)) or not 0 <= args["level"] <= 1):
             return "level must be between 0 and 1. No action was started.", True, None
+        if name == "set_name" and (not isinstance(args["name"], str) or not 1 <= len(args["name"].strip()) <= 24):
+            return "name must be 1–24 characters. Nothing was changed.", True, None
         status, payload = r1.call("POST", MUTATIONS[name], payload)
     elif name == "request_status":
         status, payload = r1.call("GET", "/v1/requests/" + urllib.parse.quote(str(args["request_id"]), safe=""))

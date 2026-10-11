@@ -29,16 +29,18 @@ data class HermesRun(
 ) {
     val terminal get() = status in HermesRunStatus.TERMINAL
     val active get() = !terminal
-    val label get() = when (status) {
-        "submitting" -> "Sending to Hermes"
+
+    /** What the task is doing, in words that use the agent's [name]. */
+    fun label(name: String = dev.r1ptt.data.Agent.DEFAULT_NAME) = when (status) {
+        "submitting" -> "Sending to $name"
         "submission_unknown" -> "Submission status unknown"
         "queued", "started" -> "Queued"
-        "running" -> activity.ifBlank { "Hermes is working" }
+        "running" -> activity.ifBlank { "$name is working" }
         "waiting_for_approval" -> "Your decision is needed"
-        "stopping" -> "Stopping Hermes"
+        "stopping" -> "Stopping $name"
         "completed" -> "Complete"
         "cancelled" -> "Stopped"
-        "interrupted" -> "Hermes restarted"
+        "interrupted" -> "$name restarted"
         "failed" -> "Task failed"
         else -> "Status unavailable"
     }

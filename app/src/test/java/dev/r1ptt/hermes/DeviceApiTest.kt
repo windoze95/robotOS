@@ -58,6 +58,47 @@ class DeviceApiTest {
         SmsStore(app).use { it.addRecipient("Sam", "+15551234567") }
     }
 
+    /** Saves stay in memory: Robolectric has no Android Keystore. Install after [configure] so it starts from that state. */
+    private fun memoryStore() {
+        val memory = object : dev.r1ptt.data.ConfigBlobStorage {
+            var blob: String? = null
+            override fun read() = blob
+            override fun write(blob: String) { this.blob = blob }
+        }
+        val plain = object : dev.r1ptt.data.ConfigCipher {
+            override fun seal(plain: String, allowKeyCreation: Boolean) = plain
+            override fun open(blob: String) = blob
+        }
+        val codec = object : dev.r1ptt.data.ConfigCodec<Config> {
+            override fun encode(value: Config) = dev.r1ptt.data.ConfigJson.toJson(value).toString()
+            override fun decode(plain: String) = dev.r1ptt.data.ConfigJson.merge(Config(), JSONObject(plain))
+        }
+        app.store.javaClass.getDeclaredField("persistence").apply { isAccessible = true }
+            .set(app.store, dev.r1ptt.data.EncryptedConfigPersistence(app.store.value, memory, plain, codec))
+    }
+
+    @Test fun hermesNamesItselfOnceAndThenOnlyTheUserCanRenameIt() {
+        memoryStore()
+        assertTrue(get("/v1/status").second.getBoolean("name_settable"))
+        assertEquals(400, post("/v1/name", JSONObject().put("name", "<b>Robot</b>")).first)
+        assertEquals("", app.store.value.agent.name)
+        val request = JSONObject().put("name", "  Robot ").put("request_id", "name-request-0001")
+        assertEquals("Robot", post("/v1/name", request).second.getString("name"))
+        assertEquals("Robot", app.store.value.agent.name)
+        val status = get("/v1/status").second
+        assertEquals("Robot", status.getString("name"))
+        assertFalse(status.getBoolean("name_settable"))
+        // The same request recovers its receipt; a new one cannot rename.
+        assertEquals(200, post("/v1/name", request).first)
+        assertEquals(403, post("/v1/name", JSONObject().put("name", "Jarvis")).first)
+        assertEquals(401, post("/v1/name", JSONObject().put("name", "Jarvis"), auth = "e".repeat(40)).first)
+        assertEquals("Robot", app.store.value.agent.name)
+        // Clearing the name on the R1 lets Hermes name itself again.
+        app.store.update { it.copy(agent = it.agent.copy(name = "")) }
+        assertEquals(200, post("/v1/name", JSONObject().put("name", "Jarvis")).first)
+        assertEquals("Jarvis", app.store.value.agent.displayName)
+    }
+
     @Suppress("UNCHECKED_CAST") private fun configure(update: (Config) -> Config) {
         val state = app.store.javaClass.getDeclaredField("state").apply { isAccessible = true }.get(app.store) as MutableStateFlow<Config>
         state.value = update(state.value)

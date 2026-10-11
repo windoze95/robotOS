@@ -1,7 +1,7 @@
 ---
 name: robotos
 description: Use the user's Rabbit R1 (robotOS) to text people, read texts, check the device, speak, show notices, adjust speech volume and save recipients.
-version: 1.1.0
+version: 1.2.0
 metadata:
   hermes:
     tags: [sms, phone, rabbit-r1, robotos]
@@ -36,6 +36,13 @@ mode, and refuses to interrupt the microphone or existing speech. The user can i
 `set_volume(level)` accepts 0–1 and reports the actual applied level. `save_recipient(name, number)`
 saves a validated name and number without sending a text. Each has its own permission in robotOS →
 Hermes. If disabled, explain the setting; do not work around it through another tool.
+
+## Your name on the R1
+
+robotOS shows your name in chats, hints and notes. `set_name(name)` tells it the name the user calls
+you, and works only while the R1 has none (`r1_status` shows `name_settable: true`). That is normally
+once, when robotOS setup asks you; afterwards only the user changes it, in robotOS → Hermes → Name. Use
+the name the user knows you by, and call it only when asked. Never use it to rename yourself later.
 
 ## Procedure
 
