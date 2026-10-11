@@ -23,7 +23,19 @@ class ConfigReceiver : BroadcastReceiver() {
         if (app.workspace.blocked) { resultData = "error: Device access is restricted"; return }
         val cfg = try {
             val b64 = requireNotNull(intent.getStringExtra("json_b64")) { "missing json_b64 extra" }
-            app.store.import(String(Base64.decode(b64, Base64.DEFAULT), Charsets.UTF_8))
+            app.store.import(String(Base64.decode(b64, Base64.DEFAULT), Charsets.UTF_8)) { patch ->
+                // Recheck inside the config write lock. Enrollment clears host credentials and
+                // rotates this R1's private token; an old setup file must not put them back.
+                if (app.workspace.blocked) throw ImportRestricted("Device access is restricted")
+                val directAgent = patch.optJSONObject("agent")?.keys()?.asSequence()?.any { it != "name" } == true
+                val deviceAccess = (patch.optJSONObject("hermes")?.length() ?: 0) > 0
+                if (app.workspace.identity.paired && (directAgent || deviceAccess)) {
+                    throw ImportRestricted("This R1 is paired. Manage its connection in Host & devices and device permissions in Hermes on the R1; nothing was saved")
+                }
+            }
+        } catch (e: ImportRestricted) {
+            resultData = "error: ${e.message}" // fixed guidance only; never supplied settings
+            return
         } catch (e: ConfigPersistenceException) {
             resultData = "error: ${e.message}" // fixed recovery guidance, never the crypto cause
             return
@@ -41,4 +53,6 @@ class ConfigReceiver : BroadcastReceiver() {
     companion object {
         const val ACTION = "dev.r1ptt.CONFIG"
     }
+
+    private class ImportRestricted(message: String) : IllegalArgumentException(message)
 }

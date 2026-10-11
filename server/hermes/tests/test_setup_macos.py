@@ -67,7 +67,7 @@ class SetupMacosTest(unittest.TestCase):
     def test_bad_arguments_stop_before_changing_anything(self):
         for argv in (["--r1", "100.1.1.1; rm -rf /"], ["--r1", "100.1.1.1", "--owner", "405-555-0123"]):
             with self.assertRaises(SystemExit):
-                setup.main(argv)
+                setup.main(["--direct", *argv])
 
 
 if __name__ == "__main__":

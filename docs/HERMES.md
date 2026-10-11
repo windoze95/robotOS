@@ -1,180 +1,114 @@
-# Hermes remote
+# Hermes integration
 
-robotOS is a remote for your Hermes agent. Hermes is the agent and the R1's only backend; the R1
-only relays and acts:
+Hermes executes requests. The robotOS hub owns shared notes, prompt revisions, conversations,
+run results and device policy. The R1 uses its own revocable workspace credential; enrollment
+never gives it the host's Hermes API key or owner password.
 
-- **Push-to-talk:** hold the button and talk. robotOS transcribes the speech (OpenAI live
-  transcription), sends the text to Hermes unchanged, and speaks Hermes's reply. The R1 never
-  interprets texting requests itself; it isn't an agent.
-- **Hermes acts on the R1:** Hermes's `robotos` MCP server gives it `send_sms`, `sms_status`,
-  `recent_texts`, `list_recipients` and `r1_status`, plus separately permitted `speak`, `show`,
-  `set_volume` and `save_recipient` controls. "Text Sam I'm running late" is Hermes calling
-  `mcp__robotos__send_sms`, which the R1 carries out with its own SIM and number.
-- **Its name:** robotOS shows the name you call your agent in chats, hints and notes (Settings →
-  Hermes → Name; empty shows "Hermes"). While the name is empty, Hermes may set it once with
-  `set_name`; setup asks it to (below). After that only you can change it.
-- **Texting Hermes:** texts from your own number to the R1 go to Hermes (session `robotos-sms`), and
-  Hermes's reply is texted back. Texts from anyone else stay in Messages.
-- **Reachability:** external power skips the Wi-Fi/airplane idle cut. **Stay reachable** does the
-  same on battery; otherwise the saved pocket-mode delay applies, three minutes by default.
-  Cellular service still requires its own setting and a SIM. Connectivity and Tailscale must be
-  available. Power never switches the passthrough on or off.
-
-**Settings → Hermes** on the R1 (also Messages → Options → Hermes) shows whether Hermes can reach the
-R1, when it last did, how many texts it sent today and what happened to your last text. It turns
-Hermes's access and the passthrough on or off and sets your number and the daily text limit. The
-device token and Hermes's address are provisioned from a computer (below).
-
-```
- PTT ──► R1: transcribe ──► https://HOST.TAILNET.ts.net/v1/runs ──► Hermes
-                                   (Tailscale Serve → 127.0.0.1:8642)                       │
- R1 ◄── device API :8765 ◄── tailscaled HTTP proxy 127.0.0.1:1056 ◄── robotos MCP (stdio) ◄─┘
+```text
+R1 / web console ──HTTPS──> robotOS hub ──authenticated API──> Hermes
+R1 <── device queue/receipts ── robotOS hub <── scoped MCP ──── Hermes
 ```
 
-Older hosts use `/v1/chat/completions`. Capability discovery selects that compatibility path
-before submission; failed authentication does not select legacy mode.
-
-## Task controls
-
-**Hermes → Check connection** checks the configured host. Supported hosts expose progress,
-approvals, cancellation and model options through the Runs API. Proxy URL prefixes and configured
-credentials are retained for each request. **Choose model** affects future R1 requests and leaves
-the host's global configuration alone.
-
-Requests are recorded locally before submission. Reconnection follows the same task and filters
-replayed events. After restart, final output is saved once to the original chat. It is not spoken
-again automatically. **Check submission** reuses the original request identity only when the
-current host advertises durable idempotency and the request remains inside its retention window.
-An unknown or expired result must be checked on the host before trying another request.
-
-**Stop speech** silences the R1. **Stop task** requests remote cancellation and shows **Stopping**
-until Hermes confirms it. **Review request → Allow once / Deny** applies only to the displayed
-connection, run and approval identity; expired approvals are refreshed. The physical button cannot
-approve an action, and a review blocks gestures from silently cancelling or replacing the task.
-
-**Archive task record** is available after local execution has stopped. Check Hermes on the host
-before confirming it. Archiving clears the R1's active record and keeps a local receipt; it does
-not stop remote work, respond to an approval or resend anything. The archive retains 20 records.
-See [DAILY_DRIVER.md](DAILY_DRIVER.md) for navigation and controls.
-
-## Pieces
-
-| Where | What |
-|---|---|
-| R1 | `HermesLink` config (`hermes.*`): device API on port 8765, token, passthrough owner. |
-| R1 | `DeviceApi`: JSON over HTTP; serves only Tailscale (100.64.0.0/10, fd7a:115c:a1e0::/48) and loopback peers presenting the token. |
-| R1 | `HermesTexts`: owner texts → Hermes → reply text. Retries before submission or confirmed SMS rejection use a 30-minute window. An ambiguous submission or SMS handoff is never automatically repeated. |
-| Hermes host | Default profile gateway (`hermes gateway install`) with the API server on 127.0.0.1:8642. |
-| Hermes host | `server/robotos_mcp`: stdio MCP server (standard library only) that calls the R1 through the userspace tailscaled's outbound HTTP proxy. |
-| Hermes host | `server/hermes/skills/robotos/SKILL.md`: when and how Hermes uses the R1. |
-
-Device API endpoints all require `Authorization: Bearer <token>`:
-
-| Method and path | Input or result |
-|---|---|
-| `GET /v1/status` | Device state, permissions, shared SMS count and receipt retention. |
-| `POST /v1/sms` | `to`, `body`; sends one SMS attempt. |
-| `GET /v1/sms/<id>` | Android's status for that attempt. |
-| `GET /v1/texts[?with=&limit=]` | Local conversations or messages. |
-| `GET /v1/recipients` | Saved names and numbers. |
-| `POST /v1/speak` | `text`, up to 2000 characters; interruptible speech. |
-| `POST /v1/show` | `text`, up to 2000 characters; a dismissible Home notice without waking the display. |
-| `POST /v1/volume` | `level` from 0 to 1; returns the applied speech volume. |
-| `POST /v1/recipients` | `name` and `number`; validates and saves a recipient. |
-| `POST /v1/name` | `name`, 1–24 letters or digits with spaces, apostrophes, hyphens or periods. Accepted only while the R1 has no name (`status.name_settable`); otherwise HTTP 403. |
-| `GET /v1/requests/<request_id>` | Recovers the original device-action receipt (`request_status` in MCP). |
-
-`to` is a phone number (spoken digits are fine) or an exact saved recipient name; ten-digit numbers
-get `+1` on a US SIM. SMS tool sends and owner-relay replies share `hermes.dailySendLimit`
-(default 100, zero means unlimited). Queued owner texts retain their original owner and connection;
-permission and identity changes are checked before forwarding and before SMS delivery.
-
-The four added controls require `hermes.allowSpeak`, `allowShow`, `allowVolume` and
-`allowSaveRecipient` respectively. Each defaults off and also requires `hermes.deviceApi`.
-Existing enabled SMS access survives migration. Speech obeys Quiet mode and rejects microphone
-or playback conflicts. Home retains at most 20 notices.
-
-POST bodies accept `request_id` (16–128 letters, digits, hyphens or underscores); MCP supplies one
-when omitted. Receipts are persisted before execution and retained for at least seven days.
-There are 512 slots; a full store rejects a new action instead of evicting an unexpired receipt.
-Malformed receipts block new work and remain available for recovery.
-
-Keep the same ID and exact payload when recovering an action. An interrupted response or HTTP 202
-with `status: unknown` may mean the action ran. Query `request_status`, or `sms_status` when an SMS
-ID is available; do not start a replacement action with a new ID. Exact retries require
-`r1_status.request_receipt_retention_seconds` support and must be inside that window. Older
-robotOS versions cannot guarantee this. A missing or expired receipt is not proof nothing happened.
+Remote server connections use HTTPS. When both services run natively on the same machine,
+Hermes's authenticated API and the hub's MCP endpoint can use loopback. The MCP process runs
+beside Hermes; R1 devices do not need inbound network access for queued hub commands.
 
 ## Setup
 
-You need:
+Use the complete Docker Compose stack in [DEPLOYMENT.md](DEPLOYMENT.md) for a new installation.
+It runs the hub and Hermes with separate persistent volumes and scoped credentials. Configure
+Hermes's model/provider, expose the required HTTPS routes, then enroll each R1 from the console.
+[HUB.md](HUB.md) covers enrollment, the Prompt Builder and recovery policy.
 
-- the R1 running robotOS (docs/INSTALL.md), on USB, with the **Tailscale** app signed in to your
-  tailnet and its VPN allowed;
-- a Mac that runs **Hermes Agent**, reachable over SSH, with Homebrew's `tailscale`
-  (`brew install tailscale`; it runs as its own private node and doesn't touch the Mac's networking);
-- HTTPS certificates enabled for your tailnet (Tailscale admin console → DNS → HTTPS). If they
-  aren't, the script prints the link to turn them on.
-
-Then, from this repository on the Mac the R1 is plugged into:
+If Hermes is already installed natively on macOS or Linux, the native alternative is:
 
 ```sh
-tools/hermes-setup.sh --host you@hermes-host --owner +1XXXXXXXXXX
+tools/hub-setup.sh --public-origin https://YOUR-HOST.YOUR-TAILNET.ts.net:9443
 ```
 
-`--owner` is your own phone number: its texts to the R1 go to Hermes. Leave it out to set it later
-on the R1 (Settings → Hermes). The first run prints a Tailscale link to approve the Hermes host as a
-new node. Re-running is safe: existing keys are kept, so the R1 keeps working.
+That command installs the hub, configures the authenticated loopback Hermes API and scoped MCP
+adapter, starts both services and checks their readiness. Existing credentials, model/provider
+settings, other MCP entries and workspace data are retained. HTTPS proxy routes and device
+permissions remain explicit setup steps. `--register-hermes` is a compatibility alias for this
+default native behavior. Use `--hub-only` for a separate Hermes machine and `--mcp-only` on that
+Hermes machine; see [deployment architectures](DEPLOYMENT.md).
 
-Last, while the R1 has no name for your agent, the script asks Hermes once (in its own
-`robotos-setup` session) to tell the R1 the name you call it, with `set_name`. If the R1 already has
-a name, Hermes isn't asked. `setup_macos.py --r1 <R1 tailnet IP> --introduce` repeats just this step.
+The optional direct-to-Hermes setup requires an explicit `--direct` flag and an unpaired R1.
+Its configuration, task controls and direct Device API are documented in
+[HERMES_DIRECT.md](HERMES_DIRECT.md). It does not provide shared state or hub recovery protections.
 
-### What it changes on the Hermes host
+## Using a paired R1
 
-| Where | Change |
-|---|---|
-| `~/Library/Application Support/robotOS/mcp/` | The `robotos` MCP server (standard library Python). |
-| `~/.hermes/skills/robotos/SKILL.md` | The skill. |
-| `~/.hermes/.env` (0600) | `API_SERVER_ENABLED=true`, `API_SERVER_HOST=127.0.0.1`, `API_SERVER_PORT=8642`, and generated `API_SERVER_KEY` and `ROBOTOS_R1_TOKEN`. Other lines are untouched. |
-| `~/.hermes/config.yaml` | An `mcp_servers.robotos` entry; its token is a `${ROBOTOS_R1_TOKEN}` reference, not the value. Hermes may re-indent a few lists when it saves. |
-| `~/Library/LaunchAgents/ai.robotos.tailscale.plist` | A private userspace Tailscale node (state under `…/robotOS/tailscale/`), with a localhost-only proxy the MCP server uses to reach the R1. |
-| Tailscale Serve | `https://<that node>.<tailnet>.ts.net` → `http://127.0.0.1:8642`, tailnet only. |
-| `~/Library/LaunchAgents/ai.hermes.gateway.plist` | `hermes gateway install`: the gateway runs at login (restarted if it was already installed). |
-| `~/Library/Application Support/robotOS/r1-hermes.json` (0600) | The R1's settings, including the key and token. The Mac script reads it to configure the R1. |
+- **Push-to-talk:** after recovery verification succeeds, hold the button and talk. The R1
+  transcribes speech, submits the text through the hub and speaks the completed reply. Dictation
+  with the keyboard open inserts text without sending it.
+- **Hermes → Workspace runs** opens host-owned tasks, results and available approval/cancel
+  controls. **Host & devices** opens pairing and local recovery settings. Models and server
+  credentials are managed on the host; paired devices do not show the legacy model picker or
+  direct connection form.
+- **Chats** shows shared conversation results. Existing local conversations stay saved separately.
+  An unsent draft and reading position remain local; use a saved prompt for an acknowledged
+  handoff between devices.
+- **Hermes device permissions** control access to the R1, speech, notices, volume, saved
+  recipients and SMS. Pairing preserves existing permissions and never silently enables them.
+- **Texting Hermes:** when owner passthrough is enabled locally, texts from the configured owner
+  go through the hub and completed replies return by SMS. Other senders remain in Messages.
+  Queued owner texts retain their original owner/connection and expire after 30 minutes; an
+  ambiguous submission or SMS handoff is never automatically repeated.
+- **Agent name:** set it under **Hermes → Name**. An empty name displays “Hermes”; Hermes may set
+  it once with `set_name`. Default shared-stack installation does not submit an agent request.
 
-To undo: remove the `mcp_servers.robotos` entry and the `API_SERVER_*`/`ROBOTOS_R1_TOKEN` lines,
-`launchctl bootout gui/$(id -u)/ai.robotos.tailscale` and delete its plist and
-`~/Library/Application Support/robotOS`, and `hermes gateway uninstall` if you don't otherwise use it.
-On the R1, turn off Hermes's access and passthrough (Settings → Hermes).
+External power and **Stay reachable** affect configured radio availability, independently of
+SMS and device permissions. A sleeping R1 with radios off cannot receive new policy yet. On
+wake, foreground or reconnect, robotOS verifies recovery status before revealing saved content
+or resuming ordinary actions. An unreachable hub leaves it restricted until verification succeeds.
 
-### By hand
+## Runs and approvals
 
-`server/hermes/setup_macos.py --r1 <R1 tailnet IP> [--owner …]` is the host half, runnable from any
-copy of `server/`. It prints where it wrote the R1's settings; push them with
-`adb shell am broadcast -n dev.r1ptt/.data.ConfigReceiver -a dev.r1ptt.CONFIG --es json_b64 "$(base64 < r1-hermes.json)"`.
-Tests: `python3 -m unittest server.robotos_mcp.tests.test_robotos_mcp server.hermes.tests.test_setup_macos`.
+The hub reserves a durable request identity before dispatch and stores the result. A dropped
+connection, unknown submission or missing receipt never authorizes a replacement request.
+Check the existing run. Reconciliation may reuse its original identity only while the original
+Hermes service advertises a valid durable deduplication window. Otherwise inspect that original
+service before deciding what happened.
 
-## Checks
+**Stop speech** silences local audio. **Stop** on a workspace run requests remote cancellation;
+the run remains unresolved until Hermes confirms an outcome. Approval choices apply to the
+exact run and approval identity. **Allow once** and **Deny** are explicit on-screen actions;
+the wheel and side button cannot authorize them. A prompt is marked **Ran** only after the hub
+confirms completion and stores the reply.
 
-- The setup script ends by checking both directions. To repeat the Hermes → R1 half by hand:
-  `curl -x http://127.0.0.1:1056 -H "Authorization: Bearer $ROBOTOS_R1_TOKEN" http://<R1 IP>:8765/v1/status`
-- Ask Hermes "what's my R1's battery level?": it should call `mcp__robotos__r1_status`.
-- `adb logcat -s r1ptt` shows content-free events: `device api: …`, `hermes text: …`.
+## Device tools and permissions
 
-Local tests cover mocked host capabilities, request replay, approval identity, cancellation,
-recovery, device permissions, receipt corruption and shared SMS quotas. The CI workflow runs
-Android, Python and Node checks; consult the build's PR for its result. Current-build host,
-physical-control, carrier and reboot/reconnect acceptance remains pending. No installation or
-measurement is established by these tests.
+Hermes uses the `robotos` MCP adapter for device status, SMS and separately permitted `speak`,
+`show`, `set_volume` and `save_recipient` actions. Hub-backed commands target a specific enrolled
+R1 and use durable IDs, expiration and receipts. Native permission checks and the SMS quota
+still apply at final execution. Queued, Received and Unknown do not mean Applied.
 
-## Security notes
+The native device API token remains private to the R1 after pairing. It is rotated during
+pairing without granting permissions. The MCP adapter receives only the scoped hub credential;
+it cannot enroll devices, change lost policy or erase devices. Marking a device lost or revoked
+blocks ordinary command admissions and cancels queued agent actions. Only owner-issued recovery
+commands remain, subject to local permissions. Work already admitted to Hermes may still finish.
 
-- The API key gives the R1 your full Hermes agent, tools included. It lives only in the R1's
-  encrypted config and is used over tailnet-only HTTPS.
-- Hermes can text anyone from your number. `dailySendLimit` bounds a runaway loop; it is not a
-  policy filter.
-- Passthrough trusts the sender number. SMS caller ID can be spoofed, so anyone spoofing your number
-  could talk to your agent. Turn off `hermes.passthrough` if that matters for your Hermes's tools.
-- Incoming texts from other people are never forwarded. When Hermes reads them with
-  `recent_texts`, the skill tells it to treat them as information, not instructions.
+SMS tools and owner-relay replies share `hermes.dailySendLimit` (default 100; zero means unlimited).
+`to` is a phone number or an exact saved recipient name; ten-digit numbers receive `+1` on a US
+SIM. The quota bounds volume, not recipients or message content. Owner passthrough trusts SMS
+sender numbers, which can be spoofed; enable it only with that limitation understood.
+
+Incoming texts from other people are never automatically forwarded. When Hermes reads them
+through a permitted tool, the bundled skill treats their content as information, not instructions.
+Speech obeys Quiet mode and rejects microphone/playback conflicts. Home retains at most 20 notices.
+For the wire contract, see [HUB_PROTOCOL.md](../server/HUB_PROTOCOL.md).
+
+## Checks and evidence
+
+After installation, verify the hub's `/api/v1/ready` endpoint over its final HTTPS origin, enroll
+one R1 and verify that the console shows its current state. Submit one harmless prompt, confirm
+its reply and **Ran** status, then open that same saved result on the R1. Before relying on a
+second R1, repeat enrollment and test saved prompt/note handoff without resubmitting the run.
+
+Automated suites cover capabilities, identity/replay, approvals, cancellation, permissions,
+receipts, quotas and recovery boundaries. One R1 has passed the reversible offline-wake/lost/restore
+sequence described in [HUB.md](HUB.md#validation-boundary). Physical second-device handoff,
+PIN/admin secure locking, acoustic/carrier behavior and matched overnight battery measurements
+remain separate acceptance work. Do not use automated results as evidence of those outcomes.

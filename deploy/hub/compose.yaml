@@ -1,7 +1,7 @@
 name: robotos
 services:
   hub:
-    image: ${ROBOTOS_IMAGE:-robotos-hub:local}
+    image: ${ROBOTOS_IMAGE:-ghcr.io/windoze95/robotos-hub:main}
     build:
       context: ../..
       dockerfile: deploy/hub/Dockerfile

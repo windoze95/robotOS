@@ -16,7 +16,7 @@ Separate permissions allow announcements, Home notices, volume changes and saved
 Plugged in, configured radios stay available. OpenAI is used only for speech. See
 [docs/HERMES.md](docs/HERMES.md).
 
-The optional **shared workspace** adds written notes, voice recordings and a Prompt Builder on
+The default installation includes a **shared workspace** with written notes, voice recordings and a Prompt Builder on
 the R1 and in a self-hosted web console. Combine several notes, add more while editing, preview the
 request, save it for later and track the reply. Two enrolled R1s use the same saved revisions and
 run history. The console also manages device enrollment, settings and permissioned recovery
@@ -57,8 +57,10 @@ compatibility names.
 > [docs/DAILY_DRIVER.md](docs/DAILY_DRIVER.md).
 >
 > Shared workspace and device management have automated persistence, conflict and permission tests.
-> Two-device handoff and physical recovery actions still need R1 acceptance; no remote reset,
-> location fix, secure lock or battery result is implied by those tests.
+> One R1 has also passed a reversible lost-device test: offline wake stayed restricted, reconnect
+> applied the pending policy, and owner restoration required a fresh connection. Two-device handoff,
+> Android secure lock, location, erasure and overnight battery acceptance remain pending. See
+> [docs/HUB.md](docs/HUB.md#validation-boundary) for the exact evidence.
 
 ## What "firmware" means here
 
@@ -96,15 +98,18 @@ explicitly unsupported; incoming MMS notices are retained locally and shown as w
 details exposes native failure codes without retrying a failed or uncertain attempt.
 MMS, RCS, old inbox import, and live carrier acceptance are not included. See [docs/MESSAGES.md](docs/MESSAGES.md).
 
-**Hermes** shows connection checks, saved task status, approvals, model selection, device permissions
-and the shared daily SMS count. **Stop speech** stops audio; **Stop task** requests cancellation
-on a compatible Hermes host. See [docs/DAILY_DRIVER.md](docs/DAILY_DRIVER.md) for controls and recovery.
+**Hermes** shows the paired workspace host, **Host & devices**, **Workspace runs**, local device
+permissions and the shared daily SMS count. The host manages models and credentials. **Stop speech**
+stops audio; run controls request cancellation or handle the exact pending approval. Unpaired legacy
+connections retain their direct task controls. See [docs/HERMES.md](docs/HERMES.md).
 
 **Workspace** holds notes, recordings, saved prompts and host-owned runs. **Workspace settings**
 pairs each R1 separately and exposes local management permissions. Once paired, new PTT and
 owner-SMS conversations use the host's durable run API; shared chats appear in **Chats**. Existing
-local conversations remain available. **Synced** means the host acknowledged the content;
-**Saved on this R1** means another device may not have it yet.
+local conversations remain saved. **Synced** means the host acknowledged the content;
+**Saved on this R1** means another device may not have it yet. Paired devices must verify recovery
+status on boot, wake, foreground and reconnect before showing saved content or accepting actions.
+If the host is unreachable, the device remains restricted until verification succeeds.
 
 ## Battery
 
@@ -141,11 +146,37 @@ the read-only capture and offline analyzer include synthetic fixtures, not hardw
    cp tools/r1ptt.example.json tools/r1ptt.json   # set openaiKey
    tools/smoke-test.sh --play
    ```
+   The example config contains local speech and device preferences only; pairing supplies the
+   workspace identity. Do not add the host's Hermes API key or owner password.
 2. **Follow [docs/INSTALL.md](docs/INSTALL.md):** unlock (Rabbit's developer mode) → stock baseline →
    LineageOS GSI → Magisk → `tools/provision.sh --config tools/r1ptt.json`.
-3. **Connect Hermes:** `tools/hermes-setup.sh --host you@hermes-host` ([docs/HERMES.md](docs/HERMES.md)).
-4. **Optional shared workspace:** install the persistent host service with `tools/hub-setup.sh`,
-   configure its private HTTPS route, and enroll each R1 separately ([docs/HUB.md](docs/HUB.md)).
+3. **Install the complete Docker Compose stack** on an always-available host. From this repository:
+   ```sh
+   python3 deploy/configure.py --directory deploy/hub/private
+   cp deploy/hub/.env.example deploy/hub/.env
+   ```
+   Set the exact HTTPS `ROBOTOS_PUBLIC_ORIGIN` and `HERMES_API_URL` in `.env`. Keep existing `.env`
+   and secret files on upgrades. Then pull the published images and configure Hermes's provider:
+   ```sh
+   cd deploy/hub
+   docker compose -f compose.yaml -f compose.hermes.yaml pull
+   docker compose -f compose.yaml -f compose.hermes.yaml run --rm -it --no-deps hermes setup
+   docker compose -f compose.yaml -f compose.hermes.yaml up -d --no-build
+   ```
+   The default images use the moving `main` development tag; pin both to the same immutable
+   `sha-<full-commit>` tag for production. Speech transcription needs its own configured provider.
+4. **Expose HTTPS and enroll each R1.** Follow the complete
+   [Docker quickstart](docs/DEPLOYMENT.md#primary-setup-docker-compose-with-robotos-and-hermes)
+   for Tailscale or Caddy routes, readiness checks and optional host transcription. Keep existing
+   proxy routes intact. Sign in to the hub console with `private/owner-password`, create one
+   enrollment code per R1, and enter the hub URL and code in **Workspace settings**. Host
+   credentials stay on the host; device permissions remain local.
+
+Docker Compose is the primary community setup. Native macOS/Linux services, k3s and separate
+Hermes/robotOS machines remain supported in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). If Hermes
+is already installed natively, `tools/hub-setup.sh --public-origin https://your-host` installs and
+checks the complete native integration. The old direct-to-Hermes setup is an explicit
+[legacy option](docs/HERMES_DIRECT.md); it does not provide the shared workspace or its recovery gate.
 
 For self-hosted speech instead of OpenAI, see [server/speaches.md](server/speaches.md).
 

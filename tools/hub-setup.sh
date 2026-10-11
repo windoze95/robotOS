@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Install a native hub or (--mcp-only) the adapter on a separate Hermes host.
+# Install the native hub plus its local Hermes connection. --hub-only installs only
+# the hub; --mcp-only installs the adapter on a separate Hermes host.
 # No device changes or public ingress configuration.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

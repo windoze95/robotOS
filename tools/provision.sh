@@ -85,10 +85,8 @@ APP_UID=$(adb shell pm list packages -U "$PKG" | tr -d '\r' | sed -n "s/^package
 [ -n "$APP_UID" ] || die "Couldn't find the app's uid."
 rootsh "magisk --sqlite \"REPLACE INTO policies (uid,policy,until,logging,notification) VALUES($APP_UID,2,0,1,0)\""
 
-say "Making it the home screen and allowing instant screen-off"
+say "Making it the home screen (preserving Android lock and administrator settings)"
 adb shell cmd package set-home-activity "$PKG/.HomeActivity" >/dev/null
-adb shell dpm set-active-admin --user 0 "$PKG/.sys.AdminReceiver" >/dev/null 2>&1 || true
-adb shell locksettings set-disabled true >/dev/null 2>&1 || warn "Lock screen not disabled (is a PIN set?)"
 
 say "Display defaults"
 adb shell settings put system screen_off_timeout 15000
@@ -121,4 +119,4 @@ fi
 
 say "Rebooting to apply the module"
 adb reboot
-say "Done. After it boots: hold the side button and talk."
+say "Done. After it boots, enroll under Host & devices using your workspace console. Paired devices verify access before use."

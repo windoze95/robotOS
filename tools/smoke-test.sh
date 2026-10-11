@@ -3,17 +3,24 @@
 # speech-to-text, a streamed Hermes reply, two-turn memory, and text-to-speech.
 #
 # Usage: tools/smoke-test.sh [config.json] [--play]     (default config: tools/r1ptt.json)
-# Needs: curl, jq; on macOS it records a test question with `say`. Hermes is checked only when
-# `agent.baseUrl` is reachable from this computer (it is often tailnet-only).
+# Needs: curl, jq; on macOS it records a test question with `say`. Direct Hermes checks are legacy
+# and only run with an explicit agent.baseUrl; test paired runs through the workspace console.
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
+CFG="$ROOT/tools/r1ptt.json"
+CONFIG_GIVEN=0
+PLAY=0
+for a in "$@"; do
+  case "$a" in
+    --play) PLAY=1 ;;
+    --help|-h) say "Usage: tools/smoke-test.sh [config.json] [--play]"; exit 0 ;;
+    --*) die "Unknown option: $a" ;;
+    *) [ "$CONFIG_GIVEN" = 0 ] || die "Specify only one config file"; CFG="$a"; CONFIG_GIVEN=1 ;;
+  esac
+done
+[ -f "$CFG" ] || die "No config at $CFG (copy tools/r1ptt.example.json and fill in your keys)."
 need curl
 need jq
-
-CFG=${1:-$ROOT/tools/r1ptt.json}
-PLAY=0
-for a in "$@"; do [ "$a" = --play ] && PLAY=1; done
-[ -f "$CFG" ] || die "No config at $CFG (copy tools/r1ptt.example.json and fill in your keys)."
 mkdir -p "$OUT"
 
 # Merge the example's defaults under the real config, like the app does.
@@ -62,8 +69,8 @@ if [ -n "$AGENT" ] && curl -s -m 5 -o /dev/null "${AGENT%/v1}/health"; then
   hermes "$SID" "What is my name?"
   echo "   (the reply should mention Sam)"
 else
-  if [ -z "$AGENT" ]; then warn "2–3. Skipped Hermes: the config has no agent.baseUrl."
-  else warn "2–3. Skipped Hermes: $AGENT is not reachable from here (tools/hermes-setup.sh checks it from the R1)."; fi
+  if [ -z "$AGENT" ]; then say "2–3. Shared workspace: verify a prompt run through the hub console after enrollment."
+  else warn "2–3. Skipped legacy direct Hermes: $AGENT is not reachable from here (see docs/HERMES_DIRECT.md)."; fi
 fi
 
 TTS_URL=$(cfg .tts.baseUrl)
