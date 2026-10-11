@@ -17,6 +17,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import dev.r1ptt.input.Gestures
+import dev.r1ptt.input.PressRouter
 import dev.r1ptt.input.SideButton
 import dev.r1ptt.power.DeviceSettings
 import kotlinx.coroutines.CoroutineScope
@@ -83,7 +84,7 @@ class PttService : Service() {
             listener = app.turns,
         )
         button = SideButton(deviceName = { app.store.value.buttonDevice }) { down ->
-            if (instance === this) { if (down) gestures.down() else gestures.up() }
+            if (instance === this) routeButton(down)
         }
         button.start()
         registerReceiver(
@@ -103,6 +104,7 @@ class PttService : Service() {
         app.radio.hold("power", (battery?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0)
         scope.launch { app.store.flow.map { it.hermes }.distinctUntilChanged().collect { app.deviceApi.apply(it) } }
         scope.launch { app.store.flow.map { it.quiet }.distinctUntilChanged().collect { if (it) app.turns.stopSpeech() } }
+        app.workspace.start()
         app.hermesTexts.resume()
         app.radio.applyBaseline()
         DeviceSettings.apply(app.store.value)
@@ -113,8 +115,17 @@ class PttService : Service() {
     /** Button edges from the launcher's own key handling; used only while the root reader is down. */
     fun frameworkButton(down: Boolean) {
         if (button.alive) return
-        if (down) gestures.down() else gestures.up()
+        routeButton(down)
     }
+
+    private val pressRouter = PressRouter {
+        val management = (application as App).workspace.management
+        if (management.ringing) {
+            { down -> if (down) management.stopRinging() }
+        } else dev.r1ptt.workspace.WorkspaceActivity.button
+            ?: { down -> if (down) gestures.down() else gestures.up() }
+    }
+    private fun routeButton(down: Boolean) = pressRouter.edge(down)
 
     // Not sticky: Android 14 won't let a microphone service restart from the background. If the
     // process ever dies, the launcher restarts the service the next time it comes to the front.

@@ -69,6 +69,7 @@ class SettingsActivity : DeviceActivity() {
             ui.navTile("Hermes", R.drawable.ic_hermes, "Connection, tasks and device access") { startActivity(Intent(this, dev.r1ptt.hermes.HermesActivity::class.java)) },
             ui.navTile("Connections", R.drawable.ic_server, "Hermes address and credentials") { show(Page.CONNECTION) },
             ui.navTile("Speech services", R.drawable.ic_voice, "Transcription, voice and credentials") { show(Page.SPEECH) },
+            ui.navTile("Host & devices", R.drawable.ic_server, "Shared workspace and recovery permissions") { startActivity(Intent(this, dev.r1ptt.workspace.HubSettingsActivity::class.java)) },
             ui.navTile("System", R.drawable.ic_chip, "Battery, app updates and power") { show(Page.SYSTEM) },
         ), height = 100))
     }

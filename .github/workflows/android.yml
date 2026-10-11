@@ -25,8 +25,11 @@ jobs:
           packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
       - name: Test, build and lint
         run: |
-          python3 -m unittest server.robotos_mcp.tests.test_robotos_mcp server.hermes.tests.test_setup_macos -v
-          node --test tools/acceptance.test.mjs tools/release/*.test.mjs
+          PYTHONPATH=server python3 -m unittest discover -s server/robotos_hub/tests -v
+          PYTHONPATH=server python3 -m unittest discover -s server/robotos_mcp/tests -v
+          PYTHONPATH=server python3 -m unittest discover -s server/hermes/tests -v
+          node --check server/robotos_hub/web/app.js
+          node --test tools/acceptance.test.mjs tools/release/*.test.mjs server/robotos_hub/web/tests/*.test.mjs
           ./gradlew --no-daemon --console=plain :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease :app:lintDebug
           node tools/release/manifest.mjs inspect app/build/outputs/apk/release/app-release.apk
       - name: Test reports (no signing files)

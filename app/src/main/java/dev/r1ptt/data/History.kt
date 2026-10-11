@@ -80,6 +80,17 @@ class History(dir: File) {
     val messages: List<Msg> get() = state.value.messages
     val draft: String get() = state.value.draft
 
+    /** Reconcile the host transcript while preserving this device's unsent draft and scroll. */
+    @Synchronized fun importShared(id: String, title: String, messages: List<Msg>) {
+        require(id.startsWith("shared-"))
+        val old = records[id] ?: Record(id)
+        val next = old.copy(title = title, messages = messages.takeLast(MAX_MESSAGES),
+            updatedAt = messages.maxOfOrNull { it.at } ?: old.updatedAt)
+        if (records[id] == next) return
+        records[id] = next
+        publish(); persist(id)
+    }
+
     @Synchronized fun add(role: String, text: String, conversation: String = convId, deliveryKey: String = "") {
         val old = records[conversation] ?: return
         if (deliveryKey.isNotEmpty() && old.messages.any { it.deliveryKey == deliveryKey }) return

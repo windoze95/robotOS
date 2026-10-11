@@ -176,6 +176,8 @@ class R1:
 
 def run_tool(r1, name, arguments):
     """One tool call -> (text, is_error, structured)."""
+    if hasattr(r1, "run_tool"):
+        return r1.run_tool(name, arguments)
     args = arguments or {}
     if not isinstance(args, dict):
         return "Tool arguments must be an object.", True, None
@@ -238,7 +240,7 @@ def handle(r1, message):
     elif method == "ping":
         result = {}
     elif method == "tools/list":
-        result = {"tools": TOOLS}
+        result = {"tools": getattr(r1, "tools", TOOLS)}
     elif method == "tools/call":
         params = message.get("params") or {}
         text, is_error, structured = run_tool(r1, params.get("name"), params.get("arguments"))
@@ -269,6 +271,15 @@ def serve(r1, stdin=sys.stdin, stdout=sys.stdout):
 
 
 def main():
+    from .hub import from_env
+    try:
+        hub = from_env(TOOLS)
+    except ValueError as error:
+        sys.stderr.write("robotos: %s\n" % error)
+        return 2
+    if hub is not None:
+        serve(hub)
+        return 0
     url, token = os.environ.get("ROBOTOS_R1_URL", ""), os.environ.get("ROBOTOS_R1_TOKEN", "")
     if not url or len(token) < 32:
         sys.stderr.write("robotos: set ROBOTOS_R1_URL and ROBOTOS_R1_TOKEN (32+ characters)\n")

@@ -155,6 +155,30 @@ class ScreensSnapshotTest {
 
     private fun all(view: View): List<View> = listOf(view) + if (view is ViewGroup) (0 until view.childCount).flatMap { all(view.getChildAt(it)) } else emptyList()
 
+    @Test fun workspaceAndBuilderFitTheR1Canvas() {
+        configured()
+        val note = app.workspace.store.capture("Release thoughts", "Check reconnect behavior before the next release.")
+        val workspace = open(dev.r1ptt.workspace.WorkspaceActivity::class.java)
+        try {
+            snap(workspace.get(), "workspace-home")
+            dev.r1ptt.workspace.WorkspaceActivity::class.java.getDeclaredMethod("notes").apply { isAccessible = true }.invoke(workspace.get())
+            snap(workspace.get(), "workspace-notes")
+            val draft = JSONObject().put("id", "preview-prompt").put("title", "Next release")
+                .put("instruction", "Turn these observations into a test plan.").put("revision", 1).put("lease_token", "preview")
+                .put("blocks", org.json.JSONArray().put(dev.r1ptt.workspace.WorkspaceClient.block(note)))
+            dev.r1ptt.workspace.WorkspaceActivity::class.java.getDeclaredMethod("builder", JSONObject::class.java)
+                .apply { isAccessible = true }.invoke(workspace.get(), draft)
+            snap(workspace.get(), "workspace-builder")
+            val controls = all(workspace.get().window.decorView)
+            assertTrue(controls.filterIsInstance<android.widget.EditText>().any { it.text.toString() == "Next release" })
+            controls.filterIsInstance<Button>().first { it.text == "Preview" }.performClick()
+            snap(workspace.get(), "workspace-preview")
+            assertTrue(all(workspace.get().window.decorView).filterIsInstance<TextView>().any { it.text.contains("Check reconnect behavior") })
+        } finally { workspace.pause().stop().destroy() }
+        val host = open(dev.r1ptt.workspace.HubSettingsActivity::class.java)
+        try { snap(host.get(), "workspace-pairing") } finally { host.pause().stop().destroy() }
+    }
+
     /** Public screenshots use only these staged fixtures, never a connected device's data. */
     @Test fun githubGallery() {
         configured()

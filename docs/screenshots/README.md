@@ -18,6 +18,12 @@ examples, not device, speech or carrier acceptance evidence.
 | Messages | [messages.png](messages.png) |
 | Quick controls | [quick-controls.png](quick-controls.png) |
 | Settings | [settings.png](settings.png) |
+| Native Prompt Builder | [workspace-builder.png](workspace-builder.png) |
+| Web Prompt Builder | [workspace-console.jpg](workspace-console.jpg) |
+
+The native workspace image uses `ScreensSnapshotTest` with staged notes. The web console image
+was captured from a disposable local host with fictional notes and synthetic audio. It demonstrates
+the browser UI, not an enrolled physical R1 or a live Hermes execution.
 
 ## Refresh
 

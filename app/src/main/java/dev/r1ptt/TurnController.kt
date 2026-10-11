@@ -19,6 +19,7 @@ import dev.r1ptt.net.Http
 import dev.r1ptt.net.SttClient
 import dev.r1ptt.net.TtsClient
 import dev.r1ptt.net.friendly
+import dev.r1ptt.workspace.SharedChat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -157,7 +158,7 @@ class TurnController(private val app: App) : Gestures.Listener {
     private var destination = CapturedInput<DictationTarget>(null)
     private var transcriptionConfig = app.store.value
 
-    private class Turn(val id: Long, val conversation: String, val input: CapturedInput<DictationTarget>, val sttConfig: Config) {
+    private class Turn(val id: Long, var conversation: String, val input: CapturedInput<DictationTarget>, val sttConfig: Config) {
         var job: Job? = null
         var speaker: Speaker? = null
         val reply = StringBuffer()
@@ -165,6 +166,7 @@ class TurnController(private val app: App) : Gestures.Listener {
         /** Its words go to the chat's draft instead of Hermes. */
         var editing = false
         @Volatile var remoteOperation: String? = null
+        @Volatile var sharedOperation: String? = null
         @Volatile var remoteStopRequested = false
     }
 
@@ -178,8 +180,11 @@ class TurnController(private val app: App) : Gestures.Listener {
         approvalPressBack = approvalReviewBack
         approvalBlockedPress = approvalPressBack != null
         if (approvalBlockedPress) { app.screen.notePress(); return }
-        updateBlockedPress = !app.updates.allowVoice()
-        if (updateBlockedPress) return
+        updateBlockedPress = app.workspace.blocked || !app.updates.allowVoice()
+        if (updateBlockedPress) {
+            if (app.workspace.blocked) { stopActive(); fail("Workspace access is restricted on this R1"); settle() }
+            return
+        }
         pressGeneration++
         app.store.loadError?.let {
             stopActive()
@@ -373,7 +378,7 @@ class TurnController(private val app: App) : Gestures.Listener {
     fun speakText(text: String, permitted: () -> Boolean = { true }): Boolean {
         val cfg = app.store.value
         if (text.isBlank() || text.length > 16_384 || busy || dev.r1ptt.audio.AudioPlayback.active ||
-            cfg.quiet || !permitted() || !app.updates.allowVoice() || app.store.loadError != null) return false
+            cfg.quiet || app.workspace.blocked || !permitted() || !app.updates.allowVoice() || app.store.loadError != null) return false
         destination = CapturedInput(null)
         dictating = false
         app.radio.onActivity()
@@ -391,6 +396,7 @@ class TurnController(private val app: App) : Gestures.Listener {
 
     /** A message typed into the launcher's text field: Hermes + text-to-speech. */
     fun sendText(text: String) {
+        if (app.workspace.blocked) { fail("Workspace access is restricted on this R1"); return }
         if (!app.updates.allowVoice()) return
         app.store.loadError?.let { fail(it); settle(); return }
         pressGeneration++
@@ -429,7 +435,7 @@ class TurnController(private val app: App) : Gestures.Listener {
             } finally {
                 turn.speaker?.stop()
                 // Interrupted mid-reply: keep what arrived so the screen and the context match.
-                if (turn.remoteOperation == null && !turn.replySaved && turn.reply.isNotBlank())
+                if (turn.remoteOperation == null && turn.sharedOperation == null && !turn.replySaved && turn.reply.isNotBlank())
                     app.history.add(Msg.ASSISTANT, turn.reply.toString().trim() + " …", conversation = turn.conversation)
                 if (current === turn) {
                     current = null
@@ -515,6 +521,8 @@ class TurnController(private val app: App) : Gestures.Listener {
     }
 
     private suspend fun ask(turn: Turn, text: String) {
+        check(!app.workspace.blocked) { "Workspace access is restricted on this R1" }
+        if (app.workspace.identity.paired) { askShared(turn, text); return }
         val cfg = app.store.value
         app.history.errors.value?.let { throw IOException(it) }
         // The R1 is never the agent: every turn reaches Hermes as said, and Hermes texts people
@@ -591,6 +599,35 @@ class TurnController(private val app: App) : Gestures.Listener {
         finishSpeech(turn, speaker)
     }
 
+    private suspend fun askShared(turn: Turn, text: String) {
+        app.history.errors.value?.let { throw IOException(it) }
+        val oldConversation = turn.conversation
+        turn.conversation = SharedChat.conversation(app, oldConversation)
+        app.history.saveDraft(text, turn.conversation)
+        if (oldConversation != turn.conversation) app.history.confirmDraft(text, oldConversation)
+        _state.value = TurnState(phase = Phase.THINKING)
+        awaitNetwork()
+        val cfg = app.store.value
+        val identity = app.workspace.identity.value
+        val context = cfg.systemPrompt + deviceContext(cfg) +
+            " This request came from robotOS device_id=${identity.getString("device_id")}. Use that exact device_id for device tools unless the user explicitly chooses another device."
+        val reply = SharedChat.ask(app, turn.conversation, text, context,
+            onAdmitted = { runId ->
+                turn.sharedOperation = runId
+                app.history.confirmDraft(text, turn.conversation)
+                if (turn.remoteStopRequested) scope.launch { runCatching { app.workspace.runAction(runId, "stop") } }
+            },
+            onStatus = { status -> if (current === turn) _state.update { it.copy(note = status) } }).trim()
+        turn.replySaved = true // SharedChat imported the authoritative host result.
+        if (current !== turn || app.workspace.blocked) return
+        if (reply.isEmpty()) { note("No reply"); return }
+        val speech = app.store.value
+        if (speech.quiet || !speech.tts.enabled) { idle(); return }
+        val speaker = Speaker(tts::call, speech.tts.sampleRate).also { turn.speaker = it; it.start() }
+        speaker.say(SpeechText.clean(reply))
+        finishSpeech(turn, speaker)
+    }
+
     private suspend fun finishSpeech(turn: Turn, speaker: Speaker) {
         _state.update { it.copy(phase = Phase.SPEAKING, reply = "") }
         val error = suspendCancellableCoroutine<String?> { cont -> speaker.finish { e -> cont.resume(e) } }
@@ -629,6 +666,9 @@ class TurnController(private val app: App) : Gestures.Listener {
         t?.speaker?.stop()
         t?.remoteOperation?.takeIf { cancelRemote }?.let { operation ->
             app.hermesRuns.state.value.run?.takeIf { it.operationId == operation && it.active }?.let { app.hermesRuns.stop() }
+        }
+        t?.sharedOperation?.takeIf { cancelRemote }?.let { operation ->
+            scope.launch { runCatching { app.workspace.runAction(operation, "stop") } }
         }
         if (t != null) TurnMetrics.event("playback_flushed", t.id)
         t?.job?.cancel()

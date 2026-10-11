@@ -12,6 +12,7 @@ import android.text.style.TypefaceSpan
 import android.view.Gravity
 import android.widget.LinearLayout
 import dev.r1ptt.data.History
+import dev.r1ptt.workspace.SharedChat
 import dev.r1ptt.ui.DeviceActivity
 import dev.r1ptt.ui.Fonts
 import kotlinx.coroutines.MainScope
@@ -33,15 +34,31 @@ class ChatsActivity : DeviceActivity() {
     }
     override fun onResume() {
         super.onResume()
-        observations = MainScope().also { scope -> scope.launch { app.history.flow.collect(::render) } }
+        observations = MainScope().also { scope ->
+            scope.launch { app.history.flow.collect(::render) }
+            scope.launch { if (app.workspace.identity.paired && !app.workspace.blocked) runCatching {
+                app.workspace.sync(); SharedChat.importHistory(app)
+            } }
+            scope.launch { app.workspace.status.collect { if (app.workspace.blocked) render(app.history.flow.value) } }
+        }
     }
     override fun onPause() { observations?.cancel(); observations = null; super.onPause() }
 
     private fun render(snapshot: History.Snapshot) {
         body.removeAllViews()
+        if (app.workspace.blocked) {
+            body.addView(ui.text("Workspace access is restricted on this R1. Check its status in Workspace.", 16f))
+            return
+        }
         body.addView(ui.button("New chat", primary = true) { app.turns.newConversation(); finish() })
-        body.addView(ui.section("On this R1"))
-        snapshot.chats.forEach { chat -> body.addView(row(chat, chat.id == snapshot.convId)) }
+        val shared = snapshot.chats.filter { it.id.startsWith("shared-") }
+        if (shared.isNotEmpty()) {
+            body.addView(ui.section("Shared chats"))
+            shared.forEach { chat -> body.addView(row(chat, chat.id == snapshot.convId)) }
+        }
+        val local = snapshot.chats.filterNot { it.id.startsWith("shared-") }
+        if (local.isNotEmpty()) body.addView(ui.section("On this R1"))
+        local.forEach { chat -> body.addView(row(chat, chat.id == snapshot.convId)) }
     }
 
     /** Title, when it was last used, and the start of its latest message; the current chat is outlined. */
@@ -85,6 +102,13 @@ class ChatsActivity : DeviceActivity() {
     }
 
     private fun actions(chat: History.Conversation) {
+        if (chat.id.startsWith("shared-")) {
+            showDeviceDialog(AlertDialog.Builder(this).setTitle(chat.title)
+                .setMessage("This conversation is synced from the host. Manage its prompt and runs in Workspace.")
+                .setPositiveButton("Workspace") { _, _ -> startActivity(android.content.Intent(this, dev.r1ptt.workspace.WorkspaceActivity::class.java)) }
+                .setNegativeButton("Close", null))
+            return
+        }
         showDeviceDialog(AlertDialog.Builder(this).setTitle(chat.title).setItems(arrayOf("Rename", "Remove from this R1")) { _, which ->
             if (which == 0) {
                 val name = ui.field("Chat name", chat.title).apply { setSelection(text.length) }
