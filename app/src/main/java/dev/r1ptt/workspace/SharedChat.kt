@@ -29,6 +29,7 @@ object SharedChat {
         check(conversation.startsWith("shared-"))
         val hub = app.workspace
         check(!hub.blocked) { "Shared workspace access is restricted" }
+        check(attachment != null || !PromptAttachment.attached(app, conversation)) { "Open this chat and send or edit its attached prompt first" }
         val first = admission.withLock {
             // Persist the identity before any remote write. A lost response cannot turn a retry
             // into another question or run, even after a process restart.

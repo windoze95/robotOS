@@ -240,6 +240,18 @@ class SharedChatTest {
         catch (expected: IllegalStateException) { assertTrue(expected.message!!.contains("Save your edits")) }
         assertTrue(PromptAttachment.attached(app, chat))
     }
+    @Test fun aNormalVoiceOrTextTurnCannotBypassAnUnsentPromptAttachment() = runBlocking {
+        MockWebServer().use { server ->
+            server.start(); val app = configured(server.url("/").toString())
+            val saved = savedAttachment(); app.workspace.store.put("prompts", saved)
+            val chat = PromptAttachment.open(app, saved)
+            try { SharedChat.ask(app, chat, "Voice from another screen", "Device context"); fail("Attachment must stay in control") }
+            catch (expected: IllegalStateException) { assertTrue(expected.message!!.contains("attached prompt first")) }
+            assertEquals(0, server.requestCount)
+            assertTrue(PromptAttachment.attached(app, chat))
+            assertTrue(app.workspace.store.items("shared_chat_links").isEmpty())
+        }
+    }
 
     @Test fun sendingAnAttachmentPreservesExactInputAndProvenanceAfterTheTemplateChanges() {
         MockWebServer().use { server ->

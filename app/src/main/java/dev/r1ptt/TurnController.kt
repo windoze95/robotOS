@@ -604,6 +604,8 @@ class TurnController(private val app: App) : Gestures.Listener {
         app.history.errors.value?.let { throw IOException(it) }
         val oldConversation = turn.conversation
         turn.conversation = SharedChat.conversation(app, oldConversation)
+        if (attachment == null && PromptAttachment.attached(app, turn.conversation))
+            throw IOException("Open this chat and send or edit its attached prompt first")
         if (attachment == null) app.history.saveDraft(text, turn.conversation)
         if (oldConversation != turn.conversation) app.history.confirmDraft(text, oldConversation)
         _state.value = TurnState(phase = Phase.THINKING)
