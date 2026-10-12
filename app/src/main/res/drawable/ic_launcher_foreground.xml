@@ -1,8 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- The robotOS mark (see robot_mark.xml) centered in the adaptive icon's 66dp safe zone. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
-    <group android:translateX="30" android:translateY="30">
-        <path android:fillColor="#FF000000"
-            android:pathData="M24,28a6,6 0,0 0,6 -6V10a6,6 0,0 0,-12 0v12a6,6 0,0 0,6 6zM34,22a10,10 0,0 1,-20 0h-4a14,14 0,0 0,12 13.84V42h4v-6.16A14,14 0,0 0,38 22h-4z" />
+    <group android:translateX="33" android:translateY="30">
+        <path android:fillColor="@color/accent_soft" android:strokeColor="@color/accent" android:strokeWidth="2"
+            android:pathData="M10,1H32A9,9 0,0 1,41 10V38A9,9 0,0 1,32 47H10A9,9 0,0 1,1 38V10A9,9 0,0 1,10 1Z" />
+        <path android:strokeColor="@color/accent" android:strokeWidth="1"
+            android:pathData="M10,8.5H22A2.5,2.5 0,0 1,24.5 11V24A2.5,2.5 0,0 1,22 26.5H10A2.5,2.5 0,0 1,7.5 24V11A2.5,2.5 0,0 1,10 8.5Z" />
+        <path android:strokeColor="@color/accent" android:strokeWidth="2"
+            android:pathData="M25,32A5,5 0,1 1,35 32A5,5 0,1 1,25 32Z" />
     </group>
 </vector>

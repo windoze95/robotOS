@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- robotOS's mark: an R1 with its screen and wheel, drawn exactly as the host console's
+     .robot-mark (server/robotos_hub/web/styles.css). ic_launcher_foreground repeats these paths. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="42dp" android:height="48dp" android:viewportWidth="42" android:viewportHeight="48">
+    <path android:fillColor="@color/accent_soft" android:strokeColor="@color/accent" android:strokeWidth="2"
+        android:pathData="M10,1H32A9,9 0,0 1,41 10V38A9,9 0,0 1,32 47H10A9,9 0,0 1,1 38V10A9,9 0,0 1,10 1Z" />
+    <path android:strokeColor="@color/accent" android:strokeWidth="1"
+        android:pathData="M10,8.5H22A2.5,2.5 0,0 1,24.5 11V24A2.5,2.5 0,0 1,22 26.5H10A2.5,2.5 0,0 1,7.5 24V11A2.5,2.5 0,0 1,10 8.5Z" />
+    <path android:strokeColor="@color/accent" android:strokeWidth="2"
+        android:pathData="M25,32A5,5 0,1 1,35 32A5,5 0,1 1,25 32Z" />
+</vector>

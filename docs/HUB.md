@@ -230,12 +230,13 @@ That window is the deliberate trade: someone who wakes the R1 inside it can see 
 until the check fails or reports it lost. The grace lives in memory only, so a reboot or app
 restart always checks before showing anything.
 
-Outside the grace, and whenever the screen is taken back, the R1 shows the robotOS logo glowing on
-black while it checks. A check that passes fades straight to the screen; the recovery screen
-fades in only if the check takes longer than 3.5 seconds. It stays until a successful check
-verifies access, retrying on its own while it is showing (after 1 second, backing off to every
-30 seconds) and saying whether the R1 has no internet connection or the host did not answer.
-The cache remains saved on disk, and network setup and recovery checks remain available. Older robotOS clients must be updated to use this strict
+Outside the grace, and whenever the screen is taken back, the R1 shows the robotOS mark (the
+console's R1 outline) glowing on black while it checks, retrying on its own (after 1 second,
+backing off to every 30 seconds). The logo stays until a check passes, then fades straight to the
+screen. Swiping it away shows the recovery screen, which says whether the R1 has no internet
+connection or the host did not answer and offers network setup and **Check recovery status**. A
+restricted R1 shows its recovery screen, with the owner's return message, after a few seconds
+without a swipe. The cache remains saved on disk. Older robotOS clients must be updated to use this strict
 verification gate, acknowledge versioned recovery policy and report the new security posture.
 
 Update commands must follow the existing signed-release verifier and Android installer policy.

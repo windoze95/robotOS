@@ -3,6 +3,8 @@ package dev.r1ptt.ui
 import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.ColorFilter
@@ -86,17 +88,26 @@ class LevelBars @JvmOverloads constructor(context: Context, attrs: AttributeSet?
 }
 
 /**
- * robotOS's mark, the app icon's orange disc and mic, centered on black with a slow orange glow.
- * The recovery screen shows it while a check runs. Moves only while it is actually shown.
+ * robotOS's mark (the host console's R1 outline) centered on black, glowing while the R1 checks in
+ * with its host. It stays until the check passes or it is swiped away, which [onSwiped] answers
+ * with the recovery page. Moves only while it is actually shown.
  */
 class LogoGlow(context: Context) : View(context) {
+    /** Called once a swipe (or an accessibility click) has sent the cover away. */
+    var onSwiped: (() -> Unit)? = null
     private val accent = context.getColor(R.color.accent)
-    private val disc = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = accent }
+    private val mark = requireNotNull(context.getDrawable(R.drawable.robot_mark)).mutate()
     private val halo = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val mic = requireNotNull(context.getDrawable(R.drawable.ic_launcher_foreground)).mutate()
-        .apply { setTint(context.getColor(R.color.on_accent)) }
-    private var radius = 0f
+    private val shine = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply { color = accent }
+    private var glow: Bitmap? = null
+    private var glowX = 0f
+    private var glowY = 0f
     private var reach = 0f
+    private val slop = ViewConfiguration.get(context).scaledTouchSlop
+    private var downX = 0f
+    private var downY = 0f
+    private var tracking = false
+    private var dragging = false
     private val animator = ValueAnimator.ofFloat(0f, 1f).apply {
         duration = 2600
         repeatCount = ValueAnimator.INFINITE
@@ -104,17 +115,32 @@ class LogoGlow(context: Context) : View(context) {
         addUpdateListener { invalidate() }
     }
 
-    init { contentDescription = context.getString(R.string.app_name) }
+    init {
+        contentDescription = "robotOS is checking in with your host. Swipe away for recovery options."
+        isClickable = true // touches never reach the hidden screen underneath
+    }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        radius = min(w, h) * .17f
-        reach = radius * 2.6f
+        val markH = (min(w, h) * .42f).toInt().coerceAtLeast(1)
+        val markW = markH * 42 / 48
+        val left = (w - markW) / 2
+        val top = (h - markH) / 2
+        // The glow is the mark's own silhouette, blurred, so the logo itself shines.
+        val pad = markH / 3
+        val source = Bitmap.createBitmap(markW + 2 * pad, markH + 2 * pad, Bitmap.Config.ARGB_8888)
+        mark.setBounds(pad, pad, pad + markW, pad + markH)
+        mark.draw(Canvas(source))
+        val offset = IntArray(2)
+        glow?.recycle()
+        glow = source.extractAlpha(Paint().apply { maskFilter = BlurMaskFilter(markH * .09f, BlurMaskFilter.Blur.NORMAL) }, offset)
+        source.recycle()
+        glowX = (left - pad + offset[0]).toFloat()
+        glowY = (top - pad + offset[1]).toFloat()
+        mark.setBounds(left, top, left + markW, top + markH)
+        reach = markH * 1.35f
         fun tint(alpha: Int) = (accent and 0xFFFFFF) or (alpha shl 24)
-        halo.shader = RadialGradient(w / 2f, h / 2f, reach, intArrayOf(tint(170), tint(60), Color.TRANSPARENT),
-            floatArrayOf(radius / reach, .55f, 1f), Shader.TileMode.CLAMP)
-        // The adaptive icon's 66-unit safe zone fills the disc, as on a launcher.
-        val half = (radius * 108 / 66).toInt()
-        mic.setBounds(w / 2 - half, h / 2 - half, w / 2 + half, h / 2 + half)
+        halo.shader = RadialGradient(w / 2f, h / 2f, reach, intArrayOf(tint(95), tint(30), Color.TRANSPARENT),
+            floatArrayOf(0f, .55f, 1f), Shader.TileMode.CLAMP)
     }
 
     override fun onVisibilityAggregated(isVisible: Boolean) {
@@ -130,14 +156,68 @@ class LogoGlow(context: Context) : View(context) {
         val glow = (sin(2 * PI * (t - .25f)) * .5 + .5).toFloat()
         val cx = width / 2f
         val cy = height / 2f
-        halo.alpha = (95 + 160 * glow).toInt()
-        val scale = .84f + .2f * glow
+        halo.alpha = (70 + 185 * glow).toInt()
+        val scale = .88f + .16f * glow
         canvas.save()
         canvas.scale(scale, scale, cx, cy)
         canvas.drawCircle(cx, cy, reach, halo)
         canvas.restore()
-        canvas.drawCircle(cx, cy, radius, disc)
-        mic.draw(canvas)
+        shine.alpha = (110 + 145 * glow).toInt()
+        this.glow?.let { canvas.drawBitmap(it, glowX, glowY, shine) }
+        mark.draw(canvas)
+    }
+
+    /**
+     * Follows the finger; far enough and it leaves the way it was swiped, else it settles back. A
+     * tap does nothing (only a deliberate swipe leaves); accessibility uses [performClick].
+     */
+    @SuppressLint("ClickableViewAccessibility")
+    override fun onTouchEvent(e: MotionEvent): Boolean {
+        val dx = e.rawX - downX
+        val dy = e.rawY - downY
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                downX = e.rawX
+                downY = e.rawY
+                tracking = true
+                dragging = false
+                animate().cancel()
+            }
+            MotionEvent.ACTION_MOVE -> if (tracking) {
+                if (!dragging && hypot(dx, dy) > slop) dragging = true
+                if (dragging) {
+                    translationX = dx
+                    translationY = dy
+                    alpha = 1f - .5f * min(hypot(dx, dy) / throwDistance(), 1f)
+                }
+            }
+            MotionEvent.ACTION_UP -> if (tracking) {
+                tracking = false
+                if (hypot(dx, dy) >= throwDistance()) throwAway(dx, dy)
+                else animate().translationX(0f).translationY(0f).alpha(1f).setDuration(160).start()
+            }
+            MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_CANCEL -> if (tracking) {
+                tracking = false
+                animate().translationX(0f).translationY(0f).alpha(1f).setDuration(160).start()
+            }
+        }
+        return true
+    }
+
+    /** TalkBack's double tap stands in for the swipe. */
+    override fun performClick(): Boolean {
+        super.performClick()
+        onSwiped?.invoke()
+        return true
+    }
+
+    /** How far a swipe must go: about a third of the screen. */
+    private fun throwDistance() = max(min(width, height) * .3f, slop * 4f)
+
+    private fun throwAway(dx: Float, dy: Float) {
+        val far = hypot(width.toFloat(), height.toFloat()) / hypot(dx, dy)
+        animate().translationX(dx * far).translationY(dy * far).alpha(0f).setDuration(200)
+            .withEndAction { onSwiped?.invoke() }.start()
     }
 }
 
