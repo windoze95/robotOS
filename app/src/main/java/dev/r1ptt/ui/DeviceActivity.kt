@@ -35,6 +35,7 @@ open class DeviceActivity : Activity() {
     private var recoveryOverlay: View? = null
     private var recoveryLabel = ""
     private val deviceDialogs = mutableListOf<AlertDialog>()
+    internal val hasOpenDialog: Boolean get() = deviceDialogs.any { it.isShowing }
     private val recoveryApp get() = application as? dev.r1ptt.App
     private fun recoveryBlocksScreen() = recoveryApp?.workspace?.let { hub ->
         hub.blocked && !(this is dev.r1ptt.workspace.HubSettingsActivity && hub.canReenroll)
@@ -275,6 +276,8 @@ open class DeviceActivity : Activity() {
     companion object {
         private var startedActivities = 0
         private val activities = java.util.Collections.newSetFromMap(java.util.WeakHashMap<DeviceActivity, Boolean>())
+        /** Main-thread navigation may only originate from the currently resumed robotOS screen. */
+        internal fun foregroundActivity(): DeviceActivity? = activities.firstOrNull { it.resumedNow && !it.isFinishing && !it.isDestroyed }
         fun refreshRecovery(app: dev.r1ptt.App) {
             val update = {
                 if (app.workspace.blocked) {

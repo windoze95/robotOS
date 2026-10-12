@@ -862,13 +862,20 @@ class Store:
                 return self.command(self._row(db, 'commands', action_id))
             command_id, device_id = identifier(body.get('id')), identifier(body.get('device_id'))
             tool = body.get('tool')
-            allowed = {'send_sms', 'sms_status', 'recent_texts', 'list_recipients', 'r1_status', 'speak', 'show', 'set_volume', 'save_recipient', 'set_name', 'request_status'}
+            allowed = {'send_sms', 'sms_status', 'recent_texts', 'list_recipients', 'r1_status', 'speak', 'show', 'set_volume', 'save_recipient', 'set_name', 'request_status', 'open_app'}
             if tool not in allowed:
                 raise HubError(403, 'tool_not_allowed', 'Tool is not allowed through the device bridge')
             arguments = body.get('arguments', {})
             if not isinstance(arguments, dict) or len(canonical(arguments)) > 64000:
                 raise HubError(400, 'invalid_arguments', 'Invalid device tool arguments')
-            if tool in {'send_sms', 'speak', 'show', 'set_volume', 'save_recipient', 'set_name'} and arguments.get('request_id') != command_id:
+            if tool == 'open_app':
+                if arguments.get('app') not in ('home', 'workspace', 'notes', 'prompt_builder', 'chats', 'messages', 'hermes', 'settings', 'quick_controls', 'updates', 'host_devices'):
+                    raise HubError(400, 'invalid_arguments', 'Choose a supported robotOS app')
+                if 'item_id' in arguments:
+                    if arguments['app'] not in ('notes', 'prompt_builder'):
+                        raise HubError(400, 'invalid_arguments', 'Only notes and prompt_builder accept item_id')
+                    identifier(arguments['item_id'])
+            if tool in {'send_sms', 'speak', 'show', 'set_volume', 'save_recipient', 'set_name', 'open_app'} and arguments.get('request_id') != command_id:
                 raise HubError(400, 'request_identity_required', 'Mutating tools must use the durable command ID as request_id')
             row = self._row(db, 'devices', device_id)
             if row['lost'] or row['revoked']:

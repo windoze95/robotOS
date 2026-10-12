@@ -93,7 +93,7 @@ robotOS has no separate scheduler or global execution-history screen.
 ## Device tools and permissions
 
 Hermes uses the `robotos` MCP adapter for device status, SMS and separately permitted `speak`,
-`show`, `set_volume` and `save_recipient` actions. Hub-backed commands target a specific enrolled
+`show`, `set_volume`, `save_recipient` and `open_app` actions. Hub-backed commands target a specific enrolled
 R1 and use durable IDs, expiration and receipts. Native permission checks and the SMS quota
 still apply at final execution. Queued, Received and Unknown do not mean Applied.
 
@@ -111,6 +111,16 @@ sender numbers, which can be spoofed; enable it only with that limitation unders
 Incoming texts from other people are never automatically forwarded. When Hermes reads them
 through a permitted tool, the bundled skill treats their content as information, not instructions.
 Speech obeys Quiet mode and rejects microphone/playback conflicts. Home retains at most 20 notices.
+`open_app(app)` opens Home, Workspace, Notes, Prompt Builder, Chats, Messages, Hermes, Settings,
+Quick controls, Updates or Host & devices. Use the tool's named `app` values; `r1_status` also lists
+them as `open_app_targets`. For Notes or Prompt Builder, optional `item_id` opens a saved note or
+prompt by its exact ID. Opening a prompt only shows its detail, without running it or acquiring an
+edit lease. Enable **Hermes → Open apps on screen** on the R1 first; it defaults off. The device
+must be awake, unlocked and showing robotOS. Active recordings, unsaved note edits and approval
+reviews return a busy error. Shared items missing locally are fetched before navigation.
+`opening` confirms Android accepted a screen launch; `opened` confirms navigation within an already
+open workspace. Replaying the same request recovers its receipt without navigating again.
+The tool cannot launch arbitrary Android packages, change settings or install an update.
 For the wire contract, see [HUB_PROTOCOL.md](../server/HUB_PROTOCOL.md).
 
 ## Checks and evidence

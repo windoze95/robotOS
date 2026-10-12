@@ -140,6 +140,9 @@ class Hub:
         if (not isinstance(args, dict) or set(args) - set(shape["properties"])
                 or any(k not in args for k in shape.get("required", []))):
             return "Invalid or missing arguments. No action was started.", True, None
+        from . import MUTATIONS, valid_app_target
+        if name == "open_app" and not valid_app_target(args):
+            return "Choose a supported robotOS app; item_id is only for an exact saved note or prompt. No action was started.", True, None
         ident = args.get("id")
         identity = None
         if name in self.device_tools:
@@ -153,7 +156,7 @@ class Hub:
                     return "Choose an exact device_id from list_devices. No action was started.", True, devices
                 device = available[0]["id"]
             native = {k: v for k, v in args.items() if k != "device_id"}
-            mutation = name in {"send_sms", "speak", "show", "set_volume", "save_recipient", "set_name"}
+            mutation = name in MUTATIONS
             identity = native.get("request_id") if mutation else None
             identity = identity or str(uuid.uuid4())
             if mutation:

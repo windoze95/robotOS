@@ -149,6 +149,9 @@ while the worker is running and the local database is readable; otherwise it ret
   native device tool. Mutating tools require `arguments.request_id == id`. Reusing the ID requires
   the same target, tool and arguments, and retains the original expiration. Never pick an arbitrary
   device when multiple devices are eligible.
+  `open_app` requires a named built-in `app`, with optional exact `item_id` for Notes or Prompt Builder.
+  It only opens the destination; opening a saved prompt does not execute it. It is a mutating
+  navigation command with its own local `allowOpenApps` permission and the same receipt rules.
 - MCP/owner `GET /device-actions/{id}` returns the durable receipt. `queued` is not `sent` or `applied`.
   Android executes through its existing DeviceApi, permissions and SMS quota. The `device_tool`
   capability depends on local native API permission, independently of new management permissions.

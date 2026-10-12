@@ -97,6 +97,7 @@ data class HermesLink(
     val allowShow: Boolean = false,
     val allowVolume: Boolean = false,
     val allowSaveRecipient: Boolean = false,
+    val allowOpenApps: Boolean = false,
 ) {
     fun valid(): Boolean = (!deviceApi || (token.length in 32..256 && port in 1024..65535)) &&
         (!passthrough || dev.r1ptt.messages.SmsAddress.normalize(owner) == owner) && smsSession.length in 1..128

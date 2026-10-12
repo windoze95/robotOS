@@ -41,6 +41,7 @@ class WorkspaceActivity : DeviceActivity() {
     private var returnChat: String? = null
     private var draftFields: (() -> Unit)? = null
     private var draftContent: String? = null
+    private var noteEdited: (() -> Boolean)? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -94,7 +95,7 @@ class WorkspaceActivity : DeviceActivity() {
         }
     }
     private fun page(title: String, name: String, back: () -> Unit = ::back) {
-        screen = name; draftFields = null; draftContent = null; audioButton = null
+        screen = name; draftFields = null; draftContent = null; audioButton = null; noteEdited = null
         val layout = ui.page(title, back); body = layout.body; wheelScrollTarget = layout.scroll
         setContentView(layout.root)
         status = ui.note(hub.status.value).also(body::addView)
@@ -113,6 +114,22 @@ class WorkspaceActivity : DeviceActivity() {
     }
     private fun landingPage() {
         if (hub.blocked) { restricted(); return }
+        // Recheck launches queued before the local permission or connection changed.
+        val token = intent.getStringExtra(EXTRA_DEVICE_TOKEN)
+        intent.removeExtra(EXTRA_DEVICE_TOKEN)
+        if (token != null && (!app.store.value.hermes.deviceApi || !app.store.value.hermes.allowOpenApps ||
+                token != app.store.value.hermes.token)) { finish(); return }
+        intent.getStringExtra(EXTRA_SAVED_PROMPT_ID)?.let { id ->
+            intent.removeExtra(EXTRA_SAVED_PROMPT_ID)
+            promptDetail(id)
+            return
+        }
+        if (intent.getBooleanExtra(EXTRA_NOTES, false)) {
+            intent.removeExtra(EXTRA_NOTES)
+            openNotes(intent.getStringExtra(EXTRA_NOTE_ID))
+            intent.removeExtra(EXTRA_NOTE_ID)
+            return
+        }
         val promptId = intent.getStringExtra(EXTRA_PROMPT_ID)
         if (promptId != null) {
             returnChat = intent.getStringExtra(EXTRA_RETURN_CHAT)
@@ -180,9 +197,34 @@ class WorkspaceActivity : DeviceActivity() {
             card.addView(ui.button("Open note") { noteDetail(note) }); body.addView(card)
         }
     }
+    internal fun canNavigateFromTools(): Boolean = !saving && recorder == null && playback == null &&
+        screen in setOf("index", "notes", "note", "prompts", "prompt") && noteEdited?.invoke() != true
+
+    internal fun openApp(destination: String, itemId: String?) {
+        if (hub.blocked) { restricted(); return }
+        when (destination) {
+            "workspace" -> { releasePrompt(); index() }
+            "notes" -> openNotes(itemId)
+            "prompt_builder" -> if (itemId == null) { releasePrompt(); prompts() } else promptDetail(itemId)
+            else -> error("Unsupported workspace destination")
+        }
+    }
+
+    internal fun openNotes(noteId: String?) {
+        if (hub.blocked) { restricted(); return }
+        releasePrompt(); returnChat = null
+        if (noteId == null) notes()
+        else {
+            val note = hub.store.item("notes", noteId)
+            if (note != null) noteDetail(note)
+            else { notes(); showToast("That note is no longer available on this R1") }
+        }
+    }
+
     private fun noteDetail(note: JSONObject) {
         page("Note", "note")
         val title = field("Title", note.optString("title")); val text = field("Note or transcript", note.optString("text"), multi = true)
+        noteEdited = { title.text.toString() != note.optString("title") || text.text.toString() != note.optString("text") }
         body.addView(ui.button("Save note", primary = true) {
             if (saving) return@button
             val savedTitle = title.text.toString(); val savedText = text.text.toString()
@@ -495,6 +537,10 @@ class WorkspaceActivity : DeviceActivity() {
         else -> "The host could not be reached. Your local work is preserved."
     }
     companion object {
+        private const val EXTRA_NOTES = "dev.r1ptt.workspace.NOTES"
+        private const val EXTRA_NOTE_ID = "dev.r1ptt.workspace.NOTE_ID"
+        private const val EXTRA_DEVICE_TOKEN = "dev.r1ptt.workspace.DEVICE_TOKEN"
+        private const val EXTRA_SAVED_PROMPT_ID = "dev.r1ptt.workspace.SAVED_PROMPT_ID"
         private const val EXTRA_RUNS = "dev.r1ptt.workspace.RUNS"
         private const val EXTRA_PROMPTS = "dev.r1ptt.workspace.PROMPTS"
         private const val EXTRA_PROMPT_ID = "dev.r1ptt.workspace.PROMPT_ID"
@@ -502,6 +548,12 @@ class WorkspaceActivity : DeviceActivity() {
         fun promptIntent(context: android.content.Context, promptId: String, returnChat: String? = null) =
             Intent(context, WorkspaceActivity::class.java).putExtra(EXTRA_PROMPT_ID, promptId).putExtra(EXTRA_RETURN_CHAT, returnChat)
         fun promptsIntent(context: android.content.Context) = Intent(context, WorkspaceActivity::class.java).putExtra(EXTRA_PROMPTS, true)
+        internal fun savedPromptIntent(context: android.content.Context, id: String) =
+            Intent(context, WorkspaceActivity::class.java).putExtra(EXTRA_SAVED_PROMPT_ID, id)
+        internal fun notesIntent(context: android.content.Context, noteId: String? = null) =
+            Intent(context, WorkspaceActivity::class.java).putExtra(EXTRA_NOTES, true)
+                .putExtra(EXTRA_NOTE_ID, noteId)
+        internal fun authorizeNavigation(intent: Intent, token: String) { intent.putExtra(EXTRA_DEVICE_TOKEN, token) }
         var button: ((Boolean) -> Unit)? = null
         private var active: java.lang.ref.WeakReference<WorkspaceActivity>? = null
         fun pauseForRecovery() { active?.get()?.let {

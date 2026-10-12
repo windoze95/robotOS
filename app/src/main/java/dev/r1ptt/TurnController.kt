@@ -121,6 +121,7 @@ class TurnController(private val app: App) : Gestures.Listener {
 
     /** Approval is touch-only. Capture the review boundary before any microphone/stop work. */
     fun guardApprovalReview(back: (() -> Unit)?) { approvalReviewBack = back }
+    val reviewingApproval: Boolean get() = approvalReviewBack != null
 
     fun attachTarget(value: DictationTarget) {
         target?.takeIf { it !== value }?.let(::detachTarget)

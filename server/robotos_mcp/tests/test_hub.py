@@ -97,6 +97,26 @@ class HubMcpTest(unittest.TestCase):
         self.assertIn("Preserve request_id", message)
         self.assertEqual(1, len(hub.calls))
 
+    def test_open_app_targets_device_and_keeps_navigation_identity(self):
+        for target in ([{"app": app} for app in mcp.APP_TARGETS] +
+                       [{"app": "notes", "item_id": "note-123"}, {"app": "prompt_builder", "item_id": "prompt-123"}]):
+            hub = FakeHub()
+            args = dict(target, device_id="r1-b", request_id="open-notes-request-1")
+            _, failed, result = hub.run_tool("open_app", args)
+            self.assertFalse(failed)
+            self.assertEqual("queued", result["status"])
+            command = hub.calls[0][2]
+            self.assertEqual("open_app", command["tool"])
+            self.assertEqual("r1-b", command["device_id"])
+            self.assertEqual("open-notes-request-1", command["id"])
+            self.assertEqual(dict(target, request_id=command["id"]), command["arguments"])
+        hub = FakeHub()
+        for target in (None, "", "../notes", 7, "x" * 201):
+            self.assertTrue(hub.run_tool("open_app", {"app": "notes", "item_id": target})[1])
+        for args in ({}, {"app": "com.android.settings"}, {"app": "settings", "item_id": "note-123"}, {"app": "notes", "intent": "anything"}):
+            self.assertTrue(hub.run_tool("open_app", args)[1])
+        self.assertEqual([], hub.calls)
+
     def test_mcp_never_advertises_owner_management_authority(self):
         hub = FakeHub()
         names = {t["name"] for t in hub.tools}

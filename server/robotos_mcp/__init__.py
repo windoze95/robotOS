@@ -7,6 +7,7 @@ Standard library only.
 """
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -20,6 +21,8 @@ INSTRUCTIONS = (
     "When the user asks you to text someone, call send_sms; the request itself is the authorization, so "
     "do not ask for confirmation unless the recipient or message is unclear. Report the result briefly."
 )
+APP_TARGETS = ["home", "workspace", "notes", "prompt_builder", "chats", "messages", "hermes",
+               "settings", "quick_controls", "updates", "host_devices"]
 
 TOOLS = [
     {
@@ -91,6 +94,13 @@ TOOLS.extend([
      "description": "Save a dismissible notice on Home without changing the conversation or waking the screen. Requires device permission.",
      "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "minLength": 1, "maxLength": 2000}},
                      "required": ["text"], "additionalProperties": False}},
+    {"name": "open_app", "title": "Open a robotOS app on the R1",
+     "description": "Open a built-in robotOS screen. Optional item_id opens an exact saved note (list_notes) or prompt (list_prompts); opening a prompt does not run it. Requires Open apps on screen permission and an awake, unlocked R1 with robotOS foreground. Refuses recording, unsaved note edits or approval conflicts. Returns opening when a launch is accepted, or opened for immediate workspace navigation. Cannot launch other Android apps or change settings.",
+     "inputSchema": {"type": "object", "properties": {
+                         "app": {"type": "string", "enum": APP_TARGETS},
+                         "item_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,200}$",
+                                     "description": "Optional exact saved item ID, only for notes or prompt_builder. Omit to open the app's list."}},
+                     "required": ["app"], "additionalProperties": False}},
     {"name": "set_volume", "title": "Set R1 speech volume",
      "description": "Set speech volume from 0 (silent) to 1 (maximum). Returns the applied level. Requires device permission.",
      "inputSchema": {"type": "object", "properties": {"level": {"type": "number", "minimum": 0, "maximum": 1}},
@@ -113,7 +123,7 @@ TOOLS.extend([
 ])
 
 MUTATIONS = {"send_sms": "/v1/sms", "speak": "/v1/speak", "show": "/v1/show",
-             "set_volume": "/v1/volume", "save_recipient": "/v1/recipients", "set_name": "/v1/name"}
+             "set_volume": "/v1/volume", "save_recipient": "/v1/recipients", "set_name": "/v1/name", "open_app": "/v1/apps/open"}
 for tool in TOOLS:
     if tool["name"] in MUTATIONS:
         tool["inputSchema"]["properties"]["request_id"] = {
@@ -125,6 +135,12 @@ ASLEEP = (
     "The R1 can't be reached: it is probably asleep on battery (radios off), out of coverage, or off Tailscale. "
     "Ask the user to press its button or plug it in to check again."
 )
+
+
+def valid_app_target(args):
+    return (args.get("app") in APP_TARGETS and ("item_id" not in args or
+            (args["app"] in ("notes", "prompt_builder") and isinstance(args["item_id"], str)
+             and re.fullmatch(r"[A-Za-z0-9_-]{1,200}", args["item_id"]) is not None)))
 
 
 class R1:
@@ -187,6 +203,8 @@ def run_tool(r1, name, arguments):
     schema = tool["inputSchema"]
     if set(args) - set(schema["properties"]) or any(k not in args for k in schema.get("required", [])):
         return "Invalid or missing arguments for %s. No action was started." % name, True, None
+    if name == "open_app" and not valid_app_target(args):
+        return "Choose a supported robotOS app; item_id is only for an exact saved note or prompt. No action was started.", True, None
     if name in MUTATIONS:
         payload = {k: v for k, v in args.items() if k != "request_id"}
         payload["request_id"] = args.get("request_id") or str(uuid.uuid4())

@@ -13,6 +13,11 @@ import android.util.Log
 import dev.r1ptt.App
 import dev.r1ptt.data.Agent
 import dev.r1ptt.data.HermesLink
+import dev.r1ptt.Phase
+import dev.r1ptt.ui.DeviceActivity
+import dev.r1ptt.ui.AppDestination
+import dev.r1ptt.workspace.HubException
+import dev.r1ptt.workspace.WorkspaceActivity
 import dev.r1ptt.messages.SmsDraft
 import dev.r1ptt.messages.SmsRecipientResolver
 import dev.r1ptt.messages.SmsRecipientText
@@ -124,6 +129,7 @@ class DeviceApi(
                             "/v1/sms" -> send(body, link.token)
                             "/v1/recipients" -> saveRecipient(body, link.token)
                             "/v1/name" -> rename(body, link.token)
+                            "/v1/apps/open" -> openApp(body, link.token)
                             else -> control(request.path, body, link.token)
                         }
                     }
@@ -159,6 +165,7 @@ class DeviceApi(
             "/v1/show" -> link.allowShow
             "/v1/volume" -> link.allowVolume
             "/v1/recipients" -> link.allowSaveRecipient
+            "/v1/apps/open" -> link.allowOpenApps
             "/v1/sms" -> true // Existing enabled SMS access is preserved.
             "/v1/name" -> app.store.value.agent.name.isBlank() // once: only while the user hasn't named it
             else -> false
@@ -190,6 +197,51 @@ class DeviceApi(
                         if (max > 0) audio.getStreamVolume(AudioManager.STREAM_MUSIC).toDouble() / max else 0.0)
                 }
             }
+        }
+    }
+
+    private fun openApp(body: JSONObject, token: String): Pair<Int, JSONObject> {
+        val destination = body.opt("app")
+        require(destination is String && destination in AppDestination.names) { "Choose a supported robotOS app." }
+        val collection = AppDestination.collection(destination)
+        val itemId = if (body.has("item_id")) {
+            val value = body.opt("item_id")
+            require(collection != null && value is String && value.matches(Regex("[A-Za-z0-9_-]{1,200}"))) {
+                "item_id must be an exact saved note or prompt ID, and is only supported for notes or prompt_builder."
+            }
+            value
+        } else null
+        val hub = app.workspace
+        if (itemId != null && hub.store.item(collection!!, itemId) == null && hub.identity.paired) {
+            // Command delivery can precede the ordinary workspace sync. Fetch only the requested item;
+            // calling sync() here would wait on the same lock that is delivering this command.
+            val item = try { hub.api("GET", "/$collection/$itemId") }
+            catch (e: HubException) {
+                return (if (e.status == 404) 404 else 503) to error(if (e.status == 404) "That saved item does not exist." else "The saved item could not be loaded. Nothing was opened.")
+            }
+            catch (_: Exception) { return 503 to error("The saved item could not be loaded. Nothing was opened.") }
+            if (!permitted(token, "/v1/apps/open")) return 403 to error("Opening apps is disabled.")
+            if (hub.store.item(collection, itemId) == null) hub.store.put(collection, item)
+        }
+        return onMain {
+            if (!permitted(token, "/v1/apps/open")) return@onMain 403 to error("Opening apps is disabled.")
+            val activity = DeviceActivity.foregroundActivity()
+            if (activity == null || !app.screen.isScreenOn() || app.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked)
+                return@onMain 409 to error("Wake and unlock the R1 with robotOS in the foreground to open an app.")
+            if (activity.hasOpenDialog || app.turns.reviewingApproval ||
+                app.turns.state.value.phase in setOf(Phase.LISTENING, Phase.DICTATING, Phase.TRANSCRIBING) ||
+                (activity is WorkspaceActivity && !activity.canNavigateFromTools()))
+                return@onMain 409 to error("Finish the current recording, edit or review before opening an app.")
+            if (itemId != null && hub.store.item(collection!!, itemId) == null)
+                return@onMain 404 to error("That item is not saved on this R1. Nothing was opened.")
+            val status = if (activity is WorkspaceActivity && destination in setOf("workspace", "notes", "prompt_builder")) {
+                activity.openApp(destination, itemId)
+                "opened"
+            } else {
+                activity.startActivity(AppDestination.intent(activity, destination, itemId, token))
+                "opening" // Android accepted the launch; this is not a claim that it is visible yet.
+            }
+            200 to JSONObject().put("status", status).put("app", destination).put("item_id", itemId ?: JSONObject.NULL)
         }
     }
 
@@ -263,8 +315,9 @@ class DeviceApi(
             .put("daily_text_limit", link.dailySendLimit)
             .put("owner_texts_go_to_hermes", link.passthrough)
             .put("permissions", JSONObject().put("speak", link.allowSpeak).put("show", link.allowShow)
-                .put("set_volume", link.allowVolume).put("save_recipient", link.allowSaveRecipient))
+                .put("set_volume", link.allowVolume).put("save_recipient", link.allowSaveRecipient).put("open_app", link.allowOpenApps))
             .put("request_receipt_retention_seconds", DeviceReceipts.RETENTION_MS / 1000)
+            .put("open_app_targets", JSONArray(AppDestination.names))
     }
 
     /** One text, sent now. Serialized so parallel tool calls cannot collide in the native executor. */
@@ -423,7 +476,7 @@ class DeviceApi(
         private const val TAG = "r1ptt"
         private const val MAX_HEAD = 8 * 1024
         private const val MAX_BODY = 64 * 1024
-        private val MUTATIONS = setOf("/v1/sms", "/v1/speak", "/v1/show", "/v1/volume", "/v1/recipients", "/v1/name")
+        private val MUTATIONS = setOf("/v1/sms", "/v1/speak", "/v1/show", "/v1/volume", "/v1/recipients", "/v1/name", "/v1/apps/open")
         private const val NAMED = "The R1 already has a name for you. Only the user can change it, in robotOS under Hermes."
 
         private fun error(message: String) = JSONObject().put("error", message)
