@@ -44,7 +44,7 @@ object SharedChat {
                 }
             }
             if (pending != null && (pending.optString("text") != text || pending.optString("instruction") != instruction))
-                throw IOException("The previous question is still pending. Review its run in Workspace before sending another.")
+                throw IOException("The previous question is still pending. Open its saved prompt in Workspace before sending another.")
             if (pending == null) {
                 pending = JSONObject().put("id", conversation).put("operation", newId()).put("text", text)
                     .put("instruction", instruction).put("request_id", newId())

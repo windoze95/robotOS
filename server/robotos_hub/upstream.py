@@ -136,7 +136,7 @@ class Workers:
             self.stop_event.wait(self.config.worker_interval)
 
     def _update(self, run_id, **fields):
-        allowed = {'status', 'output', 'error', 'remote_id', 'upstream_payload', 'upstream_identity', 'capabilities', 'approval', 'submitted_at'}
+        allowed = {'status', 'output', 'error', 'remote_id', 'hermes_session_id', 'upstream_payload', 'upstream_identity', 'capabilities', 'approval', 'submitted_at'}
         if not fields.keys() <= allowed:
             raise ValueError('Unsupported run update')
         with self.store.transaction() as db:
@@ -241,8 +241,12 @@ class Workers:
             approval = result.get('approval')
             if approval is not None and (not isinstance(approval, dict) or len(canonical(approval)) > 32000):
                 raise UpstreamError()
+            reference = {}
+            session_id = result.get('session_id')
+            if isinstance(session_id, str) and 0 < len(session_id) <= 256 and all(ord(c) >= 32 and ord(c) != 127 for c in session_id):
+                reference['hermes_session_id'] = session_id
             self._update(run['id'], status='running' if status in {'queued', 'started'} else status, output=output, error=error,
-                         approval=canonical(approval) if approval else None)
+                         approval=canonical(approval) if approval else None, **reference)
         except (UpstreamError, HubError):
             self._update(run['id'], error='Hermes status unavailable; the task may still be running')
 

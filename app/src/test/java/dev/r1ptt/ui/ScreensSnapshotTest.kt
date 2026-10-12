@@ -174,6 +174,14 @@ class ScreensSnapshotTest {
             controls.filterIsInstance<Button>().first { it.text == "Preview" }.performClick()
             snap(workspace.get(), "workspace-preview")
             assertTrue(all(workspace.get().window.decorView).filterIsInstance<TextView>().any { it.text.contains("Check reconnect behavior") })
+            app.workspace.store.put("prompts", JSONObject(draft.toString()).put("last_run_id", "preview-reply").put("state", "ran"))
+            app.workspace.store.put("runs", JSONObject().put("id", "preview-reply").put("prompt_id", "preview-prompt")
+                .put("status", "completed").put("prompt_revision", 1).put("snapshot", draft)
+                .put("output", "Start with reconnect, then test a saved prompt on both devices."))
+            dev.r1ptt.workspace.WorkspaceActivity::class.java.getDeclaredMethod("promptDetail", String::class.java, String::class.java)
+                .apply { isAccessible = true }.invoke(workspace.get(), "preview-prompt", null)
+            snap(workspace.get(), "workspace-prompt-reply")
+            assertTrue(all(workspace.get().window.decorView).filterIsInstance<TextView>().any { it.text == "Hermes reply" })
         } finally { workspace.pause().stop().destroy() }
         val host = open(dev.r1ptt.workspace.HubSettingsActivity::class.java)
         try { snap(host.get(), "workspace-pairing") } finally { host.pause().stop().destroy() }

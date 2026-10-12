@@ -1,7 +1,8 @@
 # Hermes integration
 
-Hermes executes requests. The robotOS hub owns shared notes, prompt revisions, conversations,
-run results and device policy. The R1 uses its own revocable workspace credential; enrollment
+Hermes owns execution, sessions, conversation history and scheduled jobs. The robotOS hub owns
+shared notes, prompt revisions and device policy. It retains submission receipts and confirmed
+replies for prompt status and device handoff; it does not mirror Hermes session history or schedule jobs. The R1 uses its own revocable workspace credential; enrollment
 never gives it the host's Hermes API key or owner password.
 
 ```text
@@ -42,8 +43,8 @@ Its configuration, task controls and direct Device API are documented in
 - **Push-to-talk:** after recovery verification succeeds, hold the button and talk. The R1
   transcribes speech, submits the text through the hub and speaks the completed reply. Dictation
   with the keyboard open inserts text without sending it.
-- **Hermes → Workspace runs** opens host-owned tasks, results and available approval/cancel
-  controls. **Host & devices** opens pairing and local recovery settings. Models and server
+- **Hermes → Saved prompts** opens saved prompts. Open a prompt to read its Hermes reply
+  or use available approval/cancel controls; viewing a reply does not take editing control. **Host & devices** opens pairing and local recovery settings. Models and server
   credentials are managed on the host; paired devices do not show the legacy model picker or
   direct connection form.
 - **Chats** shows shared conversation results. Existing local conversations stay saved separately.
@@ -63,19 +64,25 @@ SMS and device permissions. A sleeping R1 with radios off cannot receive new pol
 wake, foreground or reconnect, robotOS verifies recovery status before revealing saved content
 or resuming ordinary actions. An unreachable hub leaves it restricted until verification succeeds.
 
-## Runs and approvals
+## Prompt replies and approvals
 
-The hub reserves a durable request identity before dispatch and stores the result. A dropped
+Each saved prompt shows its Hermes progress and reply. The hub reserves a durable submission
+identity before dispatch and caches the confirmed result. A dropped
 connection, unknown submission or missing receipt never authorizes a replacement request.
-Check the existing run. Reconciliation may reuse its original identity only while the original
+Open the original prompt and check its submission. Reconciliation may reuse its original identity only while the original
 Hermes service advertises a valid durable deduplication window. Otherwise inspect that original
 service before deciding what happened.
 
-**Stop speech** silences local audio. **Stop** on a workspace run requests remote cancellation;
+**Stop speech** silences local audio. **Stop** beside a prompt reply requests remote cancellation;
 the run remains unresolved until Hermes confirms an outcome. Approval choices apply to the
 exact run and approval identity. **Allow once** and **Deny** are explicit on-screen actions;
 the wheel and side button cannot authorize them. A prompt is marked **Ran** only after the hub
 confirms completion and stores the reply.
+
+The prompt retains the confirmed Hermes run and session identifiers when available. Older saved
+replies may lack a session identifier; robotOS does not guess one. The Hermes dashboard has its
+own address and authentication, separate from the API connection. Manage schedules in Hermes;
+robotOS has no separate scheduler or global execution-history screen.
 
 ## Device tools and permissions
 

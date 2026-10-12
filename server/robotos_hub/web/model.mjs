@@ -23,6 +23,23 @@ export function captureAdmission(capture) {
 }
 export const statusLabel = status => ({draft:'Draft', ran:'Ran', needs_attention:'Needs attention', queued:'Queued', submitting:'Submitting', submission_unknown:'Submission unknown', running:'Running', waiting_for_approval:'Approval needed', stopping:'Stopping', completed:'Completed', failed:'Failed', cancelled:'Cancelled', interrupted:'Interrupted', received:'Received', applied:'Applied', unknown:'Outcome unknown', expired:'Expired'}[status] || String(status || 'Unknown').replaceAll('_', ' '));
 export const isRunActive = run => ['queued','submitting','submission_unknown','running','waiting_for_approval','stopping'].includes(run.status);
+export function workspaceRoute(hash) {
+  const [path, query=''] = String(hash || '').replace(/^#/, '').split('?');
+  const [view, encodedId] = path.split('/');
+  let id=null;
+  try {id=encodedId?decodeURIComponent(encodedId):null;} catch (_) {return {view:'prompts',id:null,submissionId:null};}
+  if(view==='runs')return {view:'prompts',id:null,submissionId:null,...(id?{legacyRunId:id}:{})};
+  if(!['prompts','notes','devices','audit'].includes(view))return {view:'prompts',id:null,submissionId:null};
+  return {view,id,submissionId:view==='prompts'&&id?new URLSearchParams(query).get('submission'):null};
+}
+export function promptSubmissionLink(promptId, submissionId) {
+  return promptId ? `#prompts/${encodeURIComponent(promptId)}${submissionId?'?submission='+encodeURIComponent(submissionId):''}` : '#prompts';
+}
+export function promptSubmissions(submissions, promptId, selectedId) {
+  const items=submissions.filter(item=>item.prompt_id===promptId).sort((a,b)=>b.created_at-a.created_at);
+  const selected=items.find(item=>item.id===selectedId)||items[0]||null;
+  return {selected,earlier:items.filter(item=>item!==selected)};
+}
 export const isDangerous = type => ['lock','clear_workspace','factory_reset','update_app','reboot'].includes(type);
 export const commandLabel = type => ({ring:'Ring device',stop_ring:'Stop ringing',show_message:'Show return message',locate:'Request location',lock:'Lock device',clear_workspace:'Erase local workspace',factory_reset:'Factory reset',update_app:'Install verified update',reboot:'Restart device'}[type] || type);
 export function commandSupport(device, type) {
