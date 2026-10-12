@@ -32,8 +32,13 @@ open class DeviceActivity : Activity() {
     private var toastView: TextView? = null
     private var volumeHud: VolumeHud? = null
     private val dismissToast = Runnable { hideToast() }
-    private var recoveryOverlay: View? = null
-    private var recoveryLabel = ""
+    private var gate: FrameLayout? = null
+    private var gateCover: View? = null
+    private var gatePage: View? = null
+    private var gatePageScroll: View? = null
+    private var gatePageKey = ""
+    private var gateCovering = false
+    private val liftLater = Runnable { applyRecoveryGate() }
     private val deviceDialogs = mutableListOf<AlertDialog>()
     internal val hasOpenDialog: Boolean get() = deviceDialogs.any { it.isShowing }
     private val recoveryApp get() = application as? dev.r1ptt.App
@@ -56,7 +61,12 @@ open class DeviceActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
-        if (startedActivities++ == 0) recoveryApp?.workspace?.requireRecovery()
+        if (startedActivities++ == 0) {
+            // robotOS is coming into view (a wake or a return from another app). A recovery screen
+            // shown now starts on the logo again, never on the page it was left on.
+            restartCover()
+            recoveryApp?.workspace?.wake()
+        }
     }
     override fun onStop() {
         startedActivities = (startedActivities - 1).coerceAtLeast(0)
@@ -91,25 +101,27 @@ open class DeviceActivity : Activity() {
 
     override fun onDestroy() {
         activities.remove(this)
+        phases.removeCallbacks(liftLater)
         deviceDialogs.toList().also { deviceDialogs.clear() }.forEach { it.dismiss() }
         super.onDestroy()
     }
 
-    /** Covers every native screen and hides its accessibility tree, including saved history. */
+    /**
+     * Covers every native screen and hides its accessibility tree, including saved history. It
+     * opens on the glowing logo; the recovery page fades in only if the check is still running
+     * after [COVER_MS], so a normal wake goes logo, then the screen, with nothing in between.
+     */
     internal fun applyRecoveryGate() {
         val app = recoveryApp ?: return
         val hub = app.workspace
         val content = findViewById<View>(android.R.id.content) ?: return
-        if (!recoveryBlocksScreen()) {
-            (recoveryOverlay?.parent as? ViewGroup)?.removeView(recoveryOverlay)
-            recoveryOverlay = null; recoveryLabel = ""
-            content.visibility = View.VISIBLE
-            content.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
-            return
-        }
+        val blocked = recoveryBlocksScreen()
+        noteGate(blocked)
+        if (!blocked) { liftGate(content); return }
         // This runs on every layout pass. Hiding content is idempotent; window flags and keyboard
         // requests are not (each one relayouts and calls back here), so they run only when the
         // gate first appears or changes. Otherwise the gate spins at frame rate.
+        phases.removeCallbacks(liftLater)
         content.visibility = View.INVISIBLE
         content.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
         val identity = hub.identity.value
@@ -120,45 +132,96 @@ open class DeviceActivity : Activity() {
             "and keeps trying while the screen is on. Saved notes and recordings remain on this R1."
         else "Waiting for your host to confirm this R1 hasn't been reported lost. robotOS keeps trying while the " +
             "screen is on. Saved notes and recordings remain on this R1."
-        val signature = label + detail + identity.optString("return_message")
-        if (recoveryOverlay != null && recoveryLabel == signature) return
-        val secure = android.view.WindowManager.LayoutParams.FLAG_SECURE
-        if (window.attributes.flags and secure == 0) window.addFlags(secure)
-        getSystemService(android.view.inputmethod.InputMethodManager::class.java).hideSoftInputFromWindow(content.windowToken, 0)
-        content.clearFocus()
-        deviceDialogs.toList().also { deviceDialogs.clear() }.forEach { it.dismiss() }
-        (recoveryOverlay?.parent as? ViewGroup)?.removeView(recoveryOverlay)
-        recoveryLabel = signature
-        val page = ui.page("Device recovery") {}
-        page.root.setBackgroundColor(getColor(R.color.bg))
-        page.body.addView(ui.title(label))
-        page.body.addView(ui.note(detail))
-        if (hub.quarantined) {
-            identity.optString("return_message").takeIf(String::isNotBlank)?.let { page.body.addView(ui.text(it)) }
-            page.body.addView(ui.note(if (identity.optBoolean("secure_lock_applied")) "Android secure lock was requested. robotOS remains restricted until restored by the owner."
-                else "robotOS is restricted. A secure Android screen lock is not active through robotOS; this does not lock other Android apps or protect against physical system access."))
-        }
-        page.body.addView(ui.button("Check recovery status", primary = true) { hub.recoverNow() })
-        page.body.addView(ui.button("Connect to a network") {
-            startActivity(android.content.Intent(android.provider.Settings.Panel.ACTION_INTERNET_CONNECTIVITY))
-        })
-        if (hub.canReenroll) page.body.addView(ui.button("Pair this cleared R1") {
-            startActivity(android.content.Intent(this, dev.r1ptt.workspace.HubSettingsActivity::class.java))
-        })
         // A restricted R1 can be rung by its owner at any time; otherwise offer this only while
         // ringing. The side button also stops ringing.
-        if (hub.quarantined || hub.management.ringing) page.body.addView(ui.button("Stop ringing") { hub.management.stopRinging() })
-        recoveryOverlay = page.root
-        (window.decorView as ViewGroup).addView(page.root, ViewGroup.LayoutParams(-1, -1))
-        page.root.bringToFront()
-        wheelScrollTarget = page.scroll
+        val ringing = hub.quarantined || hub.management.ringing
+        val key = listOf(label, detail, identity.optString("return_message"), identity.optBoolean("secure_lock_applied"),
+            hub.canReenroll, ringing).joinToString("\u0000")
+        val covering = covering()
+        val shell = gate
+        if (shell != null && gatePageKey == key && gateCovering == covering) return
+        if (shell == null || gatePageKey != key) {
+            val secure = android.view.WindowManager.LayoutParams.FLAG_SECURE
+            if (window.attributes.flags and secure == 0) window.addFlags(secure)
+            getSystemService(android.view.inputmethod.InputMethodManager::class.java).hideSoftInputFromWindow(content.windowToken, 0)
+            content.clearFocus()
+            deviceDialogs.toList().also { deviceDialogs.clear() }.forEach { it.dismiss() }
+        }
+        // Fade only over a screen someone is looking at; on a wake the first frame is the cover.
+        val looking = resumedNow && hasWindowFocus()
+        val root = shell ?: FrameLayout(this).also { root ->
+            root.setBackgroundColor(getColor(R.color.bg))
+            gateCover = LogoGlow(this).also { root.addView(it, FrameLayout.LayoutParams(-1, -1)) }
+            gate = root
+            (window.decorView as ViewGroup).addView(root, ViewGroup.LayoutParams(-1, -1))
+            if (looking) { root.alpha = 0f; root.animate().alpha(1f).setDuration(FADE_MS).start() }
+        }
+        root.bringToFront()
+        if (gatePageKey != key) {
+            gatePage?.let(root::removeView)
+            val page = ui.page("Device recovery") {}
+            page.root.setBackgroundColor(getColor(R.color.bg))
+            page.body.addView(ui.title(label))
+            page.body.addView(ui.note(detail))
+            if (hub.quarantined) {
+                identity.optString("return_message").takeIf(String::isNotBlank)?.let { page.body.addView(ui.text(it)) }
+                page.body.addView(ui.note(if (identity.optBoolean("secure_lock_applied")) "Android secure lock was requested. robotOS remains restricted until restored by the owner."
+                    else "robotOS is restricted. A secure Android screen lock is not active through robotOS; this does not lock other Android apps or protect against physical system access."))
+            }
+            page.body.addView(ui.button("Check recovery status", primary = true) { hub.recoverNow() })
+            page.body.addView(ui.button("Connect to a network") {
+                startActivity(android.content.Intent(android.provider.Settings.Panel.ACTION_INTERNET_CONNECTIVITY))
+            })
+            if (hub.canReenroll) page.body.addView(ui.button("Pair this cleared R1") {
+                startActivity(android.content.Intent(this, dev.r1ptt.workspace.HubSettingsActivity::class.java))
+            })
+            if (ringing) page.body.addView(ui.button("Stop ringing") { hub.management.stopRinging() })
+            page.root.visibility = if (covering) View.GONE else View.VISIBLE
+            root.addView(page.root, FrameLayout.LayoutParams(-1, -1))
+            gatePage = page.root; gatePageScroll = page.scroll; gatePageKey = key
+        }
+        val smooth = looking && shell != null && gateCovering != covering
+        gateCovering = covering
+        gateCover?.fade(covering, smooth)
+        gatePage?.fade(!covering, smooth)
+    }
+
+    private fun liftGate(content: View) {
+        val root = gate
+        if (root == null) {
+            content.visibility = View.VISIBLE
+            content.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
+            return
+        }
+        // A check that passes at once still gets a clean beat of logo, never a one-frame flash.
+        val hold = coverHold()
+        if (gateCovering && hold > 0) {
+            phases.removeCallbacks(liftLater)
+            phases.postDelayed(liftLater, hold)
+            return
+        }
+        content.visibility = View.VISIBLE
+        content.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
+        gate = null; gateCover = null; gatePage = null; gatePageScroll = null; gatePageKey = ""; gateCovering = false
+        val parent = root.parent as? ViewGroup ?: return
+        if (resumedNow && hasWindowFocus()) root.animate().alpha(0f).setDuration(FADE_MS).withEndAction { parent.removeView(root) }.start()
+        else parent.removeView(root)
+    }
+
+    private fun View.fade(show: Boolean, smooth: Boolean) {
+        animate().cancel()
+        if (!smooth) { alpha = 1f; visibility = if (show) View.VISIBLE else View.GONE; return }
+        if (show) {
+            if (visibility != View.VISIBLE) { alpha = 0f; visibility = View.VISIBLE }
+            animate().alpha(1f).setDuration(FADE_MS).start()
+        } else if (visibility == View.VISIBLE) animate().alpha(0f).setDuration(FADE_MS).withEndAction { visibility = View.GONE }.start()
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (recoveryBlocksScreen()) {
             if (event.keyCode == KeyEvent.KEYCODE_BUTTON_1 && event.action == KeyEvent.ACTION_DOWN)
                 recoveryApp?.workspace?.management?.stopRinging()
-            handleWheel(event)
+            handleWheel(event, gatePageScroll)
             return true
         }
         if (event.keyCode == KeyEvent.KEYCODE_BUTTON_1) {
@@ -283,6 +346,27 @@ open class DeviceActivity : Activity() {
     }
 
     companion object {
+        /** The logo holds the screen this long before the recovery page fades in. */
+        internal const val COVER_MS = 3_500L
+        /** The shortest logo beat once shown, so a check that passes at once never flickers. */
+        private const val MIN_COVER_MS = 900L
+        private const val FADE_MS = 220L
+        private var coverFrom = 0L
+        private var gateUp = false
+        private val phases = android.os.Handler(android.os.Looper.getMainLooper())
+        private val showPage = Runnable { activities.toList().forEach { if (!it.isDestroyed) it.applyRecoveryGate() } }
+        /** Starts the logo beat again: when the gate comes up and whenever robotOS comes into view. */
+        private fun restartCover() {
+            coverFrom = SystemClock.uptimeMillis()
+            phases.removeCallbacks(showPage)
+            phases.postDelayed(showPage, COVER_MS)
+        }
+        private fun noteGate(blocked: Boolean) {
+            if (blocked && !gateUp) restartCover()
+            gateUp = blocked
+        }
+        private fun covering() = SystemClock.uptimeMillis() - coverFrom < COVER_MS
+        private fun coverHold() = coverFrom + MIN_COVER_MS - SystemClock.uptimeMillis()
         private var startedActivities = 0
         private val activities = java.util.Collections.newSetFromMap(java.util.WeakHashMap<DeviceActivity, Boolean>())
         /** Main-thread navigation may only originate from the currently resumed robotOS screen. */

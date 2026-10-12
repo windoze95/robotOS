@@ -6,6 +6,8 @@ internal class RecoveryFence {
     private var pending = false
     private var verified = false
     @Synchronized fun invalidate(): Long { pending = true; verified = false; return ++generation }
+    /** A new check window that keeps the current access: replies from before it cannot confirm it. */
+    @Synchronized fun renew(): Long = ++generation
     @Synchronized fun ticket(): Long = generation
     @Synchronized fun pending(): Boolean = pending
     @Synchronized fun verified(): Boolean = verified

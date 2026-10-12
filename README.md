@@ -112,9 +112,11 @@ card; tap it to edit the source, then **Save and return to chat**. Tap **Send** 
 **Workspace settings** pairs each R1 separately and exposes local management permissions. Once paired, new PTT and
 owner-SMS conversations use the host's durable run API; shared chats appear in **Chats**. Existing
 local conversations remain saved. **Synced** means the host acknowledged the content;
-**Saved on this R1** means another device may not have it yet. Paired devices must verify recovery
-status on boot, wake, foreground and reconnect before showing saved content or accepting actions.
-If the host is unreachable, the device remains restricted until verification succeeds.
+**Saved on this R1** means another device may not have it yet. Paired devices verify recovery
+status on boot, wake, foreground and reconnect. Within 15 minutes of a confirmed check, a wake opens
+at once and is confirmed in the background; a lost reply, or no answer within 10 seconds, takes the
+screen back. Otherwise the device checks before showing saved content or accepting actions, and an
+unreachable host keeps it restricted until verification succeeds.
 
 ## Battery
 

@@ -30,12 +30,64 @@ class WorkspaceClient(private val app: App) {
     val networkAllowed: Boolean get() = !blocked && (!identity.paired || recoveryFence.verified())
     internal fun recoveryTicket(): Long = recoveryFence.ticket()
     internal fun recoveryConfirmed(ticket: Long) {
-        if (recoveryFence.confirm(ticket)) mutable.value = if (quarantined) "Device access restricted" else "Device recovery verified"
+        if (!recoveryFence.confirm(ticket)) return
+        verifiedAt = clock()
+        synchronized(this) { if (confirming != 0L && ticket >= confirming) { confirming = 0; deadline?.cancel(); deadline = null } }
+        mutable.value = if (quarantined) "Device access restricted" else "Device recovery verified"
     }
+
+    /*
+     * Grace after a confirmed check: within [graceMs] a wake opens at once and is confirmed in the
+     * background. A restriction, or no confirmation within [confirmMs], recaptures the screen. Kept
+     * in memory only, so a restarted app always checks before showing anything.
+     */
+    internal var graceMs = 15 * 60_000L
+    internal var confirmMs = 10_000L
+    internal var clock: () -> Long = android.os.SystemClock::elapsedRealtime
+    @Volatile private var verifiedAt = 0L
+    /** Ticket of the background check a grace wake is waiting on; 0 when none. */
+    @Volatile private var confirming = 0L
+    private var deadline: Job? = null
+    private val fresh: Boolean get() = verifiedAt > 0 && clock() - verifiedAt < graceMs
+    /** The screen is fenced, or a grace wake is still waiting for its confirmation. */
+    val recoveryWanted: Boolean get() = recoveryPending || confirming != 0L
+
+    /** Screen on, user present, robotOS back in front, or a new default network. */
+    fun wake() {
+        if (!identity.paired) return
+        if (quarantined || recoveryPending || !fresh) { requireRecovery(); return }
+        synchronized(this) {
+            // Back-to-back wake events (screen on, then the first screen starting) share one check.
+            if (confirming == 0L || deadline?.isActive != true) {
+                val ticket = recoveryFence.renew()
+                confirming = ticket
+                retryMs = RETRY_FIRST_MS
+                deadline?.cancel()
+                deadline = scope.launch {
+                    delay(confirmMs)
+                    withContext(Dispatchers.Main) { recapture(ticket) }
+                }
+            }
+        }
+        recoverNow()
+    }
+    /** Screen off or network lost: a fresh R1 stays open for its next wake; otherwise fence now. */
+    fun fenceUnlessFresh() {
+        if (!identity.paired) return
+        if (quarantined || !fresh) requireRecovery(checkNow = false)
+    }
+    /** The host did not confirm a grace wake in time: end the grace and take the screen back. */
+    private fun recapture(ticket: Long) {
+        synchronized(this) { if (confirming != ticket) return }
+        verifiedAt = 0
+        requireRecovery(checkNow = app.getSystemService(android.os.PowerManager::class.java).isInteractive)
+    }
+
     /** Fence synchronously before any activity/button/API can observe the newly awake device. */
     fun requireRecovery(checkNow: Boolean = true) {
         if (!identity.paired) return
         recoveryFence.invalidate()
+        synchronized(this) { confirming = 0; deadline?.cancel(); deadline = null }
         retryMs = RETRY_FIRST_MS
         mutable.value = "Checking device recovery…"
         dev.r1ptt.ui.DeviceActivity.refreshRecovery(app)
@@ -70,8 +122,8 @@ class WorkspaceClient(private val app: App) {
                 synchronized(this@WorkspaceClient) {
                     recoveryJob = null
                     // A new wake/network event during the request must receive its own fresh check.
-                    if (recoveryPending && recoveryTicket() != ticket) recoverNow()
-                    else if (recoveryPending && !quarantined && looking) retryLater()
+                    if (recoveryWanted && recoveryTicket() != ticket) recoverNow()
+                    else if (recoveryWanted && !quarantined && looking) retryLater()
                     else retryMs = RETRY_FIRST_MS
                 }
             }
@@ -84,7 +136,7 @@ class WorkspaceClient(private val app: App) {
         retry = scope.launch {
             delay(wait)
             val looking = withContext(Dispatchers.Main) { dev.r1ptt.ui.DeviceActivity.foregroundActivity() != null }
-            if (looking && recoveryPending) recoverNow()
+            if (looking && recoveryWanted) recoverNow()
         }
     }
     private var retry: Job? = null
@@ -334,7 +386,8 @@ class WorkspaceClient(private val app: App) {
         api("POST", "/runs/$id/$action", request).also { store.put("runs", it); store.remove("requests", request.getString("id")) }
     } }
     companion object {
-        private const val RETRY_FIRST_MS = 3_000L
+        // Right after a reconnect Tailscale can drop the first connection attempt; retry soon.
+        private const val RETRY_FIRST_MS = 1_000L
         private const val RETRY_MAX_MS = 30_000L
         /** Resolve durable audio IDs into a copy; failed hydration never discards a local draft. */
         fun hydrateMedia(prompt: JSONObject, note: (String) -> JSONObject?): JSONObject = prompt.copyJson().also { hydrated ->

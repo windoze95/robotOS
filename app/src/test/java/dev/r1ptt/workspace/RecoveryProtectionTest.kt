@@ -91,6 +91,7 @@ class RecoveryProtectionTest {
             checkIn()
             assertFalse(app.workspace.blocked)
             assertTrue(app.workspace.networkAllowed)
+            shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(1))
             assertEquals(View.VISIBLE, activity.findViewById<View>(android.R.id.content).visibility)
             controller.destroy()
         }
@@ -194,15 +195,93 @@ class RecoveryProtectionTest {
         app.workspace.identity.update { it.put("lost", false).put("revoked", true) }
         assertFalse(app.workspace.canReenroll)
     }
-    @Test fun screenWakeFencesAPreviouslyVerifiedDeviceEvenWhenTheHostIsUnreachable() {
+    private fun screen(on: Boolean) {
+        app.sendBroadcast(android.content.Intent(if (on) android.content.Intent.ACTION_SCREEN_ON else android.content.Intent.ACTION_SCREEN_OFF))
+        shadowOf(Looper.getMainLooper()).idle()
+    }
+    private fun settle(ms: Long) {
+        val until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(ms)
+        while (System.nanoTime() < until) { shadowOf(Looper.getMainLooper()).idle(); Thread.sleep(5) }
+    }
+    /** Moves the recovery clock past the grace window that the last confirmed check opened. */
+    private fun outlastGrace() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        app.workspace.clock = { now + app.workspace.graceMs + 1 }
+    }
+
+    @Test fun wakeAfterTheGraceWindowFencesEvenWhenTheHostIsUnreachable() {
         enrolled()
         app.workspace.recoveryConfirmed(app.workspace.recoveryTicket())
         assertTrue(app.workspace.networkAllowed)
-        app.sendBroadcast(android.content.Intent(android.content.Intent.ACTION_SCREEN_ON))
-        shadowOf(Looper.getMainLooper()).idle()
+        outlastGrace()
+        screen(on = false)
+        assertTrue(app.workspace.blocked) // Fenced while dark, so the wake's first frame is the cover.
+        screen(on = true)
         assertTrue(app.workspace.recoveryPending)
         assertTrue(app.workspace.blocked)
         assertFalse(app.workspace.networkAllowed)
+    }
+
+    @Test fun graceWakeOpensAtOnceThenRecapturesWhenTheHostNeverAnswers() {
+        enrolled() // 127.0.0.1:9 never answers.
+        app.workspace.confirmMs = 400
+        app.workspace.recoveryConfirmed(app.workspace.recoveryTicket())
+        screen(on = false)
+        assertFalse(app.workspace.blocked)
+        screen(on = true)
+        assertFalse(app.workspace.blocked)
+        assertTrue(app.workspace.networkAllowed)
+        assertTrue(app.workspace.recoveryWanted)
+        settle(900)
+        assertTrue(app.workspace.blocked)
+        assertTrue(app.workspace.recoveryPending)
+        assertFalse(app.workspace.networkAllowed)
+        // The missed confirmation ended the grace: the next wake checks before opening.
+        screen(on = false)
+        screen(on = true)
+        assertTrue(app.workspace.blocked)
+    }
+
+    @Test fun graceWakeConfirmedByTheHostStaysOpen() {
+        MockWebServer().use { server ->
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest) = MockResponse().setBody(policy(1, false).toString())
+            }
+            server.start(); enrolled(server.url("/").toString())
+            app.workspace.confirmMs = 1_500
+            val cm = app.getSystemService(android.net.ConnectivityManager::class.java)
+            shadowOf(cm).setNetworkCapabilities(cm.activeNetwork, internet(android.net.NetworkCapabilities.TRANSPORT_WIFI))
+            app.workspace.recoveryConfirmed(app.workspace.recoveryTicket())
+            screen(on = false)
+            screen(on = true)
+            assertFalse(app.workspace.blocked)
+            settle(1_000)
+            assertTrue(server.requestCount > 0)
+            assertFalse(app.workspace.recoveryWanted)
+            settle(800) // Past the deadline the confirmation already cancelled.
+            assertFalse(app.workspace.blocked)
+            assertTrue(app.workspace.networkAllowed)
+        }
+    }
+
+    @Test fun graceWakeRecapturesAtOnceWhenTheHostReportsTheR1Lost() {
+        MockWebServer().use { server ->
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest) = MockResponse().setBody(policy(2, true).toString())
+            }
+            server.start(); enrolled(server.url("/").toString())
+            val cm = app.getSystemService(android.net.ConnectivityManager::class.java)
+            shadowOf(cm).setNetworkCapabilities(cm.activeNetwork, internet(android.net.NetworkCapabilities.TRANSPORT_WIFI))
+            app.workspace.recoveryConfirmed(app.workspace.recoveryTicket())
+            screen(on = false)
+            screen(on = true)
+            assertFalse(app.workspace.blocked)
+            val until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+            while (!app.workspace.quarantined && System.nanoTime() < until) { shadowOf(Looper.getMainLooper()).idle(); Thread.sleep(5) }
+            assertTrue(app.workspace.quarantined)
+            assertTrue(app.workspace.blocked)
+            assertFalse(app.workspace.networkAllowed)
+        }
     }
     @Test fun appliedPolicyIsAcknowledgedImmediatelyBeforeRecoveryCommandsAreRequested() {
         MockWebServer().use { server ->
@@ -294,6 +373,7 @@ class RecoveryProtectionTest {
         enrolled()
         app.workspace.recoveryConfirmed(app.workspace.recoveryTicket())
         app.getSharedPreferences("radio", 0).edit().putBoolean("cut", true).commit()
+        outlastGrace()
         callback.onLost(network)
         assertTrue(app.workspace.blocked)
         assertFalse(app.workspace.networkAllowed)
@@ -409,6 +489,56 @@ class RecoveryProtectionTest {
         assertEquals(0, attributes.get())
         assertTrue(app.workspace.blocked)
         assertEquals(View.INVISIBLE, activity.findViewById<View>(android.R.id.content).visibility)
+        controller.pause().stop().destroy()
+    }
+
+    private fun <T : View> View.find(type: Class<T>): List<T> = buildList {
+        if (type.isInstance(this@find)) add(type.cast(this@find)!!)
+        if (this@find is android.view.ViewGroup) for (i in 0 until childCount) addAll(getChildAt(i).find(type))
+    }
+
+    @Test fun recoveryScreenOpensOnTheLogoAndShowsThePageOnlyIfTheCheckOutlastsIt() {
+        enrolled()
+        val controller = Robolectric.buildActivity(DeviceActivity::class.java).create().start().resume().visible()
+        val activity = controller.get()
+        val scroll = android.widget.ScrollView(activity)
+        activity.setContentView(scroll)
+        activity.wheelScrollTarget = scroll
+        app.workspace.requireRecovery(checkNow = false)
+        shadowOf(Looper.getMainLooper()).idle()
+        val logo = activity.window.decorView.find(dev.r1ptt.ui.LogoGlow::class.java).single()
+        val page = activity.window.decorView.find(TextView::class.java).first { it.text == "Recovery verification required" }
+        assertEquals(View.VISIBLE, logo.visibility)
+        assertFalse(page.isShown)
+        assertEquals(View.INVISIBLE, activity.findViewById<View>(android.R.id.content).visibility)
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(DeviceActivity.COVER_MS + 50))
+        assertTrue(page.isShown)
+        assertEquals(View.GONE, logo.visibility)
+        app.workspace.recoveryConfirmed(app.workspace.recoveryTicket())
+        dev.r1ptt.ui.DeviceActivity.refreshRecovery(app)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(activity.window.decorView.find(dev.r1ptt.ui.LogoGlow::class.java).isEmpty())
+        assertEquals(View.VISIBLE, activity.findViewById<View>(android.R.id.content).visibility)
+        assertSame(scroll, activity.wheelScrollTarget) // The wheel scrolls the screen again, not the old gate.
+        controller.pause().stop().destroy()
+    }
+
+    @Test fun aCheckThatPassesAtOnceStillHoldsTheLogoForABeat() {
+        enrolled()
+        val controller = Robolectric.buildActivity(DeviceActivity::class.java).create().start().resume().visible()
+        val activity = controller.get()
+        activity.setContentView(TextView(activity).apply { text = "Private cached history" })
+        app.workspace.requireRecovery(checkNow = false)
+        shadowOf(Looper.getMainLooper()).idle()
+        app.workspace.recoveryConfirmed(app.workspace.recoveryTicket())
+        dev.r1ptt.ui.DeviceActivity.refreshRecovery(app)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertFalse(app.workspace.blocked)
+        assertEquals(View.INVISIBLE, activity.findViewById<View>(android.R.id.content).visibility)
+        assertEquals(1, activity.window.decorView.find(dev.r1ptt.ui.LogoGlow::class.java).size)
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(1_000))
+        assertEquals(View.VISIBLE, activity.findViewById<View>(android.R.id.content).visibility)
+        assertTrue(activity.window.decorView.find(dev.r1ptt.ui.LogoGlow::class.java).isEmpty())
         controller.pause().stop().destroy()
     }
 

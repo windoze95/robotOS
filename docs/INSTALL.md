@@ -153,8 +153,9 @@ starts both services and checks them. It preserves existing credentials and data
 remain explicit; see [HUB.md](HUB.md#native-installation-alternative). macOS services require a
 logged-in session; Linux user services need lingering for availability after logout.
 
-Keep the host awake and reachable. A paired R1 must verify recovery status on wake before
-showing saved content or accepting normal actions; an unreachable host keeps it restricted.
+Keep the host awake and reachable. A paired R1 verifies recovery status on wake. Within 15 minutes
+of a confirmed check it opens at once and confirms in the background; otherwise it checks before
+showing saved content or accepting normal actions, and an unreachable host keeps it restricted.
 Network and recovery controls remain available. Enable device tools and recovery permissions
 on the R1 only as needed. Pairing does not enable SMS, location or remote locking.
 
@@ -166,10 +167,12 @@ Work through these with the R1 on USB:
    is read aloud. The normal screen timeout still applies during remote work and playback.
 2. **A follow-up** keeps the context (Hermes keeps the conversation). While Hermes uses a tool, the
    status line shows it ("Using …").
-3. **Wake and recovery verification.** Let the screen turn off. Wake it and wait for the paired
-   device to verify its status with the hub, then hold the button and speak. While verification is
-   pending, saved content and normal actions must stay restricted. Verify that network setup and
-   **Check recovery status** remain available during an outage.
+3. **Wake and recovery verification.** Let the screen turn off and wake it: within 15 minutes of
+   the last check it opens at once. After longer, or after a restart, it shows the glowing robotOS
+   logo while it checks and then opens; hold the button and speak. With the host unreachable, a
+   quick wake opens and is taken back within 10 seconds, and a later wake stays on the logo and
+   then the recovery screen. Verify that network setup and **Check recovery status** remain
+   available during an outage.
 4. **Dictation.** Tap the text field so the keyboard opens. Hold and speak: the words appear dimmed
    at the cursor as you talk, and on release they turn into the final text. Nothing is sent. A tap of the button sends it, and the reply is read aloud.
 5. **Taps.** A tap with the screen on turns it off. A tap while it's talking stops it. A double-tap

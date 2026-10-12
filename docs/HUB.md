@@ -127,7 +127,7 @@ Saving changed content creates a revision; saving unchanged content keeps the cu
 Only one client holds the edit lease for a prompt. Continuing on a
 second client fences the old editor; stale saves are rejected and the client retains its unsaved
 work. Independent note captures can coexist. Captures saved before a connection fails may sync
-later; the strict recovery gate blocks further paired-device use until verification succeeds.
+later; once the recovery gate takes over, it blocks paired-device use until verification succeeds.
 Shared prompt edits and chat submission require the host.
 
 On the R1, open a saved prompt and choose **Run in new chat**. robotOS opens a fresh chat with a
@@ -167,8 +167,10 @@ preserved for reconciliation, never blindly retried as a new operation.
 Each R1 has distinct workspace and recovery credentials. Marking it lost or revoked blocks shared
 workspace access on the host immediately. Its restricted recovery identity can still check in,
 receive its own recovery commands and acknowledge them. A sleeping offline device cannot receive
-the new instruction yet. On wake, the verification gate hides cached content and blocks ordinary
-actions even before that pending policy can arrive. Physical erasure still requires the device
+the new instruction yet. On a wake more than 15 minutes after its last confirmed check, the
+verification gate hides cached content and blocks ordinary actions even before that pending policy
+can arrive. Within that window the R1 opens at once and takes the screen back as soon as the
+policy arrives, or after 10 seconds without an answer. Physical erasure still requires the device
 to receive and execute a permitted command. The shared workspace and other R1s are not erased
 when local data is cleared.
 The lost policy is durable and has no expiration. On boot, waking, returning to robotOS or reconnecting,
@@ -220,11 +222,20 @@ connection is available, and may expire first. The rooted/unlocked platform does
 tamper-resistant theft protection.
 Foreground, wake and reconnect checks protect normal use without enabling periodic background
 radio wakeups: with the screen off, a check never switches the radios back on after the idle cut.
-If the R1 cannot reach the host, it stays on the recovery screen until a successful check verifies
-access. While that screen is showing, robotOS retries on its own (after 3 seconds, backing off to
-every 30 seconds) and says whether the R1 has no internet connection or the host did not answer. This also applies to a previously unrestricted device: a timeout or failed
-connection never exposes cached notes or chats. The cache remains saved on disk, and network setup
-and recovery checks remain available. Older robotOS clients must be updated to use this strict
+
+For 15 minutes after a confirmed check, a wake or a return to robotOS opens at once and is
+confirmed in the background. A lost or revoked reply takes the screen back immediately; no
+confirmation within 10 seconds takes it back and ends the grace, so the next wake checks first.
+That window is the deliberate trade: someone who wakes the R1 inside it can see cached content
+until the check fails or reports it lost. The grace lives in memory only, so a reboot or app
+restart always checks before showing anything.
+
+Outside the grace, and whenever the screen is taken back, the R1 shows the robotOS logo glowing on
+black while it checks. A check that passes fades straight to the screen; the recovery screen
+fades in only if the check takes longer than 3.5 seconds. It stays until a successful check
+verifies access, retrying on its own while it is showing (after 1 second, backing off to every
+30 seconds) and saying whether the R1 has no internet connection or the host did not answer.
+The cache remains saved on disk, and network setup and recovery checks remain available. Older robotOS clients must be updated to use this strict
 verification gate, acknowledge versioned recovery policy and report the new security posture.
 
 Update commands must follow the existing signed-release verifier and Android installer policy.
