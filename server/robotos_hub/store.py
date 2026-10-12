@@ -21,6 +21,8 @@ RECOVERY_COMMANDS = {'ring', 'stop_ring', 'show_message', 'lock', 'locate', 'cle
 SECURITY_FIELDS = {'app_restriction_available', 'secure_lock_configured', 'device_admin_active', 'device_owner',
                    'secure_lock_available', 'secure_lock_applied', 'workspace_restricted'}
 SCHEMA_VERSION = 4
+# Change rows older than this are pruned; a client whose cursor predates them is told to reload.
+CHANGE_RETENTION_MS = 7 * 24 * 3600 * 1000
 
 
 def now():
@@ -193,11 +195,22 @@ class Store:
                 self.change(db, 'run', row['id'])
             db.execute("UPDATE controls SET status='unknown',result=? WHERE status='submitting'", (canonical({'error': 'Host restarted before control outcome was confirmed'}),))
             # Never infer application of a command that the device has not acknowledged.
+            self._prune_changes(db)
         for path in self.media_dir.glob('.upload-*'):
             path.unlink(missing_ok=True)
 
     def change(self, db, kind, entity_id, action='updated'):
-        db.execute('INSERT INTO changes(kind,entity_id,action,created_at) VALUES(?,?,?,?)', (kind, entity_id, action, now()))
+        seq = db.execute('INSERT INTO changes(kind,entity_id,action,created_at) VALUES(?,?,?,?)', (kind, entity_id, action, now())).lastrowid
+        if seq % 256 == 0:
+            self._prune_changes(db)
+
+    def _prune_changes(self, db):
+        db.execute('DELETE FROM changes WHERE created_at<?', (now() - CHANGE_RETENTION_MS,))
+
+    def _change_head(self, db):
+        # AUTOINCREMENT keeps the newest sequence number here, even after its row is pruned.
+        row = db.execute("SELECT seq FROM sqlite_sequence WHERE name='changes'").fetchone()
+        return row['seq'] if row else 0
 
     def audit(self, db, actor, action, device_id=None):
         db.execute('INSERT INTO audit(actor,action,device_id,created_at) VALUES(?,?,?,?)', (actor, action, device_id, now()))
@@ -554,13 +567,23 @@ class Store:
                 'SELECT * FROM runs WHERE prompt_id=? ORDER BY created_at DESC,rowid DESC', (prompt_id,))]}
 
     def changes(self, actor, after):
-        after = integer(after, 'after')
+        """Changes after a cursor, 1000 rows a page. after='latest' returns only the current head."""
+        if after != 'latest':
+            after = integer(after, 'after')
         with self.connection() as db:
             self.authorize(db, actor)
             # Device administrative events do not leak to workspace-only tokens.
             kinds = ('note', 'prompt', 'run', 'resume', 'device', 'command') if actor['role'] == 'owner' else ('note', 'prompt', 'run', 'resume')
+            head = self._change_head(db)
+            if after == 'latest':
+                return {'cursor': head, 'more': False, 'items': []}
+            oldest = db.execute('SELECT MIN(seq) AS seq FROM changes').fetchone()['seq']
+            # A cursor from before pruned history, or past the head of a replaced database, can't
+            # be continued: the client reloads everything and continues from the head.
+            if after > head or after < (head + 1 if oldest is None else oldest) - 1:
+                return {'cursor': head, 'more': False, 'reset': True, 'items': []}
             rows = db.execute('SELECT * FROM changes WHERE seq>? ORDER BY seq LIMIT 1000', (after,)).fetchall()
-            return {'cursor': rows[-1]['seq'] if rows else after,
+            return {'cursor': rows[-1]['seq'] if rows else after, 'more': len(rows) == 1000,
                     'items': [dict(row) for row in rows if row['kind'] in kinds]}
 
     def resume(self, actor, body=None):
@@ -724,16 +747,21 @@ class Store:
             # Enrollment/owner policy owns the name; an old device cache cannot undo a rename.
             name = row['name']
             version = string(body.get('app_version', ''), 'app_version', 100)
+            reported = (version, battery, None if charging is None else int(charging), canonical(capabilities), canonical(settings),
+                        applied_revision, stored_location, max(applied_policy, row['applied_policy_revision']), policy_applied_at, stored_security)
+            previous = tuple(row[key] for key in ('app_version', 'battery', 'charging', 'capabilities', 'applied_settings',
+                                                  'applied_settings_revision', 'location', 'applied_policy_revision', 'policy_applied_at', 'security'))
             db.execute('''UPDATE devices SET name=?,app_version=?,battery=?,charging=?,capabilities=?,applied_settings=?,
               applied_settings_revision=?,location=?,applied_policy_revision=?,policy_applied_at=?,security=?,last_seen=?,updated_at=? WHERE id=?''',
-              (name, version, battery, charging, canonical(capabilities), canonical(settings), applied_revision, stored_location,
-               max(applied_policy, row['applied_policy_revision']), policy_applied_at, stored_security, now(), now(), row['id']))
+              (name, *reported, now(), now(), row['id']))
             self._expire_commands(db, row['id'])
             if restricted:
                 self._quarantine(db, row['id'])
             commands = [self.command(r) for r in db.execute("SELECT * FROM commands WHERE device_id=? AND status IN ('queued','received') AND expires_at>? ORDER BY created_at", (row['id'], now()))
                         if not restricted or (policy_current and r['type'] in RECOVERY_COMMANDS)]
-            self.change(db, 'device', row['id'])
+            # A heartbeat that only moves last_seen is not a change; /devices still reports it.
+            if reported != previous:
+                self.change(db, 'device', row['id'])
             return {'device_id': row['id'], 'name': row['name'], **self.policy(self._row(db, 'devices', row['id'])),
                     'settings_revision': row['settings_revision'], 'settings': json.loads(row['desired_settings']), 'commands': commands}
 

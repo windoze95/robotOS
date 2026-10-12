@@ -216,4 +216,56 @@ class WorkspaceStoreTest {
             assertThrows(IllegalArgumentException::class.java) { HubHttp.normalize(it) }
         }
     }
+
+    /** A disk that counts writes and can hold one open, as a slow fsync would. */
+    private class SlowDisk : dev.r1ptt.data.ConfigBlobStorage {
+        @Volatile var blob: String? = null
+        val writes = java.util.concurrent.atomic.AtomicInteger()
+        @Volatile var gate: java.util.concurrent.CountDownLatch? = null
+        val started = java.util.concurrent.CountDownLatch(1)
+        override fun read() = blob
+        override fun write(blob: String) {
+            writes.incrementAndGet()
+            gate?.let { started.countDown(); check(it.await(5, java.util.concurrent.TimeUnit.SECONDS)) }
+            this.blob = blob
+        }
+    }
+    @Test fun aSyncPassThatChangesNothingDoesNotTouchTheDisk() {
+        val disk = SlowDisk(); val store = WorkspaceStore(temporary.newFolder(), disk)
+        val notes = listOf(JSONObject().put("id", "n1").put("title", "Host note").put("revision", 3))
+        fun pass() {
+            store.reconcile("notes", notes.map { it.copyJson() }, store.version())
+            store.reconcile("prompts", emptyList(), store.version())
+            store.mutate { it.put("resume", JSONObject().put("revision", 2)) }
+        }
+        pass()
+        val writes = disk.writes.get()
+        assertTrue(writes > 0)
+        pass(); pass()
+        assertEquals(writes, disk.writes.get())
+        assertEquals("Host note", store.item("notes", "n1")!!.getString("title"))
+        assertEquals("Host note", WorkspaceStore(temporary.newFolder(), SlowDisk().apply { blob = disk.blob }).item("notes", "n1")!!.getString("title"))
+    }
+    @Test fun screensReadTheLastSavedDataWhileAWriteWaitsOnTheDisk() {
+        val disk = SlowDisk(); val store = WorkspaceStore(temporary.newFolder(), disk)
+        store.put("notes", JSONObject().put("id", "saved"))
+        val gate = java.util.concurrent.CountDownLatch(1); disk.gate = gate
+        val writer = kotlin.concurrent.thread { store.put("notes", JSONObject().put("id", "arriving")) }
+        val reader = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            assertTrue(disk.started.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            val read = reader.submit<List<String>> { store.items("notes").map { it.getString("id") } }
+            assertEquals(listOf("saved"), read.get(1, java.util.concurrent.TimeUnit.SECONDS))
+        } finally { gate.countDown(); writer.join(5_000); reader.shutdownNow() }
+        assertEquals(listOf("saved", "arriving"), store.items("notes").map { it.getString("id") })
+    }
+    @Test fun clearingOrReenrollingForgetsTheChangeCursor() {
+        val store = WorkspaceStore(temporary.newFolder())
+        store.changeCursor = 42
+        store.clearShared()
+        assertNull(store.changeCursor)
+        store.changeCursor = 43
+        store.resumeAfterEnrollment()
+        assertNull(store.changeCursor)
+    }
 }

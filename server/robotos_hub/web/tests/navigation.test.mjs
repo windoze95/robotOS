@@ -15,7 +15,7 @@ function consoleFixture(hash, responses) {
     return nodes.get(selector);
   };
   const context=vm.createContext({
-    ...model,h:model.escapeHTML,URLSearchParams,structuredClone,AbortController,crypto:webcrypto,setTimeout:(callback,delay)=>setTimeout(callback,delay).unref(),clearTimeout,setInterval,clearInterval,
+    ...model,h:model.escapeHTML,URLSearchParams,structuredClone,AbortController,crypto:webcrypto,setTimeout:(callback,delay)=>setTimeout(callback,delay).unref(),clearTimeout,setInterval:(callback,delay)=>setInterval(callback,delay).unref(),clearInterval,
     window:{addEventListener(){},scrollY:0},
     document:{querySelector:node,querySelectorAll:selector=>selector==='#prompt-title,#prompt-instruction,#blocks textarea'?[node('#prompt-title'),node('#prompt-instruction')]:[],addEventListener(){},hidden:false},
     location:{hash},
@@ -29,7 +29,7 @@ function consoleFixture(hash, responses) {
       return {ok:status<400,status,text:async()=>JSON.stringify(response.body??response)};
     }
   });
-  vm.runInContext(source.slice(source.indexOf('\nconst $'),source.lastIndexOf('\ntry{s.session'))+'\nglobalThis.testConsole={s,shell,navigate,handleAction,poll};',context);
+  vm.runInContext(source.slice(source.indexOf('\nconst $'),source.lastIndexOf('\ntry{s.session'))+'\nglobalThis.testConsole={s,shell,navigate,handleAction,poll,enterWorkspace,stopPolling:()=>clearInterval(pollTimer)};',context);
   context.testConsole.s.session={csrf_token:'fixture'};
   context.testConsole.shell();
   return {...context.testConsole,nodes,calls,location:context.location};
@@ -163,4 +163,24 @@ test('polling a competing prompt revision preserves the browser draft and revoke
   assert.equal(app.s.lease,null);
   assert.equal(app.nodes.get('#prompt-instruction').readOnly,true);
   assert.match(app.nodes.get('#edit-notice').innerHTML,/Review versions/);
+});
+test('a fresh console starts polling at the newest change instead of replaying history',async()=>{
+  const idle={cursor:4200,more:false,items:[]};
+  const app=consoleFixture('#prompts',{...promptResponses(),'GET /changes?after=latest':idle,'GET /changes?after=4200':idle});
+  await app.enterWorkspace();
+  app.stopPolling();
+  assert.equal(app.s.cursor,4200);
+  const loads=app.calls.filter(call=>call.path==='/prompts').length;
+  await app.poll();
+  assert.equal(app.calls.some(call=>call.path==='/changes?after=0'),false);
+  assert.equal(app.calls.filter(call=>call.path==='/prompts').length,loads,'an idle poll does not reload the list');
+});
+test('a reset change feed reloads the open list and continues from the head',async()=>{
+  const note={id:'n',kind:'text',title:'Kept note',text:'Text'};
+  const app=consoleFixture('#notes',{...promptResponses(),'GET /notes':{items:[note]},'GET /changes?after=0':{cursor:77,more:false,reset:true,items:[]}});
+  await app.navigate();
+  const loads=app.calls.filter(call=>call.path==='/notes').length;
+  await app.poll();
+  assert.equal(app.calls.filter(call=>call.path==='/notes').length,loads+1);
+  assert.equal(app.s.cursor,77);
 });

@@ -301,6 +301,41 @@ class EncryptedConfigPersistenceTest {
         assertEquals(encrypted("start+first+second"), storage.blob)
     }
 
+    @Test
+    fun anUpdateThatChangesNothingSkipsTheKeystoreAndTheDisk() {
+        val storage = MemoryStorage(encrypted("start"))
+        val cipher = FakeCipher()
+        val store = persistence(storage, cipher)
+
+        assertEquals("start", store.update { it })
+        assertEquals(0, cipher.seals)
+        assertTrue(storage.writes.isEmpty())
+        store.update { "next" }
+        store.update { "next" }
+        assertEquals(listOf(encrypted("next")), storage.writes)
+        assertEquals(1, cipher.seals)
+    }
+
+    @Test
+    fun readersGetTheCommittedValueWithoutWaitingForAWrite() {
+        val storage = MemoryStorage(encrypted("start"))
+        val store = persistence(storage)
+        val writing = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        storage.beforeCommit = { writing.countDown(); check(release.await(5, TimeUnit.SECONDS)) }
+        val writer = thread { store.update { "next" } }
+        val reader = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            assertTrue(writing.await(5, TimeUnit.SECONDS))
+            assertEquals("start", reader.submit<String> { store.value }.get(1, TimeUnit.SECONDS))
+        } finally {
+            release.countDown()
+            writer.join(5_000)
+            reader.shutdownNow()
+        }
+        assertEquals("next", store.value)
+    }
+
     private fun expectFailure(action: () -> Unit): ConfigPersistenceException {
         try {
             action()
