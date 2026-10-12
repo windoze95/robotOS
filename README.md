@@ -114,8 +114,8 @@ owner-SMS conversations use the host's durable run API; shared chats appear in *
 local conversations remain saved. **Synced** means the host acknowledged the content;
 **Saved on this R1** means another device may not have it yet. Paired devices verify recovery
 status on boot, wake, foreground and reconnect. Within 15 minutes of a confirmed check, a wake opens
-at once and is confirmed in the background; a lost reply, or no answer within 10 seconds, takes the
-screen back. Otherwise the device checks before showing saved content or accepting actions, and an
+at once and is confirmed in the background. A lost reply takes the screen back, and so does no
+answer within 20 seconds of a usable network (at most 30 seconds after the wake). Otherwise the device checks before showing saved content or accepting actions, and an
 unreachable host keeps it restricted until verification succeeds.
 
 ## Battery

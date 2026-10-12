@@ -170,7 +170,8 @@ receive its own recovery commands and acknowledge them. A sleeping offline devic
 the new instruction yet. On a wake more than 15 minutes after its last confirmed check, the
 verification gate hides cached content and blocks ordinary actions even before that pending policy
 can arrive. Within that window the R1 opens at once and takes the screen back as soon as the
-policy arrives, or after 10 seconds without an answer. Physical erasure still requires the device
+policy arrives, or when no answer comes within 20 seconds of a usable network (at most 30 seconds
+after the wake). Physical erasure still requires the device
 to receive and execute a permitted command. The shared workspace and other R1s are not erased
 when local data is cleared.
 The lost policy is durable and has no expiration. On boot, waking, returning to robotOS or reconnecting,
@@ -224,8 +225,11 @@ Foreground, wake and reconnect checks protect normal use without enabling period
 radio wakeups: with the screen off, a check never switches the radios back on after the idle cut.
 
 For 15 minutes after a confirmed check, a wake or a return to robotOS opens at once and is
-confirmed in the background. A lost or revoked reply takes the screen back immediately; no
-confirmation within 10 seconds takes it back and ends the grace, so the next wake checks first.
+confirmed in the background. A lost or revoked reply takes the screen back immediately. No
+confirmation within 20 seconds of a usable network, and never later than 30 seconds after the wake,
+takes it back and ends the grace, so the next wake checks first. The clock waits for the network
+because pocket mode's radios take a few seconds to return, and Tailscale can then need WireGuard's
+15-second re-handshake before traffic flows.
 That window is the deliberate trade: someone who wakes the R1 inside it can see cached content
 until the check fails or reports it lost. The grace lives in memory only, so a reboot or app
 restart always checks before showing anything.
