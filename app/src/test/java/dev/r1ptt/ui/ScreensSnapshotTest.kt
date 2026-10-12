@@ -163,6 +163,14 @@ class ScreensSnapshotTest {
         File(out, "$name.png").outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
     }
 
+    @Test fun appIconIsTheRobotMark() {
+        val icon = requireNotNull(app.getDrawable(R.mipmap.ic_launcher))
+        assertTrue(icon is android.graphics.drawable.AdaptiveIconDrawable)
+        val bitmap = Bitmap.createBitmap(432, 432, Bitmap.Config.ARGB_8888)
+        Canvas(bitmap).also { canvas -> canvas.drawColor(Color.rgb(40, 40, 40)); icon.setBounds(0, 0, 432, 432); icon.draw(canvas) }
+        File(out, "app-icon.png").outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+    }
+
     @Test fun recoveryOpensOnTheGlowingLogo() {
         // Robolectric runs an endless animation's frames back to back, which would race the clock
         // past the logo; a paused choreographer draws frames only as the test advances time.
@@ -184,7 +192,8 @@ class ScreensSnapshotTest {
             val glow = all(gate).first { it is LogoGlow }
             (LogoGlow::class.java.getDeclaredField("animator").apply { isAccessible = true }.get(glow) as android.animation.ValueAnimator).currentPlayTime = 1_300
             snapView(gate, "recovery-cover-glow")
-            settle(DeviceActivity.COVER_MS)
+            glow.performClick() // Swiped away: the recovery page and its controls.
+            settle(400)
             snapView(gate, "recovery-page")
             controller.pause().stop().destroy()
         } finally { org.robolectric.shadows.ShadowChoreographer.setPaused(false) }

@@ -108,8 +108,8 @@ open class DeviceActivity : Activity() {
 
     /**
      * Covers every native screen and hides its accessibility tree, including saved history. It
-     * opens on the glowing logo; the recovery page fades in only if the check is still running
-     * after [COVER_MS], so a normal wake goes logo, then the screen, with nothing in between.
+     * opens on the glowing logo, which stays until the check passes or is swiped away to the
+     * recovery page, so a normal wake goes logo, then the screen, with nothing in between.
      */
     internal fun applyRecoveryGate() {
         val app = recoveryApp ?: return
@@ -137,7 +137,8 @@ open class DeviceActivity : Activity() {
         val ringing = hub.quarantined || hub.management.ringing
         val key = listOf(label, detail, identity.optString("return_message"), identity.optBoolean("secure_lock_applied"),
             hub.canReenroll, ringing).joinToString("\u0000")
-        val covering = covering()
+        // A restricted R1 shows its page (and the owner's return message) after a short beat.
+        val covering = if (hub.quarantined) coverBeat() else !revealed
         val shell = gate
         if (shell != null && gatePageKey == key && gateCovering == covering) return
         if (shell == null || gatePageKey != key) {
@@ -151,7 +152,10 @@ open class DeviceActivity : Activity() {
         val looking = resumedNow && hasWindowFocus()
         val root = shell ?: FrameLayout(this).also { root ->
             root.setBackgroundColor(getColor(R.color.bg))
-            gateCover = LogoGlow(this).also { root.addView(it, FrameLayout.LayoutParams(-1, -1)) }
+            gateCover = LogoGlow(this).also {
+                it.onSwiped = { revealPage() }
+                root.addView(it, FrameLayout.LayoutParams(-1, -1))
+            }
             gate = root
             (window.decorView as ViewGroup).addView(root, ViewGroup.LayoutParams(-1, -1))
             if (looking) { root.alpha = 0f; root.animate().alpha(1f).setDuration(FADE_MS).start() }
@@ -210,9 +214,9 @@ open class DeviceActivity : Activity() {
 
     private fun View.fade(show: Boolean, smooth: Boolean) {
         animate().cancel()
-        if (!smooth) { alpha = 1f; visibility = if (show) View.VISIBLE else View.GONE; return }
+        if (!smooth) { alpha = 1f; translationX = 0f; translationY = 0f; visibility = if (show) View.VISIBLE else View.GONE; return }
         if (show) {
-            if (visibility != View.VISIBLE) { alpha = 0f; visibility = View.VISIBLE }
+            if (visibility != View.VISIBLE) { alpha = 0f; visibility = View.VISIBLE; translationX = 0f; translationY = 0f }
             animate().alpha(1f).setDuration(FADE_MS).start()
         } else if (visibility == View.VISIBLE) animate().alpha(0f).setDuration(FADE_MS).withEndAction { visibility = View.GONE }.start()
     }
@@ -346,18 +350,21 @@ open class DeviceActivity : Activity() {
     }
 
     companion object {
-        /** The logo holds the screen this long before the recovery page fades in. */
+        /** A restricted R1's logo holds the screen this long before its page fades in. */
         internal const val COVER_MS = 3_500L
         /** The shortest logo beat once shown, so a check that passes at once never flickers. */
         private const val MIN_COVER_MS = 900L
         private const val FADE_MS = 220L
         private var coverFrom = 0L
         private var gateUp = false
+        /** The logo was swiped away to the recovery page; reset whenever robotOS comes into view. */
+        private var revealed = false
         private val phases = android.os.Handler(android.os.Looper.getMainLooper())
         private val showPage = Runnable { activities.toList().forEach { if (!it.isDestroyed) it.applyRecoveryGate() } }
         /** Starts the logo beat again: when the gate comes up and whenever robotOS comes into view. */
         private fun restartCover() {
             coverFrom = SystemClock.uptimeMillis()
+            revealed = false
             phases.removeCallbacks(showPage)
             phases.postDelayed(showPage, COVER_MS)
         }
@@ -365,7 +372,11 @@ open class DeviceActivity : Activity() {
             if (blocked && !gateUp) restartCover()
             gateUp = blocked
         }
-        private fun covering() = SystemClock.uptimeMillis() - coverFrom < COVER_MS
+        private fun coverBeat() = SystemClock.uptimeMillis() - coverFrom < COVER_MS
+        private fun revealPage() {
+            revealed = true
+            showPage.run()
+        }
         private fun coverHold() = coverFrom + MIN_COVER_MS - SystemClock.uptimeMillis()
         private var startedActivities = 0
         private val activities = java.util.Collections.newSetFromMap(java.util.WeakHashMap<DeviceActivity, Boolean>())

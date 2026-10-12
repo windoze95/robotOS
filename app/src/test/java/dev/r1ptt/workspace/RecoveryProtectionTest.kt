@@ -497,7 +497,7 @@ class RecoveryProtectionTest {
         if (this@find is android.view.ViewGroup) for (i in 0 until childCount) addAll(getChildAt(i).find(type))
     }
 
-    @Test fun recoveryScreenOpensOnTheLogoAndShowsThePageOnlyIfTheCheckOutlastsIt() {
+    @Test fun recoveryScreenHoldsTheLogoUntilItConnectsOrIsSwipedAway() {
         enrolled()
         val controller = Robolectric.buildActivity(DeviceActivity::class.java).create().start().resume().visible()
         val activity = controller.get()
@@ -511,7 +511,21 @@ class RecoveryProtectionTest {
         assertEquals(View.VISIBLE, logo.visibility)
         assertFalse(page.isShown)
         assertEquals(View.INVISIBLE, activity.findViewById<View>(android.R.id.content).visibility)
-        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(DeviceActivity.COVER_MS + 50))
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(30)) // A long check keeps the logo.
+        assertEquals(View.VISIBLE, logo.visibility)
+        assertFalse(page.isShown)
+        // A short drag settles back; a swipe past a third of the screen sends the logo away.
+        fun drag(dy: Float) {
+            val x = logo.width / 2f; val y = logo.height / 2f; val t = android.os.SystemClock.uptimeMillis()
+            logo.dispatchTouchEvent(android.view.MotionEvent.obtain(t, t, android.view.MotionEvent.ACTION_DOWN, x, y, 0))
+            logo.dispatchTouchEvent(android.view.MotionEvent.obtain(t, t + 40, android.view.MotionEvent.ACTION_MOVE, x, y + dy, 0))
+            logo.dispatchTouchEvent(android.view.MotionEvent.obtain(t, t + 80, android.view.MotionEvent.ACTION_UP, x, y + dy, 0))
+            shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(400))
+        }
+        drag(-logo.height * .1f)
+        assertEquals(View.VISIBLE, logo.visibility)
+        assertFalse(page.isShown)
+        drag(-logo.height * .6f)
         assertTrue(page.isShown)
         assertEquals(View.GONE, logo.visibility)
         app.workspace.recoveryConfirmed(app.workspace.recoveryTicket())
@@ -520,6 +534,21 @@ class RecoveryProtectionTest {
         assertTrue(activity.window.decorView.find(dev.r1ptt.ui.LogoGlow::class.java).isEmpty())
         assertEquals(View.VISIBLE, activity.findViewById<View>(android.R.id.content).visibility)
         assertSame(scroll, activity.wheelScrollTarget) // The wheel scrolls the screen again, not the old gate.
+        controller.pause().stop().destroy()
+    }
+
+    @Test fun aLostR1ShowsItsReturnMessageAfterTheLogoWithoutASwipe() {
+        enrolled()
+        val controller = Robolectric.buildActivity(DeviceActivity::class.java).create().start().resume().visible()
+        val activity = controller.get()
+        app.workspace.identity.update { it.put("lost", true).put("lost_message", "Please return this R1") }
+        dev.r1ptt.ui.DeviceActivity.refreshRecovery(app)
+        shadowOf(Looper.getMainLooper()).idle()
+        val logo = activity.window.decorView.find(dev.r1ptt.ui.LogoGlow::class.java).single()
+        assertEquals(View.VISIBLE, logo.visibility)
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(DeviceActivity.COVER_MS + 50))
+        assertEquals(View.GONE, logo.visibility)
+        assertTrue(activity.window.decorView.find(TextView::class.java).single { it.text == "Please return this R1" }.isShown)
         controller.pause().stop().destroy()
     }
 
