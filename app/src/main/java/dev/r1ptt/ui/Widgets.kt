@@ -9,7 +9,9 @@ import android.graphics.ColorFilter
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PixelFormat
+import android.graphics.RadialGradient
 import android.graphics.RectF
+import android.graphics.Shader
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
@@ -80,6 +82,62 @@ class LevelBars @JvmOverloads constructor(context: Context, attrs: AttributeSet?
             bar.set(x, mid - h / 2, x + w, mid + h / 2)
             canvas.drawRoundRect(bar, w / 2, w / 2, paint)
         }
+    }
+}
+
+/**
+ * robotOS's mark, the app icon's orange disc and mic, centered on black with a slow orange glow.
+ * The recovery screen shows it while a check runs. Moves only while it is actually shown.
+ */
+class LogoGlow(context: Context) : View(context) {
+    private val accent = context.getColor(R.color.accent)
+    private val disc = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = accent }
+    private val halo = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val mic = requireNotNull(context.getDrawable(R.drawable.ic_launcher_foreground)).mutate()
+        .apply { setTint(context.getColor(R.color.on_accent)) }
+    private var radius = 0f
+    private var reach = 0f
+    private val animator = ValueAnimator.ofFloat(0f, 1f).apply {
+        duration = 2600
+        repeatCount = ValueAnimator.INFINITE
+        interpolator = LinearInterpolator()
+        addUpdateListener { invalidate() }
+    }
+
+    init { contentDescription = context.getString(R.string.app_name) }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        radius = min(w, h) * .17f
+        reach = radius * 2.6f
+        fun tint(alpha: Int) = (accent and 0xFFFFFF) or (alpha shl 24)
+        halo.shader = RadialGradient(w / 2f, h / 2f, reach, intArrayOf(tint(170), tint(60), Color.TRANSPARENT),
+            floatArrayOf(radius / reach, .55f, 1f), Shader.TileMode.CLAMP)
+        // The adaptive icon's 66-unit safe zone fills the disc, as on a launcher.
+        val half = (radius * 108 / 66).toInt()
+        mic.setBounds(w / 2 - half, h / 2 - half, w / 2 + half, h / 2 + half)
+    }
+
+    override fun onVisibilityAggregated(isVisible: Boolean) {
+        super.onVisibilityAggregated(isVisible)
+        if (isVisible && !animator.isStarted) animator.start() else if (!isVisible) animator.cancel()
+    }
+
+    override fun onDetachedFromWindow() { animator.cancel(); super.onDetachedFromWindow() }
+
+    override fun onDraw(canvas: Canvas) {
+        val t = if (animator.isRunning) animator.animatedValue as Float else 0f
+        // Starts dim and swells, so the glow rises as the cover appears.
+        val glow = (sin(2 * PI * (t - .25f)) * .5 + .5).toFloat()
+        val cx = width / 2f
+        val cy = height / 2f
+        halo.alpha = (95 + 160 * glow).toInt()
+        val scale = .84f + .2f * glow
+        canvas.save()
+        canvas.scale(scale, scale, cx, cy)
+        canvas.drawCircle(cx, cy, reach, halo)
+        canvas.restore()
+        canvas.drawCircle(cx, cy, radius, disc)
+        mic.draw(canvas)
     }
 }
 

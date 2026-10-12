@@ -70,7 +70,7 @@ typing or dictation. Replies and task controls live in Chats and **Chat activity
 remains an editor. The host manages models and credentials; paired screens do not offer the
 legacy direct model picker or connection form.
 Saved content and actions remain behind recovery verification on boot, wake, foreground and
-reconnect. See [HERMES.md](HERMES.md) for the shared workflow. The local task-record controls
+reconnect, with a 15-minute grace after a confirmed check ([HUB.md](HUB.md)). See [HERMES.md](HERMES.md) for the shared workflow. The local task-record controls
 below describe the optional unpaired direct connection.
 
 On a compatible host, robotOS saves the request and task identity before it needs them for

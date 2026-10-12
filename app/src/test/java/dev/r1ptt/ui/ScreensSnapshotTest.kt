@@ -155,6 +155,41 @@ class ScreensSnapshotTest {
 
     private fun all(view: View): List<View> = listOf(view) + if (view is ViewGroup) (0 until view.childCount).flatMap { all(view.getChildAt(it)) } else emptyList()
 
+    private fun snapView(view: View, name: String) {
+        view.measure(View.MeasureSpec.makeMeasureSpec(480, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(640, View.MeasureSpec.EXACTLY))
+        view.layout(0, 0, 480, 640)
+        val bitmap = Bitmap.createBitmap(480, 640, Bitmap.Config.ARGB_8888)
+        Canvas(bitmap).also { it.drawColor(Color.BLACK); view.draw(it) }
+        File(out, "$name.png").outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+    }
+
+    @Test fun recoveryOpensOnTheGlowingLogo() {
+        // Robolectric runs an endless animation's frames back to back, which would race the clock
+        // past the logo; a paused choreographer draws frames only as the test advances time.
+        org.robolectric.shadows.ShadowChoreographer.setPaused(true)
+        try {
+            val data = JSONObject().put("device_id", "r1-a").put("base_url", "http://127.0.0.1:9")
+                .put("device_token", "content-token").put("recovery_token", "recovery-token")
+            val disk = object : ConfigBlobStorage { var value: String? = null; override fun read() = value; override fun write(blob: String) { value = blob } }
+            val cipher = object : ConfigCipher { override fun seal(plain: String, allowKeyCreation: Boolean) = plain; override fun open(blob: String) = blob }
+            val codec = object : ConfigCodec<JSONObject> { override fun encode(value: JSONObject) = value.toString(); override fun decode(plain: String) = JSONObject(plain) }
+            app.workspace.identity.javaClass.getDeclaredField("persistence").apply { isAccessible = true }
+                .set(app.workspace.identity, EncryptedConfigPersistence(data, disk, cipher, codec))
+            val controller = Robolectric.buildActivity(DeviceActivity::class.java).create().start().resume().visible()
+            settle(40)
+            val gate = all(controller.get().window.decorView).first { it is LogoGlow }.parent as View
+            snapView(gate, "recovery-cover-start")
+            // Half a breath: the glow at its brightest. A paused choreographer does not step the
+            // animation itself, so place it there directly.
+            val glow = all(gate).first { it is LogoGlow }
+            (LogoGlow::class.java.getDeclaredField("animator").apply { isAccessible = true }.get(glow) as android.animation.ValueAnimator).currentPlayTime = 1_300
+            snapView(gate, "recovery-cover-glow")
+            settle(DeviceActivity.COVER_MS)
+            snapView(gate, "recovery-page")
+            controller.pause().stop().destroy()
+        } finally { org.robolectric.shadows.ShadowChoreographer.setPaused(false) }
+    }
+
     @Test fun workspaceAndBuilderFitTheR1Canvas() {
         configured()
         val note = app.workspace.store.capture("Release thoughts", "Check reconnect behavior before the next release.")

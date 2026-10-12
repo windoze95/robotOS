@@ -52,7 +52,7 @@ class HubHttp {
         .url(normalize(base) + "/api/v1" + path).header("Accept", "application/json")
         .apply { if (token.isNotBlank()) header("Authorization", "Bearer $token") }
     private fun execute(request: Request, longRunning: Boolean = false, recovery: Boolean = false): JSONObject =
-        call(request, if (longRunning) client.newBuilder().readTimeout(150, TimeUnit.SECONDS).callTimeout(160, TimeUnit.SECONDS).build() else if (recovery) client.newBuilder().connectTimeout(5, TimeUnit.SECONDS).readTimeout(8, TimeUnit.SECONDS).callTimeout(10, TimeUnit.SECONDS).build() else client) { response ->
+        call(request, if (longRunning) client.newBuilder().readTimeout(150, TimeUnit.SECONDS).callTimeout(160, TimeUnit.SECONDS).build() else if (recovery) client.newBuilder().connectTimeout(3, TimeUnit.SECONDS).readTimeout(8, TimeUnit.SECONDS).callTimeout(10, TimeUnit.SECONDS).build() else client) { response ->
         val raw = response.body?.string().orEmpty()
         if (!response.isSuccessful) fail(response.code, raw)
         if (raw.isBlank()) JSONObject() else JSONObject(raw)

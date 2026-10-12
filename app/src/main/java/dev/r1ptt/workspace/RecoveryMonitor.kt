@@ -15,8 +15,8 @@ class RecoveryMonitor(private val app: App) {
     private val events = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
-                Intent.ACTION_SCREEN_OFF -> app.workspace.requireRecovery(checkNow = false)
-                Intent.ACTION_SCREEN_ON, Intent.ACTION_USER_PRESENT -> app.workspace.requireRecovery()
+                Intent.ACTION_SCREEN_OFF -> app.workspace.fenceUnlessFresh()
+                Intent.ACTION_SCREEN_ON, Intent.ACTION_USER_PRESENT -> app.workspace.wake()
             }
         }
     }
@@ -26,7 +26,7 @@ class RecoveryMonitor(private val app: App) {
         override fun onAvailable(network: Network) {
             available = network
             usable = false
-            app.workspace.requireRecovery()
+            app.workspace.wake()
         }
         override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
             if (network != available) return
@@ -35,14 +35,14 @@ class RecoveryMonitor(private val app: App) {
             // reconnect or to retry a pending check; the radio state itself is never touched here.
             val wasUsable = usable
             usable = dev.r1ptt.power.RadioPolicy.usable(caps)
-            if (usable && (!wasUsable || app.workspace.recoveryPending)) app.workspace.recoverNow()
+            if (usable && (!wasUsable || app.workspace.recoveryWanted)) app.workspace.recoverNow()
         }
         override fun onLost(network: Network) {
             if (network == available) {
                 available = null
-                // Pocket mode deliberately cuts Wi-Fi. Fence now, but do not acquire a radio
-                // hold that would undo that cut; wake/onAvailable will verify immediately.
-                app.workspace.requireRecovery(checkNow = false)
+                // Pocket mode deliberately cuts Wi-Fi. Fence unless still fresh, but never acquire a
+                // radio hold that would undo that cut; wake/onAvailable will verify.
+                app.workspace.fenceUnlessFresh()
             }
         }
     }
