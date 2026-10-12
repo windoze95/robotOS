@@ -264,7 +264,7 @@ class WorkspaceClient(private val app: App) {
     } }
     suspend fun acquire(id: String, takeover: Boolean = false): JSONObject = withContext(Dispatchers.IO) { lock.withLock {
         val lease = api("POST", "/prompts/$id/lease", JSONObject().put("takeover", takeover))
-        api("GET", "/prompts/$id").put("lease_token", lease.getString("lease_token")).put("lease_expires_at", lease.getLong("expires_at"))
+        api("GET", "/prompts/$id").put("lease_token", lease.getString("lease_token"))
     } }
     suspend fun renew(prompt: JSONObject): JSONObject = withContext(Dispatchers.IO) { lock.withLock {
         val lease = api("POST", "/prompts/${prompt.getString("id")}/lease", JSONObject().put("takeover", false))
@@ -287,7 +287,7 @@ class WorkspaceClient(private val app: App) {
         runCatching { api("PUT", "/resume", JSONObject().put("prompt_id", prompt.getString("id")).put("block_id", JSONObject.NULL)
             .put("scroll_y", scroll).put("base_revision", resume.optLong("revision"))) }
         mutable.value = "Synced"
-        saved.put("lease_token", lease.getString("lease_token")).put("lease_expires_at", lease.getLong("expires_at"))
+        saved.put("lease_token", lease.getString("lease_token"))
     } }
     fun release(prompt: JSONObject) { scope.launch { lock.withLock { runCatching {
         api("POST", "/prompts/${prompt.getString("id")}/release", JSONObject().put("lease_token", prompt.optString("lease_token")))

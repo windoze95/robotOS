@@ -18,15 +18,42 @@ class WorkspaceStore(directory: File) {
     private val disk = AtomicConfigFile(File(directory, "workspace.json"))
     var loadError: String? = null
         private set
-    private var data = try { disk.read()?.let(::JSONObject) ?: JSONObject() } catch (_: Exception) {
-        loadError = "Saved workspace data could not be read. It has been preserved for recovery; writes are disabled."
+    private var data = try { (disk.read()?.let(::JSONObject) ?: JSONObject()).also {
+        if (compactCache(it)) disk.write(it.toString())
+    } } catch (_: Exception) {
+        loadError = "Saved workspace data could not be loaded. It has been preserved for recovery; writes are disabled."
         JSONObject()
+    }
+    /** Keep edit leases in the active editor; stored drafts need only their content and revision. */
+    private fun compactCache(root: JSONObject): Boolean {
+        var changed = false
+        mapOf("notes" to listOf("capture_hash"), "note_drafts" to listOf("capture_hash"),
+            "prompts" to listOf("lease_token", "lease_expires_at"), "drafts" to listOf("lease_token", "lease_expires_at"),
+            "receipts" to listOf("type")).forEach { (key, fields) ->
+            val items = root.optJSONArray(key)?.objects() ?: return@forEach
+            if (items.any { item -> fields.any(item::has) }) {
+                root.put(key, JSONArray(items.map { item -> item.copyJson().apply { fields.forEach(::remove) } }))
+                changed = true
+            }
+        }
+        root.optJSONArray("runs")?.objects()?.let { runs ->
+            val fields = listOf("last_run_revision", "last_run_id", "changed_since_run", "state",
+                "id", "revision", "created_at", "updated_at")
+            if (runs.any { run -> run.optJSONObject("snapshot")?.let { fields.any(it::has) } == true }) {
+                root.put("runs", JSONArray(runs.map { run -> run.copyJson().apply {
+                    optJSONObject("snapshot")?.apply { fields.forEach(::remove) }
+                } }))
+                changed = true
+            }
+        }
+        return changed
     }
     @Synchronized fun snapshot(): JSONObject = data.copyJson()
     @Synchronized fun mutate(change: (JSONObject) -> Unit) {
         check(loadError == null) { loadError.orEmpty() }
         val next = data.copyJson()
         change(next)
+        compactCache(next)
         disk.write(next.toString())
         data = next
     }
@@ -85,7 +112,7 @@ class WorkspaceStore(directory: File) {
         }.map { incoming ->
             val existing = old[incoming.getString("id")]
             newer(key, existing, incoming).copyJson().also { next ->
-                listOf("local_media", "capture_hash").forEach { field -> existing?.optString(field)?.takeIf(String::isNotBlank)?.let { next.put(field, it) } }
+                existing?.stringOrEmpty("local_media")?.takeIf(String::isNotBlank)?.let { next.put("local_media", it) }
             }
         }
         root.put(key, JSONArray(merged + retained))
@@ -107,7 +134,7 @@ class WorkspaceStore(directory: File) {
             command.optLong("expires_at") <= now -> "Command expired"
             else -> null
         }
-        put("receipts", JSONObject().put("id", id).put("device_id", device).put("type", command.optString("type"))
+        put("receipts", JSONObject().put("id", id).put("device_id", device)
             .put("status", if (rejection == null) "received" else "failed").put("result", JSONObject().put("message", rejection ?: "Received"))
             .put("ack_pending", true))
         return rejection == null
