@@ -168,6 +168,13 @@ class PairedConnectionUiTest {
         assertTrue(attachment.text.contains("PROMPT BUILDER"))
         assertTrue(attachment.text.contains("Travel notes"))
         assertFalse(activity.canDictate())
+        // An attachment owns neither keyboard dictation nor the keyboard's tap-to-send gesture.
+        activity.javaClass.getDeclaredField("resumed").apply { isAccessible = true }.setBoolean(activity, true)
+        assertFalse(activity.isActive())
+        app.turns.attachTarget(activity)
+        app.turns.onPress(android.os.SystemClock.uptimeMillis()); app.turns.onHoldStart()
+        assertFalse(app.turns.state.value.phase in setOf(dev.r1ptt.Phase.LISTENING, dev.r1ptt.Phase.DICTATING))
+        app.turns.detachTarget(activity)
         activity.insert("Cannot replace the prompt")
         assertTrue(app.history.draft.isEmpty())
         attachment.performClick()

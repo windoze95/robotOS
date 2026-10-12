@@ -200,7 +200,7 @@ class TurnController(private val app: App) : Gestures.Listener {
         destination = CapturedInput(target?.takeIf { it.isActive() })
         dictating = destination.target != null
         editingPress = false
-        dictationBlockedPress = (destination.target == null && privateInputScreen) || destination.target?.canDictate() == false
+        dictationBlockedPress = (destination.target == null && (privateInputScreen || PromptAttachment.attached(app))) || destination.target?.canDictate() == false
         if (dictationBlockedPress) { settle(); return }
         transcriptionConfig = cfg // a mid-press settings change cannot redirect private audio
         // Keyboard closed → a turn for Hermes; keyboard open → dictation. Both stream through live

@@ -258,7 +258,7 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
 
     // ---- DictationTarget ----
 
-    override fun isActive(): Boolean = resumed && (PromptAttachment.attached(app) || imeVisible && input.hasFocus())
+    override fun isActive(): Boolean = resumed && imeVisible && input.hasFocus() && !PromptAttachment.attached(app)
     override fun canDictate(): Boolean = !PromptAttachment.attached(app)
     override fun dictationUnavailable() { showToast("Tap the attached prompt to edit it in Prompt Builder") }
 
