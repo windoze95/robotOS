@@ -125,7 +125,7 @@ class SettingsActivity : DeviceActivity() {
         if (app.workspace.identity.paired) {
             body.addView(ui.note("Your workspace host manages the Hermes connection and model. Change them on the host; this R1 uses its paired device access."))
             body.addView(ui.button("Host & devices", primary = true) { startActivity(Intent(this, dev.r1ptt.workspace.HubSettingsActivity::class.java)) })
-            body.addView(ui.button("Workspace runs") { startActivity(dev.r1ptt.workspace.WorkspaceActivity.runsIntent(this)) })
+            body.addView(ui.button("Saved prompts") { startActivity(dev.r1ptt.workspace.WorkspaceActivity.promptsIntent(this)) })
             return
         }
         val before = app.store.value.agent

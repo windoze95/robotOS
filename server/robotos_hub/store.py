@@ -119,7 +119,10 @@ class Store:
             command_columns = {row['name'] for row in db.execute('PRAGMA table_info(commands)')}
             if 'issuer_role' not in command_columns:
                 db.execute("ALTER TABLE commands ADD COLUMN issuer_role TEXT NOT NULL DEFAULT ''")
-            db.execute('PRAGMA user_version=2')
+            run_columns = {row['name'] for row in db.execute('PRAGMA table_info(runs)')}
+            if 'hermes_session_id' not in run_columns:
+                db.execute('ALTER TABLE runs ADD COLUMN hermes_session_id TEXT')
+            db.execute('PRAGMA user_version=3')
         os.chmod(self.path, 0o600)
         self.recover()
 
@@ -438,6 +441,10 @@ class Store:
             self._revision(row, body.get('base_revision'))
             title, instruction = string(body.get('title', ''), 'title', 500), string(body.get('instruction', ''))
             blocks = self._blocks(db, body.get('blocks', []))
+            if (title, instruction, blocks) == (row['title'], row['instruction'], json.loads(row['blocks'])):
+                # Saving an unchanged prompt must not manufacture another executable revision.
+                db.execute('UPDATE leases SET expires_at=? WHERE prompt_id=?', (now() + self.config.lease_seconds * 1000, prompt_id))
+                return self.prompt(db, row)
             db.execute('UPDATE prompts SET title=?,instruction=?,blocks=?,revision=revision+1,updated_at=? WHERE id=?',
                        (title, instruction, canonical(blocks), now(), prompt_id))
             db.execute('UPDATE leases SET expires_at=? WHERE prompt_id=?', (now() + self.config.lease_seconds * 1000, prompt_id))
@@ -490,6 +497,9 @@ class Store:
         item = {key: row[key] for key in ('id', 'prompt_id', 'prompt_revision', 'status', 'output', 'error', 'created_at', 'updated_at')}
         item['approval'] = json.loads(row['approval']) if row['approval'] else None
         item['snapshot'] = json.loads(row['snapshot'])
+        # These are references to Hermes's canonical execution, never host credentials or URLs.
+        # Older receipts may lack the session ID: do not guess it from the requested session alias.
+        item['hermes'] = {'run_id': row['remote_id'], 'session_id': row['hermes_session_id']}
         return item
 
     def runs(self, actor, run_id=None):
@@ -498,6 +508,14 @@ class Store:
             if run_id:
                 return self.run(self._row(db, 'runs', run_id))
             return {'items': [self.run(row) for row in db.execute('SELECT * FROM runs ORDER BY created_at DESC')]}
+
+    def prompt_submissions(self, actor, prompt_id):
+        """Receipts and cached Hermes replies for one saved prompt, without acquiring its lease."""
+        with self.connection() as db:
+            self.authorize(db, actor)
+            self._row(db, 'prompts', prompt_id)
+            return {'items': [self.run(row) for row in db.execute(
+                'SELECT * FROM runs WHERE prompt_id=? ORDER BY created_at DESC,rowid DESC', (prompt_id,))]}
 
     def changes(self, actor, after):
         after = integer(after, 'after')

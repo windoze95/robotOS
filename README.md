@@ -18,8 +18,8 @@ Plugged in, configured radios stay available. OpenAI is used only for speech. Se
 
 The default installation includes a **shared workspace** with written notes, voice recordings and a Prompt Builder on
 the R1 and in a self-hosted web console. Combine several notes, add more while editing, preview the
-request, save it for later and track the reply. Two enrolled R1s use the same saved revisions and
-run history. The console also manages device enrollment, settings and permissioned recovery
+request, save it for later and send it to Hermes. Two enrolled R1s share saved revisions and
+the confirmed reply attached to each prompt. Hermes owns execution, conversation history and scheduled jobs. The console also manages device enrollment, settings and permissioned recovery
 commands. See [docs/HUB.md](docs/HUB.md) for setup, synchronization and lost-device limits.
 For native services, Docker Compose, k3s, or Hermes and robotOS on separate machines, see
 [deployment architectures](docs/DEPLOYMENT.md). The hub owns shared state; the MCP adapter runs
@@ -98,12 +98,12 @@ explicitly unsupported; incoming MMS notices are retained locally and shown as w
 details exposes native failure codes without retrying a failed or uncertain attempt.
 MMS, RCS, old inbox import, and live carrier acceptance are not included. See [docs/MESSAGES.md](docs/MESSAGES.md).
 
-**Hermes** shows the paired workspace host, **Host & devices**, **Workspace runs**, local device
+**Hermes** shows the paired workspace host, **Host & devices**, **Saved prompts**, local device
 permissions and the shared daily SMS count. The host manages models and credentials. **Stop speech**
 stops audio; run controls request cancellation or handle the exact pending approval. Unpaired legacy
 connections retain their direct task controls. See [docs/HERMES.md](docs/HERMES.md).
 
-**Workspace** holds notes, recordings, saved prompts and host-owned runs. **Workspace settings**
+**Workspace** holds notes, recordings and saved prompts with their Hermes replies. **Workspace settings**
 pairs each R1 separately and exposes local management permissions. Once paired, new PTT and
 owner-SMS conversations use the host's durable run API; shared chats appear in **Chats**. Existing
 local conversations remain saved. **Synced** means the host acknowledged the content;

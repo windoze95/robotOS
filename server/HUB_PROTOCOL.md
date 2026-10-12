@@ -41,11 +41,18 @@ Audio notes are not synced until their media upload is confirmed. Keep local aud
 
 ## Prompt Builder
 
+Hermes owns sessions, conversation history, execution and scheduling. The hub's `runs` records
+are submission receipts and cached replies attached to saved prompt revisions, not a separate
+job scheduler or conversation-history store. Existing route names remain compatible with R1
+synchronization and MCP clients. The R1 and web UI show replies within their saved prompt.
+
 - `GET /prompts` / `GET /prompts/{id}`.
 - `POST /prompts {id,title,instruction,blocks:[]}` creates a draft.
 - `POST /prompts/{id}/lease {takeover:false|true}` returns `{lease_token,expires_at,revision}`.
   A takeover fences the previous editor. Same owner/device renews without changing the token.
 - `PUT /prompts/{id} {base_revision,lease_token,title,instruction,blocks}` commits a revision.
+  Unchanged content renews the lease and returns the current revision without creating another
+  executable revision or marking a completed prompt as changed.
 - `POST /prompts/{id}/release {lease_token}` releases only the matching editor lease.
 - `POST /prompts/{id}/run {revision,request_id,run_again:false|true}` reserves one run atomically.
   Default Run attaches to the existing run for the revision. Explicit Run again creates a new
@@ -55,6 +62,8 @@ Audio notes are not synced until their media upload is confirmed. Keep local aud
 - `POST /runs/{id}/reconcile {}` checks an uncertain submission with its original identity and
   payload, only within both original and freshly advertised Hermes durable deduplication windows.
   Different runs for the same prompt/session cannot overlap; same-revision default Run still attaches.
+- `GET /prompts/{id}/submissions` returns `{items:[...]}` containing only that prompt's receipts,
+  newest first. Reading replies does not acquire an editing lease.
 - `GET /changes?after=<sequence>` returns `{cursor,items}`. Clients also refresh on foreground.
 - `GET /resume` / `PUT /resume {prompt_id,block_id,scroll_y,base_revision}` saves last shared place.
 
@@ -66,7 +75,11 @@ inside the builder. Removing a block never deletes its source note.
 
 Prompt shape: `{id,title,instruction,blocks,revision,created_at,updated_at,last_run_revision,
 last_run_id,state:"draft"|"running"|"ran"|"needs_attention",changed_since_run}`.
-Run shape: `{id,prompt_id,prompt_revision,status,output,error,created_at,updated_at,approval?,snapshot}`.
+Run shape: `{id,prompt_id,prompt_revision,status,output,error,created_at,updated_at,approval?,snapshot,hermes}`.
+`hermes` is `{run_id,session_id}`: confirmed upstream identifiers or null. The session identifier
+comes from Hermes's validated status response, not the requested session alias. Older receipts
+can have a run identifier but no session identifier. These fields contain no host address or
+credential. Optional session metadata never blocks an otherwise valid completion.
 Snapshot includes the immutable saved prompt plus exact `preview`; session ID remains stable per prompt.
 Statuses: queued, submitting, submission_unknown, running, waiting_for_approval, stopping,
 completed, failed, cancelled, interrupted. Mark Ran only after completed output is stored.

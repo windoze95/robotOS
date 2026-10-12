@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {previewPrompt, missingTranscripts, reconcileDraft, reconcileSavedDraft, recoveryAfterSave, operationIsCurrent, transcriptTargetUnchanged, captureAdmission, commandSupport, isRunActive, locationDescription, describeSync, escapeHTML, recoveryPolicy, securityPosture} from '../model.mjs';
+import {previewPrompt, missingTranscripts, reconcileDraft, reconcileSavedDraft, recoveryAfterSave, operationIsCurrent, transcriptTargetUnchanged, captureAdmission, commandSupport, isRunActive, workspaceRoute, promptSubmissionLink, promptSubmissions, locationDescription, describeSync, escapeHTML, recoveryPolicy, securityPosture} from '../model.mjs';
 
 test('preview preserves user text and omits empty blocks; audio requires a transcript', () => {
   const prompt = {instruction:'Plan this.',blocks:[{kind:'text',text:'First thought\nnext line'},{kind:'text',text:' '},{kind:'audio',text:''},{kind:'audio',text:'Second thought'}]};
@@ -20,6 +20,29 @@ test('unsaved browser changes survive a competing device save and are marked for
 test('unknown submission stays active, never appears as a completed result', () => {
   assert.equal(isRunActive({status:'submission_unknown'}),true);
   assert.equal(isRunActive({status:'completed'}),false);
+});
+test('old run links resolve to prompt context without adding a standalone run view', () => {
+  assert.deepEqual(workspaceRoute('#runs'),{view:'prompts',id:null,submissionId:null});
+  assert.deepEqual(workspaceRoute('#runs/old%2Frequest'),{view:'prompts',id:null,submissionId:null,legacyRunId:'old/request'});
+  assert.deepEqual(workspaceRoute(promptSubmissionLink('prompt/one','request/two')),{view:'prompts',id:'prompt/one',submissionId:'request/two'});
+  assert.equal(promptSubmissionLink(null,'unknown'),'#prompts');
+  assert.deepEqual(workspaceRoute('#runs/%broken'),{view:'prompts',id:null,submissionId:null});
+  assert.deepEqual(workspaceRoute('#unknown/not-a-prompt'),{view:'prompts',id:null,submissionId:null});
+});
+test('a prompt shows only its own submissions and keeps an old unknown outcome inspectable', () => {
+  const submissions=[
+    {id:'other',prompt_id:'other',created_at:4,status:'completed'},
+    {id:'latest',prompt_id:'prompt',created_at:3,status:'running'},
+    {id:'unknown',prompt_id:'prompt',created_at:1,status:'submission_unknown'},
+    {id:'earlier',prompt_id:'prompt',created_at:2,status:'completed'}
+  ];
+  assert.equal(promptSubmissions(submissions,'prompt').selected.id,'latest');
+  const linked=promptSubmissions(submissions,'prompt','unknown');
+  assert.equal(linked.selected.status,'submission_unknown');
+  assert.deepEqual(linked.earlier.map(item=>item.id),['latest','earlier']);
+  assert.equal(promptSubmissions(submissions,'prompt','other').selected.id,'latest');
+  assert.deepEqual(promptSubmissions(submissions,'missing'),{selected:null,earlier:[]});
+  assert.equal(submissions[0].id,'other','choosing a reply must not reorder or mutate the stored receipts');
 });
 test('management requires explicit reported capability and secure lock is respected', () => {
   assert.equal(commandSupport({},'factory_reset').enabled,false);

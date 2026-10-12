@@ -1,7 +1,9 @@
 # Shared workspace and device management
 
-The robotOS host service stores notes, recordings, prompt revisions and run results. R1 devices
-and the browser use the same API. Hermes accesses it through the robotOS MCP adapter. The service
+The robotOS host service stores notes, recordings, prompt revisions and device policy. It keeps
+submission receipts and confirmed Hermes replies with their prompts. Hermes owns agent execution,
+session history and scheduled jobs. R1 devices and the browser use the same hub API, and Hermes
+accesses the workspace through the robotOS MCP adapter. The service
 runs independently of Hermes, so saving and syncing do not require an agent turn.
 
 The host database is authoritative. Each R1 keeps a local cache and pending captures. A local save
@@ -121,14 +123,20 @@ the blocks, correct transcripts and preview the exact request. Source notes rema
 removing a block does not delete its note. Recording uploads and transcription failures retain
 the original audio for recovery.
 
-Saving creates a revision. Only one client holds the edit lease for a prompt. Continuing on a
+Saving changed content creates a revision; saving unchanged content keeps the current revision.
+Only one client holds the edit lease for a prompt. Continuing on a
 second client fences the old editor; stale saves are rejected and the client retains its unsaved
 work. Independent note captures can coexist. Captures saved before a connection fails may sync
 later; the strict recovery gate blocks further paired-device use until verification succeeds.
 Canonical prompt edits and Run require the host.
 
-Run reserves an immutable prompt revision before dispatch. Duplicate taps attach to the same
-run. Run again explicitly creates another attempt. A run becomes Ran only when the host confirms
+Open a saved prompt to see its Hermes progress and reply without taking editing control. Choose
+to edit only when changing the prompt. Results and approvals stay with the prompt; there is no
+separate Runs library. Save for later means manually returning to the prompt; scheduled jobs
+are managed by Hermes.
+
+Submitting reserves an immutable prompt revision before dispatch. Duplicate taps attach to the same
+submission. Run again explicitly creates another attempt. A prompt becomes Ran only when Hermes confirms
 completion and stores the reply. Changes after execution show Changed since last run. A dropped
 connection or unknown submission never authorizes a replacement request. Stop requests remain
 pending until Hermes confirms their outcome. Approvals apply to the exact run and approval ID.
@@ -173,7 +181,7 @@ Ordinary settings changes are also disabled until the owner restores access.
 Owner recovery commands such as ringing, return information and locally permitted locking remain
 available after the R1 confirms that it has applied the policy. Local permissions still apply.
 This prevents new agent requests; work already admitted to Hermes may finish and must be checked
-in Runs. Revocation does not undo an external action that has already happened.
+with the original prompt. Revocation does not undo an external action that has already happened.
 Clearing local workspace also revokes its workspace credential immediately and requires a new
 enrollment code to restore shared access. Its recovery credential remains available.
 

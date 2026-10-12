@@ -154,7 +154,7 @@ class HermesActivity : DeviceActivity() {
     private fun renderTask(state: HermesRunState) {
         if (paired) {
             tasks.removeAllViews()
-            tasks.addView(ui.button("Workspace runs") { startActivity(WorkspaceActivity.runsIntent(this)) })
+            tasks.addView(ui.button("Saved prompts") { startActivity(WorkspaceActivity.promptsIntent(this)) })
             return
         }
         // Do not rebuild the form or steal wheel position for every streamed token.

@@ -127,8 +127,13 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual('completed', result['status'])
         self.assertEqual('The confirmed reply', result['output'])
         self.assertEqual('ran', self.call('GET', '/prompts/shared-conversation', credentials=self.a['workspace'])['state'])
+        receipts = self.call('GET', '/prompts/shared-conversation/submissions', credentials=self.b['workspace'])['items']
+        self.assertEqual([run['id']], [receipt['id'] for receipt in receipts])
+        self.assertEqual('The confirmed reply', receipts[0]['output'])
+        self.assertEqual(run['id'], receipts[0]['hermes']['run_id'])
         self.call('PATCH', '/devices/' + self.a['device_id'], {'base_revision': 1, 'lost': True, 'lost_message': 'Please return this R1'})
         self.call('GET', '/notes', credentials=self.a['workspace'], expected=403)
+        self.call('GET', '/prompts/shared-conversation/submissions', credentials=self.a['workspace'], expected=403)
         packet = {'app_version': '0.4.0', 'capabilities': {'show_message': True}, 'settings': {'remote_management': True}, 'settings_revision': 0}
         recovery = self.call('POST', '/devices/self/check-in', packet, self.a['recovery'])
         self.assertTrue(recovery['lost'])

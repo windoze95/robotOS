@@ -39,6 +39,7 @@ class WorkspaceActivity : DeviceActivity() {
     private var leaseJob: Job? = null
     private var audioButton: android.widget.Button? = null
     private var runId: String? = null
+    private var viewedPromptId: String? = null
     private var draftFields: (() -> Unit)? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -66,9 +67,9 @@ class WorkspaceActivity : DeviceActivity() {
             status?.text = value
             if (hub.quarantined && screen != "restricted") restricted()
             else if (!hub.blocked && screen == "restricted") landingPage()
-            else if (!hub.blocked && value != "Syncing…" && screen in setOf("index", "notes", "prompts", "runs")) {
+            else if (!hub.blocked && value != "Syncing…" && screen in setOf("index", "notes", "prompts")) {
                 val y = wheelScrollTarget?.scrollY ?: 0
-                when (screen) { "index" -> index(); "notes" -> notes(); "prompts" -> prompts(); "runs" -> runs() }
+                when (screen) { "index" -> index(); "notes" -> notes(); "prompts" -> prompts() }
                 wheelScrollTarget?.post { wheelScrollTarget?.scrollTo(0, y) }
             }
         } }
@@ -83,8 +84,14 @@ class WorkspaceActivity : DeviceActivity() {
         if (saving) { showToast("Wait for this action to finish; your local draft is preserved"); return }
         if (recorder != null) { finishRecording(); return }
         stashDraft(); stopPlayback(); poll?.cancel()
-        if (screen == "index" || screen == "restricted") finish()
-        else { prompt?.let(hub::release); prompt = null; index() }
+        when (screen) {
+            "index", "restricted" -> finish()
+            "prompt" -> prompts()
+            "prompt_input" -> viewedPromptId?.let { promptDetail(it, runId) } ?: prompts()
+            "builder" -> prompt?.getString("id")?.let { promptDetail(it) } ?: prompts()
+            "preview" -> prompt?.let(::builder) ?: prompts()
+            else -> { releasePrompt(); index() }
+        }
     }
     private fun page(title: String, name: String, back: () -> Unit = ::back) {
         screen = name; draftFields = null; audioButton = null
@@ -106,9 +113,10 @@ class WorkspaceActivity : DeviceActivity() {
     }
     private fun landingPage() {
         if (hub.blocked) { restricted(); return }
-        val openRuns = intent.getBooleanExtra(EXTRA_RUNS, false)
+        val openPrompts = intent.getBooleanExtra(EXTRA_PROMPTS, false) || intent.getBooleanExtra(EXTRA_RUNS, false)
+        intent.removeExtra(EXTRA_PROMPTS)
         intent.removeExtra(EXTRA_RUNS)
-        if (openRuns) runs() else index()
+        if (openPrompts) prompts() else index()
     }
     private fun index() {
         if (hub.blocked) { restricted(); return }
@@ -121,7 +129,6 @@ class WorkspaceActivity : DeviceActivity() {
         recordingControl()
         body.addView(ui.actionRow("Notes", "${hub.store.items("notes").size} saved · select several for a prompt") { notes() })
         body.addView(ui.actionRow("Prompt Builder", "Saved prompts and drafts") { prompts() })
-        body.addView(ui.actionRow("Runs", "Progress, approvals and replies") { runs() })
         val resume = hub.store.snapshot().optJSONObject("resume")
         resume?.optString("prompt_id")?.takeIf { it.isNotBlank() && it != "null" }?.let { id ->
             if (id.startsWith("shared-")) body.addView(ui.button("Continue shared chat", primary = true) {
@@ -252,6 +259,8 @@ class WorkspaceActivity : DeviceActivity() {
     } }
     private fun stopPlayback() { playback?.let { runCatching { it.stop() }; AudioPlayback.stopped(it); it.release() }; playback = null }
     private fun prompts() {
+        if (hub.blocked) { restricted(); return }
+        releasePrompt(); poll?.cancel(); viewedPromptId = null; runId = null
         page("Prompt Builder", "prompts")
         body.addView(ui.button("New prompt", primary = true) { choosePrompt(emptyList(), onlyNew = true) })
         hub.store.items("drafts").forEach { draft ->
@@ -260,7 +269,7 @@ class WorkspaceActivity : DeviceActivity() {
         val all = hub.store.items("prompts")
         if (all.isEmpty()) body.addView(ui.note("Create a prompt from notes, recordings or an instruction. Save it here and run it later."))
         all.sortedByDescending { it.optLong("updated_at") }.forEach { saved ->
-            body.addView(ui.actionRow(saved.optString("title", "Untitled prompt"), promptStatus(saved)) { openPrompt(saved.getString("id")) })
+            body.addView(ui.actionRow(saved.optString("title", "Untitled prompt"), promptStatus(saved)) { promptDetail(saved.getString("id")) })
         }
         body.addView(ui.button("Refresh") { task { hub.sync(); prompts() } })
     }
@@ -363,9 +372,9 @@ class WorkspaceActivity : DeviceActivity() {
         body.addView(ui.button("Save prompt", primary = true) { savePrompt(value, run = false) })
         body.addView(ui.button("Save and run") { savePrompt(value, run = true) })
         value.optString("last_run_id").takeIf { it.isNotBlank() && it != "null" }?.let { last ->
-            body.addView(ui.button("Open last reply") { runDetail(last) })
+            body.addView(ui.button("Hermes reply") { stashDraft(); promptDetail(value.getString("id"), last) })
             if (hub.store.item("runs", last)?.optString("status") in setOf("completed", "failed", "cancelled", "interrupted")) body.addView(ui.button("Run again") { showDeviceDialog(AlertDialog.Builder(this).setTitle("Run this prompt again?")
-                .setMessage("This creates another run and can repeat actions in the prompt.").setPositiveButton("Run again") { _, _ -> savePrompt(value, run = true, again = true) }.setNegativeButton("Cancel", null)) })
+                .setMessage("This sends the prompt to Hermes again and can repeat its actions.").setPositiveButton("Run again") { _, _ -> savePrompt(value, run = true, again = true) }.setNegativeButton("Cancel", null)) })
         }
     }
     private fun moveBlock(value: JSONObject, index: Int, direction: Int) {
@@ -397,54 +406,92 @@ class WorkspaceActivity : DeviceActivity() {
             hub.sync()
             val hydrated = WorkspaceClient.hydrateMedia(value) { hub.store.item("notes", it) }
             val saved = hub.save(hydrated, wheelScrollTarget?.scrollY ?: 0); prompt = saved
-            if (run) { val result = hub.run(saved, again); saving = false; runDetail(result.getString("id")) }
+            if (run) { val result = hub.run(saved, again); saving = false; promptDetail(saved.getString("id"), result.getString("id")) }
             else { saving = false; builder(saved); showToast("Synced · available on your other R1") }
         }
     }
-    private fun runs() {
-        if (hub.blocked) { restricted(); return }
-        page("Runs", "runs")
-        body.addView(ui.button("Refresh") { task { hub.sync(); runs() } })
-        hub.store.items("runs").sortedByDescending { it.optLong("created_at") }.forEach { run ->
-            val saved = hub.store.item("prompts", run.optString("prompt_id"))
-            body.addView(ui.actionRow(saved?.optString("title") ?: "Prompt run", run.optString("status").replace('_', ' ')) { runDetail(run.getString("id")) })
-        }
+    private fun releasePrompt() {
+        leaseJob?.cancel(); leaseJob = null
+        prompt?.let(hub::release); prompt = null
     }
-    private fun runDetail(id: String) {
-        runId = id; poll?.cancel()
-        val run = hub.store.item("runs", id)
-        page("Prompt run", "run")
-        if (run == null) body.addView(ui.note("Waiting for the host to return this run.")) else {
+    /** A saved prompt owns its reply controls. Reading a reply never takes over editing. */
+    private fun promptDetail(promptId: String, submissionId: String? = null) {
+        if (hub.blocked) { restricted(); return }
+        releasePrompt(); poll?.cancel(); viewedPromptId = promptId
+        val saved = hub.store.item("prompts", promptId)
+        val id = submissionId ?: saved?.stringOrEmpty("last_run_id")?.takeIf(String::isNotBlank)
+        runId = id
+        val run = id?.let { hub.store.item("runs", it) }
+        page("Saved prompt", "prompt")
+        body.addView(ui.title(saved?.optString("title") ?: "Prompt", 20f))
+        if (saved != null) body.addView(ui.note(promptStatus(saved, run)))
+        if (id == null) {
+            body.addView(ui.note("Saved for later. Send this prompt when you are ready; Hermes handles the conversation."))
+            if (saved != null) body.addView(ui.button("Send to Hermes", primary = true) { sendSavedPrompt(saved) })
+        } else if (run == null) body.addView(ui.note("Waiting for the host to return the Hermes reply.")) else {
+            body.addView(ui.section("Hermes reply"))
             body.addView(ui.title(run.optString("status").replace('_', ' '), 20f))
             body.addView(ui.text(run.stringOrEmpty("output").ifBlank { run.stringOrEmpty("error").ifBlank { "No completed reply yet." } }))
             run.optJSONObject("snapshot")?.let { snapshot ->
-                body.addView(ui.button("View prompt used for this run") {
-                    page("Run input", "run_input", back = { runDetail(id) })
-                    body.addView(ui.note("Saved revision ${run.optLong("prompt_revision")}. Later prompt edits do not change this run."))
+                body.addView(ui.button("View text sent to Hermes") {
+                    page("Sent to Hermes", "prompt_input", back = { promptDetail(promptId, id) })
+                    body.addView(ui.note("Saved revision ${run.optLong("prompt_revision")}. Later prompt edits do not change what was sent."))
                     body.addView(ui.text(WorkspaceClient.preview(snapshot)))
                 })
             }
             val approval = run.optJSONObject("approval")
             if (run.optString("status") == "waiting_for_approval" && approval != null) {
                 body.addView(ui.note(approval.optString("description").ifBlank { approval.toString() }))
-                body.addView(ui.button("Allow once", primary = true) { task { hub.runAction(id, "approval", approval.optString("request_id", approval.optString("id", approval.optString("approval_id"))), "once"); runDetail(id) } })
-                body.addView(ui.button("Deny") { task { hub.runAction(id, "approval", approval.optString("request_id", approval.optString("id", approval.optString("approval_id"))), "deny"); runDetail(id) } })
+                body.addView(ui.button("Allow once", primary = true) { task { hub.runAction(id, "approval", approval.optString("request_id", approval.optString("id", approval.optString("approval_id"))), "once"); promptDetail(promptId, id) } })
+                body.addView(ui.button("Deny") { task { hub.runAction(id, "approval", approval.optString("request_id", approval.optString("id", approval.optString("approval_id"))), "deny"); promptDetail(promptId, id) } })
             }
             if (run.optString("status") == "submission_unknown") {
-                body.addView(ui.button("Reconcile original submission", primary = true) { task { hub.runAction(id, "reconcile"); runDetail(id) } })
-                body.addView(ui.note("Checks the original durable request identity. It does not create a new run."))
+                body.addView(ui.button("Check submission", primary = true) { task { hub.runAction(id, "reconcile"); promptDetail(promptId, id) } })
+                body.addView(ui.note("Checks whether Hermes accepted the original request without sending another copy."))
             }
             if (run.optString("status") !in setOf("completed", "failed", "cancelled", "interrupted")) {
-                body.addView(ui.button("Stop run") { task { hub.runAction(id, "stop"); runDetail(id) } })
+                body.addView(ui.button("Stop task") { task { hub.runAction(id, "stop"); promptDetail(promptId, id) } })
+            } else if (saved != null) {
+                if (saved.optBoolean("changed_since_run")) body.addView(ui.button("Send changes to Hermes", primary = true) { sendSavedPrompt(saved) })
+                else body.addView(ui.button("Run again") { showDeviceDialog(AlertDialog.Builder(this).setTitle("Run this prompt again?")
+                    .setMessage("This sends the prompt to Hermes again and can repeat its actions.")
+                    .setPositiveButton("Run again") { _, _ -> sendSavedPrompt(saved, again = true) }.setNegativeButton("Cancel", null)) })
             }
         }
-        body.addView(ui.button("Refresh") { task { hub.sync(); runDetail(id) } })
-        if (run?.optString("status") !in setOf("completed", "failed", "cancelled", "interrupted")) poll = scope.launch {
-            delay(5000); if (screen == "run" && runId == id) { runCatching { hub.sync() }; if (!hub.blocked && screen == "run" && runId == id) runDetail(id) }
+        if (saved != null) {
+            body.addView(ui.button("Edit prompt") { openPrompt(promptId) })
+            body.addView(ui.button("View saved prompt") {
+                page("Saved prompt text", "prompt_input", back = { promptDetail(promptId, id) })
+                body.addView(ui.text(WorkspaceClient.preview(saved)))
+            })
+        }
+        body.addView(ui.button("Refresh") { task { hub.sync(); promptDetail(promptId) } })
+        if (id != null && run?.optString("status") !in setOf("completed", "failed", "cancelled", "interrupted")) poll = scope.launch {
+            delay(5000); if (screen == "prompt" && viewedPromptId == promptId && runId == id) {
+                runCatching { hub.sync() }
+                if (!hub.blocked && screen == "prompt" && viewedPromptId == promptId && runId == id) promptDetail(promptId, id)
+            }
         }
     }
-    private fun promptStatus(value: JSONObject): String = if (value.optBoolean("changed_since_run")) "Changed since last run"
-        else when (value.optString("state")) { "ran" -> "Ran · reply saved"; "running" -> "Running"; "needs_attention" -> "Needs attention"; else -> "Draft" }
+    private fun sendSavedPrompt(saved: JSONObject, again: Boolean = false) {
+        if (saving || hub.blocked) return
+        saving = true; enableInputs(body, false)
+        task(onError = { e -> saving = false; enableInputs(body, true); showToast(safe(e)) }) {
+            val result = hub.run(saved, again)
+            saving = false; promptDetail(saved.getString("id"), result.getString("id"))
+        }
+    }
+    private fun promptStatus(value: JSONObject, submission: JSONObject? = null): String {
+        if (value.optBoolean("changed_since_run")) return "Changed since last run"
+        // A just-accepted reply can reach this screen before the next prompt synchronization.
+        // Only a confirmed completion for this exact saved revision earns the Ran label.
+        if (submission != null && submission.optLong("prompt_revision") == value.optLong("revision")) return when (submission.optString("status")) {
+            "completed" -> "Ran · reply saved"
+            "queued", "running", "submitted" -> "Running in Hermes"
+            else -> "Needs attention"
+        }
+        return when (value.optString("state")) { "ran" -> "Ran · reply saved"; "running" -> "Running in Hermes"; "needs_attention" -> "Needs attention"; else -> "Draft" }
+    }
     private fun field(label: String, value: String = "", multi: Boolean = false) = ui.field(label, value,
         InputType.TYPE_CLASS_TEXT or if (multi) InputType.TYPE_TEXT_FLAG_MULTI_LINE else 0).apply {
         if (multi) minLines = 3
@@ -464,7 +511,8 @@ class WorkspaceActivity : DeviceActivity() {
     }
     companion object {
         private const val EXTRA_RUNS = "dev.r1ptt.workspace.RUNS"
-        fun runsIntent(context: android.content.Context) = Intent(context, WorkspaceActivity::class.java).putExtra(EXTRA_RUNS, true)
+        private const val EXTRA_PROMPTS = "dev.r1ptt.workspace.PROMPTS"
+        fun promptsIntent(context: android.content.Context) = Intent(context, WorkspaceActivity::class.java).putExtra(EXTRA_PROMPTS, true)
         var button: ((Boolean) -> Unit)? = null
         private var active: java.lang.ref.WeakReference<WorkspaceActivity>? = null
         fun pauseForRecovery() { active?.get()?.let {

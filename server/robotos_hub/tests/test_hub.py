@@ -153,6 +153,82 @@ class HubTest(HubFixture):
         self.workers.tick()
         self.assertEqual(self.fake.submissions[0][0]['session_id'], self.fake.submissions[1][0]['session_id'])
 
+    def test_unchanged_save_keeps_revision_and_attaches_to_confirmed_submission(self):
+        prompt = self.prompt()
+        run = self.store.reserve_run(self.owner, 'prompt', dict(revision=1, request_id='first'))
+        self.workers.tick()
+        self.fake.state = 'completed'
+        self.workers.tick()
+        lease = self.store.lease(self.owner, 'prompt')
+        saved = self.store.update_prompt(self.owner, 'prompt', dict(prompt, base_revision=1, lease_token=lease['lease_token']))
+        self.assertEqual(1, saved['revision'])
+        self.assertEqual('ran', saved['state'])
+        self.assertFalse(saved['changed_since_run'])
+        attached = self.store.reserve_run(self.owner, 'prompt', dict(revision=saved['revision'], request_id='second'))
+        self.assertEqual(run['id'], attached['id'])
+        self.workers.tick()
+        self.assertEqual(1, len(self.fake.submissions))
+
+    def test_prompt_receipts_preserve_editing_control_and_exclude_other_prompts(self):
+        self.prompt()
+        lease = self.store.lease(self.a['workspace'], 'prompt')
+        first = self.store.reserve_run(self.owner, 'prompt', dict(revision=1, request_id='first'))
+        self.store.create_prompt(self.owner, dict(id='other', instruction='Another prompt'))
+        self.store.reserve_run(self.owner, 'other', dict(revision=1, request_id='other-request'))
+        receipts = self.store.prompt_submissions(self.b['workspace'], 'prompt')['items']
+        self.assertEqual([first['id']], [r['id'] for r in receipts])
+        self.assertEqual(lease['lease_token'], self.store.lease(self.a['workspace'], 'prompt')['lease_token'])
+        self.assertError('wrong_scope', self.store.prompt_submissions, self.a['recovery'], 'prompt')
+        self.store.patch_device(self.owner, self.b['device_id'], dict(base_revision=1, lost=True))
+        self.assertError('device_quarantined', self.store.prompt_submissions, self.b['workspace'], 'prompt')
+
+    def test_receipt_links_confirmed_hermes_identity_without_exposing_transport_secrets(self):
+        self.prompt()
+        run = self.store.reserve_run(self.owner, 'prompt', dict(revision=1, request_id='first'))
+        self.assertEqual({'run_id': None, 'session_id': None}, run['hermes'])
+        self.workers.tick()
+        remote_id = 'remote-' + run['id']
+        with patch.object(self.fake, 'hermes', return_value={'run_id': 'wrong-run', 'status': 'running',
+                         'session_id': 'unrelated-session'}):
+            self.workers.tick()
+        self.assertIsNone(self.store.runs(self.owner, run['id'])['hermes']['session_id'])
+        with patch.object(self.fake, 'hermes', return_value={'run_id': remote_id, 'status': 'running',
+                         'session_id': 'hermes:confirmed-session'}):
+            self.workers.tick()
+        with patch.object(self.fake, 'hermes', return_value={'run_id': remote_id, 'status': 'completed',
+                         'output': 'Canonical reply'}):
+            self.workers.tick()
+        receipt = self.store.prompt_submissions(self.owner, 'prompt')['items'][0]
+        self.assertEqual({'run_id': remote_id, 'session_id': 'hermes:confirmed-session'}, receipt['hermes'])
+        self.assertEqual('Canonical reply', receipt['output'])
+        self.assertTrue({'upstream_payload', 'upstream_identity', 'requester', 'capabilities'}.isdisjoint(receipt))
+        self.assertEqual(receipt['hermes'], Store(self.config).runs(self.owner, run['id'])['hermes'])
+
+    def test_optional_session_reference_does_not_block_confirmed_completion(self):
+        self.prompt()
+        run = self.store.reserve_run(self.owner, 'prompt', dict(revision=1, request_id='first'))
+        self.workers.tick()
+        with patch.object(self.fake, 'hermes', return_value={'run_id': 'remote-' + run['id'], 'status': 'completed',
+                         'output': 'Confirmed reply', 'session_id': {'unexpected': 'shape'}}):
+            self.workers.tick()
+        receipt = self.store.runs(self.owner, run['id'])
+        self.assertEqual('completed', receipt['status'])
+        self.assertIsNone(receipt['hermes']['session_id'])
+
+    def test_upgrade_preserves_existing_completed_reply_without_inventing_session_id(self):
+        self.prompt()
+        run = self.store.reserve_run(self.owner, 'prompt', dict(revision=1, request_id='first'))
+        self.workers.tick()
+        self.fake.state = 'completed'
+        self.workers.tick()
+        with self.store.connection() as db:
+            db.execute('ALTER TABLE runs DROP COLUMN hermes_session_id')
+            db.execute('PRAGMA user_version=2')
+        upgraded = Store(self.config).runs(self.owner, run['id'])
+        self.assertEqual('completed', upgraded['status'])
+        self.assertEqual('saved result', upgraded['output'])
+        self.assertEqual({'run_id': 'remote-' + run['id'], 'session_id': None}, upgraded['hermes'])
+
     def test_completed_requires_an_explicit_string_result_before_ran(self):
         self.prompt()
         run = self.store.reserve_run(self.owner, 'prompt', dict(revision=1, request_id='first'))

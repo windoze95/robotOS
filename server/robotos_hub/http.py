@@ -268,6 +268,8 @@ class Handler(BaseHTTPRequestHandler):
                     result = self.store.prompts(actor, parts[1])
                 elif len(parts) == 2 and method == 'PUT':
                     result = self.store.update_prompt(actor, parts[1], self._json())
+                elif len(parts) == 3 and method == 'GET' and parts[2] == 'submissions':
+                    result = self.store.prompt_submissions(actor, parts[1])
                 elif len(parts) == 3 and method == 'POST' and parts[2] == 'lease':
                     result = self.store.lease(actor, parts[1], self._json().get('takeover', False))
                 elif len(parts) == 3 and method == 'POST' and parts[2] == 'release':
