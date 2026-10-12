@@ -219,8 +219,10 @@ radios are off. An alarm or location request sent to an offline device remains q
 connection is available, and may expire first. The rooted/unlocked platform does not establish
 tamper-resistant theft protection.
 Foreground, wake and reconnect checks protect normal use without enabling periodic background
-radio wakeups. If the R1 cannot reach the host, it stays on the recovery screen until a successful
-check verifies access. This also applies to a previously unrestricted device: a timeout or failed
+radio wakeups: with the screen off, a check never switches the radios back on after the idle cut.
+If the R1 cannot reach the host, it stays on the recovery screen until a successful check verifies
+access. While that screen is showing, robotOS retries on its own (after 3 seconds, backing off to
+every 30 seconds) and says whether the R1 has no internet connection or the host did not answer. This also applies to a previously unrestricted device: a timeout or failed
 connection never exposes cached notes or chats. The cache remains saved on disk, and network setup
 and recovery checks remain available. Older robotOS clients must be updated to use this strict
 verification gate, acknowledge versioned recovery policy and report the new security posture.

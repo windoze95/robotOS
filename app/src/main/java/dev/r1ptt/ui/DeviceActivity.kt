@@ -107,19 +107,26 @@ open class DeviceActivity : Activity() {
             content.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
             return
         }
-        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
-        getSystemService(android.view.inputmethod.InputMethodManager::class.java).hideSoftInputFromWindow(content.windowToken, 0)
-        content.clearFocus()
+        // This runs on every layout pass. Hiding content is idempotent; window flags and keyboard
+        // requests are not (each one relayouts and calls back here), so they run only when the
+        // gate first appears or changes. Otherwise the gate spins at frame rate.
         content.visibility = View.INVISIBLE
         content.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-        deviceDialogs.toList().also { deviceDialogs.clear() }.forEach { it.dismiss() }
         val identity = hub.identity.value
         val label = if (hub.quarantined) "Device access restricted" else "Recovery verification required"
         val detail = if (hub.quarantined) identity.optString("lost_message").ifBlank {
             "This R1 is restricted. Restore access from your robotOS host console."
-        } else "This R1 must verify its recovery status before robotOS opens. Connect to your host and retry. Saved notes and recordings remain on this R1."
+        } else if (!app.radio.isOnline()) "No internet connection. robotOS opens as soon as this R1 reaches your host, " +
+            "and keeps trying while the screen is on. Saved notes and recordings remain on this R1."
+        else "Waiting for your host to confirm this R1 hasn't been reported lost. robotOS keeps trying while the " +
+            "screen is on. Saved notes and recordings remain on this R1."
         val signature = label + detail + identity.optString("return_message")
         if (recoveryOverlay != null && recoveryLabel == signature) return
+        val secure = android.view.WindowManager.LayoutParams.FLAG_SECURE
+        if (window.attributes.flags and secure == 0) window.addFlags(secure)
+        getSystemService(android.view.inputmethod.InputMethodManager::class.java).hideSoftInputFromWindow(content.windowToken, 0)
+        content.clearFocus()
+        deviceDialogs.toList().also { deviceDialogs.clear() }.forEach { it.dismiss() }
         (recoveryOverlay?.parent as? ViewGroup)?.removeView(recoveryOverlay)
         recoveryLabel = signature
         val page = ui.page("Device recovery") {}
@@ -138,7 +145,9 @@ open class DeviceActivity : Activity() {
         if (hub.canReenroll) page.body.addView(ui.button("Pair this cleared R1") {
             startActivity(android.content.Intent(this, dev.r1ptt.workspace.HubSettingsActivity::class.java))
         })
-        page.body.addView(ui.button("Stop ringing") { hub.management.stopRinging() })
+        // A restricted R1 can be rung by its owner at any time; otherwise offer this only while
+        // ringing. The side button also stops ringing.
+        if (hub.quarantined || hub.management.ringing) page.body.addView(ui.button("Stop ringing") { hub.management.stopRinging() })
         recoveryOverlay = page.root
         (window.decorView as ViewGroup).addView(page.root, ViewGroup.LayoutParams(-1, -1))
         page.root.bringToFront()

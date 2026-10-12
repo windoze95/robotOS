@@ -303,4 +303,113 @@ class RecoveryProtectionTest {
         assertTrue(app.getSharedPreferences("radio", 0).getBoolean("cut", false))
     }
 
+    private fun internet(vararg transports: Int) = org.robolectric.shadows.ShadowNetworkCapabilities.newInstance().also { caps ->
+        shadowOf(caps).addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        transports.forEach { shadowOf(caps).addTransportType(it) }
+    }
+
+    @Test fun aVpnWithNoNetworkUnderItIsNotOnline() {
+        val vpn = android.net.NetworkCapabilities.TRANSPORT_VPN
+        assertFalse(dev.r1ptt.power.RadioPolicy.usable(internet(vpn)))
+        assertTrue(dev.r1ptt.power.RadioPolicy.usable(internet(vpn, android.net.NetworkCapabilities.TRANSPORT_CELLULAR)))
+        assertTrue(dev.r1ptt.power.RadioPolicy.usable(internet(android.net.NetworkCapabilities.TRANSPORT_WIFI)))
+        val cm = app.getSystemService(android.net.ConnectivityManager::class.java)
+        shadowOf(cm).setNetworkCapabilities(cm.activeNetwork, internet(vpn))
+        assertFalse(app.radio.isOnline())
+    }
+
+    /**
+     * On the R1, Tailscale's VPN stays the default network, so pocket mode's radio cut arrives as a
+     * capability change instead of onLost. Recovery used to answer it by holding the radios, which
+     * switched them back on and re-armed the 3-minute cut: airplane mode toggled all night.
+     */
+    @Test fun pocketModeCutUnderTailscaleNeverSwitchesRadiosBackOn() {
+        val cm = app.getSystemService(android.net.ConnectivityManager::class.java)
+        val callback = shadowOf(cm).networkCallbacks.single { it.javaClass.name.contains("RecoveryMonitor") }
+        val tunnel = requireNotNull(cm.activeNetwork)
+        callback.onAvailable(tunnel) // Before enrollment there is no recovery work to run.
+        enrolled()
+        app.workspace.recoveryConfirmed(app.workspace.recoveryTicket())
+        shadowOf(app.getSystemService(android.os.PowerManager::class.java)).setIsInteractive(false)
+        app.workspace.requireRecovery(checkNow = false) // The screen turned off.
+        app.getSharedPreferences("radio", 0).edit().putBoolean("cut", true).commit()
+        val alarms = shadowOf(app.getSystemService(android.app.AlarmManager::class.java))
+        val before = alarms.scheduledAlarms.size
+        @Suppress("UNCHECKED_CAST")
+        val holds = app.radio.javaClass.getDeclaredField("holds").apply { isAccessible = true }.get(app.radio) as Set<String>
+        val held = CopyOnWriteArrayList<String>()
+        fun watch(ms: Long) {
+            val until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(ms)
+            while (System.nanoTime() < until) { held.addAll(holds); shadowOf(Looper.getMainLooper()).idle(); Thread.sleep(2) }
+        }
+        val tunnelOnly = internet(android.net.NetworkCapabilities.TRANSPORT_VPN)
+        shadowOf(cm).setNetworkCapabilities(tunnel, tunnelOnly)
+        callback.onCapabilitiesChanged(tunnel, tunnelOnly)
+        watch(400)
+        // A pocketed request (an owner text for Hermes) may still check over a network that is up.
+        shadowOf(cm).setNetworkCapabilities(tunnel, internet(android.net.NetworkCapabilities.TRANSPORT_VPN, android.net.NetworkCapabilities.TRANSPORT_WIFI))
+        app.workspace.recoverNow()
+        watch(800)
+        assertTrue(held.isEmpty())
+        assertEquals(before, alarms.scheduledAlarms.size)
+        assertTrue(app.getSharedPreferences("radio", 0).getBoolean("cut", false))
+        assertTrue(app.workspace.recoveryPending)
+    }
+
+    @Test fun reconnectingUnderTailscaleChecksInOnceButBandwidthUpdatesDoNot() {
+        MockWebServer().use { server ->
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest) = MockResponse().setBody(policy(1, false).toString())
+            }
+            server.start()
+            val cm = app.getSystemService(android.net.ConnectivityManager::class.java)
+            val callback = shadowOf(cm).networkCallbacks.single { it.javaClass.name.contains("RecoveryMonitor") }
+            val tunnel = requireNotNull(cm.activeNetwork)
+            callback.onAvailable(tunnel) // Before enrollment there is no recovery work to run.
+            enrolled(server.url("/").toString())
+            app.workspace.recoveryConfirmed(app.workspace.recoveryTicket())
+            callback.onCapabilitiesChanged(tunnel, internet(android.net.NetworkCapabilities.TRANSPORT_VPN))
+            assertEquals(0, server.requestCount)
+            val back = internet(android.net.NetworkCapabilities.TRANSPORT_VPN, android.net.NetworkCapabilities.TRANSPORT_CELLULAR)
+            shadowOf(cm).setNetworkCapabilities(tunnel, back)
+            callback.onCapabilitiesChanged(tunnel, back)
+            fun settle(ms: Long) {
+                val until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(ms)
+                while (System.nanoTime() < until) { shadowOf(Looper.getMainLooper()).idle(); Thread.sleep(5) }
+            }
+            settle(1_000)
+            val afterReconnect = server.requestCount
+            assertTrue(afterReconnect > 0)
+            assertFalse(app.workspace.recoveryPending)
+            callback.onCapabilitiesChanged(tunnel, back) // A bandwidth estimate changed; nothing else.
+            settle(300)
+            assertEquals(afterReconnect, server.requestCount)
+        }
+    }
+
+    @Test fun visibleGateDoesNotRepeatWindowOrKeyboardWorkOnEveryLayout() {
+        enrolled()
+        val controller = Robolectric.buildActivity(DeviceActivity::class.java).create().start().resume()
+        val activity = controller.get()
+        activity.setContentView(TextView(activity).apply { text = "Private cached history" })
+        app.workspace.requireRecovery(checkNow = false)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(View.INVISIBLE, activity.findViewById<View>(android.R.id.content).visibility)
+        assertTrue(activity.window.attributes.flags and android.view.WindowManager.LayoutParams.FLAG_SECURE != 0)
+        // Each layout pass calls the gate again; re-applying window attributes relayouts the window,
+        // which is how the gate spun at frame rate for as long as it stayed up.
+        val attributes = java.util.concurrent.atomic.AtomicInteger()
+        val callback = activity.window.callback
+        activity.window.callback = object : android.view.Window.Callback by callback {
+            override fun onWindowAttributesChanged(attrs: android.view.WindowManager.LayoutParams) {
+                attributes.incrementAndGet(); callback.onWindowAttributesChanged(attrs)
+            }
+        }
+        repeat(30) { activity.applyRecoveryGate(); shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(17)) }
+        assertEquals(0, attributes.get())
+        assertTrue(app.workspace.blocked)
+        assertEquals(View.INVISIBLE, activity.findViewById<View>(android.R.id.content).visibility)
+        controller.pause().stop().destroy()
+    }
+
 }

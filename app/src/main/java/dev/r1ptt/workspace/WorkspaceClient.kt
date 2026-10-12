@@ -36,30 +36,59 @@ class WorkspaceClient(private val app: App) {
     fun requireRecovery(checkNow: Boolean = true) {
         if (!identity.paired) return
         recoveryFence.invalidate()
+        retryMs = RETRY_FIRST_MS
         mutable.value = "Checking device recovery…"
         dev.r1ptt.ui.DeviceActivity.refreshRecovery(app)
         if (checkNow) recoverNow()
     }
     @Synchronized fun recoverNow() {
         if (!identity.paired || recoveryJob?.isActive == true) return
+        retry?.cancel(); retry = null
         val ticket = recoveryTicket()
+        // Only someone looking at the screen switches the radios back on. With the screen off,
+        // pocket mode's cut stands and a check runs only over a network that is already up;
+        // waking them here undid every cut and toggled airplane mode every 3 minutes.
+        val wake = app.getSystemService(android.os.PowerManager::class.java).isInteractive
         recoveryJob = scope.launch {
             try {
-                app.radio.hold("workspace-wake-recovery", true)
+                if (wake) app.radio.hold("workspace-wake-recovery", true)
                 // Recovery has its own short HTTP deadline; never queue behind a transcription.
                 withTimeoutOrNull(15_000) { if (app.radio.awaitOnline(5_000)) recoveryOnly() }
             } catch (_: Exception) { /* Known lost state remains durable through every failure. */ }
             finally {
                 recoveryFence.offline(ticket)
-                app.radio.hold("workspace-wake-recovery", false)
-                if (!recoveryFence.verified()) mutable.value = if (quarantined) "Device access restricted" else "Recovery not verified · connect to your host and retry"
-                withContext(NonCancellable + Dispatchers.Main) { dev.r1ptt.ui.DeviceActivity.refreshRecovery(app) }
-                synchronized(this@WorkspaceClient) { recoveryJob = null }
-                // A new wake/network event during the request must receive its own fresh check.
-                if (recoveryPending && recoveryTicket() != ticket) recoverNow()
+                if (wake) app.radio.hold("workspace-wake-recovery", false)
+                if (!recoveryFence.verified()) mutable.value = when {
+                    quarantined -> "Device access restricted"
+                    app.radio.isOnline() -> "Recovery not verified · host not reached"
+                    else -> "Recovery not verified · no internet connection"
+                }
+                val looking = withContext(NonCancellable + Dispatchers.Main) {
+                    dev.r1ptt.ui.DeviceActivity.refreshRecovery(app)
+                    dev.r1ptt.ui.DeviceActivity.foregroundActivity() != null
+                }
+                synchronized(this@WorkspaceClient) {
+                    recoveryJob = null
+                    // A new wake/network event during the request must receive its own fresh check.
+                    if (recoveryPending && recoveryTicket() != ticket) recoverNow()
+                    else if (recoveryPending && !quarantined && looking) retryLater()
+                    else retryMs = RETRY_FIRST_MS
+                }
             }
         }
     }
+    /** While the gate is on screen it lifts by itself once the host answers; no tap needed. */
+    private fun retryLater() {
+        val wait = retryMs
+        retryMs = (retryMs * 2).coerceAtMost(RETRY_MAX_MS)
+        retry = scope.launch {
+            delay(wait)
+            val looking = withContext(Dispatchers.Main) { dev.r1ptt.ui.DeviceActivity.foregroundActivity() != null }
+            if (looking && recoveryPending) recoverNow()
+        }
+    }
+    private var retry: Job? = null
+    @Volatile private var retryMs = RETRY_FIRST_MS
     suspend fun recoveryOnly() = withContext(Dispatchers.IO) { recoveryLock.withLock {
         val applied = identity.value.optLong("applied_policy_revision")
         management.checkIn()
@@ -305,6 +334,8 @@ class WorkspaceClient(private val app: App) {
         api("POST", "/runs/$id/$action", request).also { store.put("runs", it); store.remove("requests", request.getString("id")) }
     } }
     companion object {
+        private const val RETRY_FIRST_MS = 3_000L
+        private const val RETRY_MAX_MS = 30_000L
         /** Resolve durable audio IDs into a copy; failed hydration never discards a local draft. */
         fun hydrateMedia(prompt: JSONObject, note: (String) -> JSONObject?): JSONObject = prompt.copyJson().also { hydrated ->
             hydrated.getJSONArray("blocks").objects().forEach { block ->
