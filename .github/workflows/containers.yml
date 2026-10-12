@@ -1,6 +1,8 @@
 name: Container checks and images
 on:
+  # Branches run through their pull request; tags run only the release workflow.
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 permissions:

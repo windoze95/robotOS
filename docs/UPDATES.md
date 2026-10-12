@@ -17,8 +17,10 @@ build does not establish successful installation, voice behavior or battery life
 
 ## What runs in GitHub
 
-- `Android checks` runs unit/tool tests, debug/release builds and lint on pushes and pull
-  requests. It has a read-only repository token, no release secrets and no device access.
+- `Android checks` runs unit/tool tests, debug/release builds and lint on pull requests and on
+  pushes to `main`, once per change. `Container checks and images` follows the same triggers.
+  Release tags don't rerun them, because a tag must point at a commit already on `main`.
+  `Android checks` has a read-only repository token, no release secrets and no device access.
   Its release-variant build uses an ephemeral runner debug identity for build validation only;
   that APK is not published or offered by the updater.
 - `Signed app release` responds only to `v*` tag pushes in `windoze95/robotOS`, and is disabled
