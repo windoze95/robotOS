@@ -225,6 +225,8 @@ class RecoveryProtectionTest {
     @Test fun graceWakeOpensAtOnceThenRecapturesWhenTheHostNeverAnswers() {
         enrolled() // 127.0.0.1:9 never answers.
         app.workspace.confirmMs = 400
+        val cm = app.getSystemService(android.net.ConnectivityManager::class.java)
+        shadowOf(cm).setNetworkCapabilities(cm.activeNetwork, internet(android.net.NetworkCapabilities.TRANSPORT_WIFI))
         app.workspace.recoveryConfirmed(app.workspace.recoveryTicket())
         screen(on = false)
         assertFalse(app.workspace.blocked)
@@ -262,6 +264,56 @@ class RecoveryProtectionTest {
             assertFalse(app.workspace.blocked)
             assertTrue(app.workspace.networkAllowed)
         }
+    }
+
+    /**
+     * Out of pocket mode the radios take seconds to return and Tailscale may need a 15 s
+     * re-handshake, so the host's window starts when the network is usable, not at the wake.
+     */
+    @Test fun pocketWakeGivesTheHostItsWindowOnlyOnceTheNetworkIsBack() {
+        MockWebServer().use { server ->
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest) = MockResponse().setBody(policy(1, false).toString())
+            }
+            server.start(); enrolled(server.url("/").toString())
+            app.workspace.confirmMs = 1_000
+            app.workspace.confirmCapMs = 10_000
+            val cm = app.getSystemService(android.net.ConnectivityManager::class.java)
+            val tunnel = requireNotNull(cm.activeNetwork)
+            shadowOf(cm).setNetworkCapabilities(tunnel, internet(android.net.NetworkCapabilities.TRANSPORT_VPN)) // Radios cut.
+            app.workspace.recoveryConfirmed(app.workspace.recoveryTicket())
+            screen(on = false)
+            screen(on = true)
+            settle(1_300) // Past the window a wake-started clock would have used.
+            assertFalse(app.workspace.blocked)
+            assertEquals(0, server.requestCount)
+            val back = internet(android.net.NetworkCapabilities.TRANSPORT_VPN, android.net.NetworkCapabilities.TRANSPORT_WIFI)
+            shadowOf(cm).setNetworkCapabilities(tunnel, back)
+            shadowOf(cm).networkCallbacks.filter { it.javaClass.name.contains("RadioPolicy") }
+                .forEach { it.onCapabilitiesChanged(tunnel, back) }
+            settle(1_500)
+            assertTrue(server.requestCount > 0)
+            assertFalse(app.workspace.recoveryWanted)
+            assertFalse(app.workspace.blocked)
+            assertTrue(app.workspace.networkAllowed)
+        }
+    }
+
+    @Test fun graceWakeThatNeverGetsANetworkIsRecapturedAtTheCap() {
+        enrolled()
+        app.workspace.confirmMs = 300
+        app.workspace.confirmCapMs = 1_200
+        val cm = app.getSystemService(android.net.ConnectivityManager::class.java)
+        shadowOf(cm).setNetworkCapabilities(cm.activeNetwork, internet(android.net.NetworkCapabilities.TRANSPORT_VPN))
+        app.workspace.recoveryConfirmed(app.workspace.recoveryTicket())
+        screen(on = false)
+        screen(on = true)
+        settle(700)
+        assertFalse(app.workspace.blocked) // No network yet, so the host's window hasn't started.
+        settle(1_100)
+        assertTrue(app.workspace.blocked)
+        assertTrue(app.workspace.recoveryPending)
+        assertFalse(app.workspace.networkAllowed)
     }
 
     @Test fun graceWakeRecapturesAtOnceWhenTheHostReportsTheR1Lost() {

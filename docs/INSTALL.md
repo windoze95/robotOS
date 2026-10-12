@@ -170,7 +170,7 @@ Work through these with the R1 on USB:
 3. **Wake and recovery verification.** Let the screen turn off and wake it: within 15 minutes of
    the last check it opens at once. After longer, or after a restart, it shows the glowing robotOS
    mark while it checks and then opens; hold the button and speak. With the host unreachable, a
-   quick wake opens and is taken back within 10 seconds, and a later wake stays on the logo until
+   quick wake opens and is taken back within 20 seconds, and a later wake stays on the logo until
    the host answers. Swipe the logo away and verify that network setup and **Check recovery
    status** are available during an outage.
 4. **Dictation.** Tap the text field so the keyboard opens. Hold and speak: the words appear dimmed

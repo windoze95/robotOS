@@ -15,6 +15,7 @@ import dev.r1ptt.data.ConfigStore
 import dev.r1ptt.sys.Root
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
@@ -29,11 +30,15 @@ import kotlin.coroutines.resume
  *
  * Switching radios needs root; every command goes through [Root] with a timeout, off the main thread.
  */
-class RadioPolicy(private val ctx: Context, private val store: ConfigStore) {
+class RadioPolicy(
+    private val ctx: Context,
+    private val store: ConfigStore,
+    private val root: (String, Long) -> Int = Root::run,
+    private val io: Executor = Executors.newSingleThreadExecutor(),
+) {
     private val prefs = ctx.getSharedPreferences("radio", Context.MODE_PRIVATE)
     private val cm = ctx.getSystemService(ConnectivityManager::class.java)
     private val alarms = ctx.getSystemService(AlarmManager::class.java)
-    private val io = Executors.newSingleThreadExecutor()
     /** Reasons to keep the radios up (external power); the idle cut waits for none. */
     private val holds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val held: Boolean get() = holds.isNotEmpty() || store.value.power.reachableOnBattery
@@ -67,7 +72,7 @@ class RadioPolicy(private val ctx: Context, private val store: ConfigStore) {
         else if (!deliberateAirplane || !wasCellular) cmds += AIRPLANE_OFF
         prefs.edit().putBoolean("cellular", cellular).apply()
         if (!cutByUs) cmds += WIFI_ON
-        if (Root.run(cmds.joinToString("; "), 10_000) != 0) Log.w(TAG, "radio baseline incomplete (no root?)")
+        if (root(cmds.joinToString("; "), 10_000) != 0) Log.w(TAG, "radio baseline incomplete (no root?)")
     }
 
     fun onScreenOff() = schedule()
@@ -88,7 +93,7 @@ class RadioPolicy(private val ctx: Context, private val store: ConfigStore) {
         val cmd = if (store.value.power.cellular) "$WIFI_OFF; $AIRPLANE_ON" else WIFI_OFF
         val previous = cutByUs
         cutByUs = true // Mark our change before Android emits AIRPLANE_MODE.
-        if (Root.run(cmd, 10_000) == 0) {
+        if (root(cmd, 10_000) == 0) {
             Log.i(TAG, "idle: radios off")
         } else cutByUs = previous
         if (held) wake() // A cable event may have raced the root call.
@@ -125,8 +130,14 @@ class RadioPolicy(private val ctx: Context, private val store: ConfigStore) {
         cancel()
         if (!cutByUs) return
         io.execute {
+            // A wake's button press, screen-on and recovery check all queue here before the first
+            // root call clears the flag; the later ones must not toggle airplane mode again.
+            if (!cutByUs) return@execute
             val cmd = if (store.value.power.cellular && !deliberateAirplane) "$AIRPLANE_OFF; $WIFI_ON" else WIFI_ON
-            if (Root.run(cmd, 10_000) == 0) cutByUs = false
+            if (root(cmd, 10_000) == 0) {
+                cutByUs = false
+                Log.i(TAG, "wake: radios on")
+            }
         }
     }
 

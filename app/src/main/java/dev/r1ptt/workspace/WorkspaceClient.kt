@@ -1,5 +1,6 @@
 package dev.r1ptt.workspace
 
+import android.util.Log
 import dev.r1ptt.App
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -38,11 +39,15 @@ class WorkspaceClient(private val app: App) {
 
     /*
      * Grace after a confirmed check: within [graceMs] a wake opens at once and is confirmed in the
-     * background. A restriction, or no confirmation within [confirmMs], recaptures the screen. Kept
-     * in memory only, so a restarted app always checks before showing anything.
+     * background. A restriction, or no confirmation within [confirmMs] of a usable network (and
+     * never later than [confirmCapMs] after the wake), recaptures the screen. The clock waits for
+     * the network because pocket mode's radios take seconds to return, and Tailscale may then need
+     * WireGuard's 15 s re-handshake. Kept in memory only, so a restarted app always checks before
+     * showing anything.
      */
     internal var graceMs = 15 * 60_000L
-    internal var confirmMs = 10_000L
+    internal var confirmMs = 20_000L
+    internal var confirmCapMs = 30_000L
     internal var clock: () -> Long = android.os.SystemClock::elapsedRealtime
     @Volatile private var verifiedAt = 0L
     /** Ticket of the background check a grace wake is waiting on; 0 when none. */
@@ -62,9 +67,10 @@ class WorkspaceClient(private val app: App) {
                 val ticket = recoveryFence.renew()
                 confirming = ticket
                 retryMs = RETRY_FIRST_MS
+                Log.i(TAG, "recovery: grace wake, confirming in the background")
                 deadline?.cancel()
                 deadline = scope.launch {
-                    delay(confirmMs)
+                    withTimeoutOrNull(confirmCapMs) { app.radio.awaitOnline(confirmCapMs); delay(confirmMs) }
                     withContext(Dispatchers.Main) { recapture(ticket) }
                 }
             }
@@ -79,6 +85,7 @@ class WorkspaceClient(private val app: App) {
     /** The host did not confirm a grace wake in time: end the grace and take the screen back. */
     private fun recapture(ticket: Long) {
         synchronized(this) { if (confirming != ticket) return }
+        Log.i(TAG, "recovery: grace wake not confirmed in time, screen recaptured")
         verifiedAt = 0
         requireRecovery(checkNow = app.getSystemService(android.os.PowerManager::class.java).isInteractive)
     }
@@ -102,12 +109,21 @@ class WorkspaceClient(private val app: App) {
         // waking them here undid every cut and toggled airplane mode every 3 minutes.
         val wake = app.getSystemService(android.os.PowerManager::class.java).isInteractive
         recoveryJob = scope.launch {
+            val started = android.os.SystemClock.elapsedRealtime()
+            var outcome = "no usable network"
             try {
                 if (wake) app.radio.hold("workspace-wake-recovery", true)
                 // Recovery has its own short HTTP deadline; never queue behind a transcription.
-                withTimeoutOrNull(15_000) { if (app.radio.awaitOnline(5_000)) recoveryOnly() }
-            } catch (_: Exception) { /* Known lost state remains durable through every failure. */ }
+                outcome = withTimeoutOrNull(15_000) {
+                    if (app.radio.awaitOnline(5_000)) { recoveryOnly(); "host answered" } else "no usable network"
+                } ?: "timed out"
+            } catch (e: Exception) {
+                // Known lost state remains durable through every failure. The log names only the
+                // kind of failure: messages can carry the host's address.
+                outcome = if (e is HubException) "host error ${e.status}" else e.javaClass.simpleName
+            }
             finally {
+                Log.i(TAG, "recovery check: $outcome after ${android.os.SystemClock.elapsedRealtime() - started} ms")
                 recoveryFence.offline(ticket)
                 if (wake) app.radio.hold("workspace-wake-recovery", false)
                 if (!recoveryFence.verified()) mutable.value = when {
@@ -132,7 +148,8 @@ class WorkspaceClient(private val app: App) {
     /** While the gate is on screen it lifts by itself once the host answers; no tap needed. */
     private fun retryLater() {
         val wait = retryMs
-        retryMs = (retryMs * 2).coerceAtMost(RETRY_MAX_MS)
+        // A grace wake's window is short: keep trying every couple of seconds while it lasts.
+        retryMs = (retryMs * 2).coerceAtMost(if (confirming != 0L) RETRY_CONFIRM_MS else RETRY_MAX_MS)
         retry = scope.launch {
             delay(wait)
             val looking = withContext(Dispatchers.Main) { dev.r1ptt.ui.DeviceActivity.foregroundActivity() != null }
@@ -388,7 +405,9 @@ class WorkspaceClient(private val app: App) {
     companion object {
         // Right after a reconnect Tailscale can drop the first connection attempt; retry soon.
         private const val RETRY_FIRST_MS = 1_000L
+        private const val RETRY_CONFIRM_MS = 2_000L
         private const val RETRY_MAX_MS = 30_000L
+        private const val TAG = "r1ptt"
         /** Resolve durable audio IDs into a copy; failed hydration never discards a local draft. */
         fun hydrateMedia(prompt: JSONObject, note: (String) -> JSONObject?): JSONObject = prompt.copyJson().also { hydrated ->
             hydrated.getJSONArray("blocks").objects().forEach { block ->
