@@ -1,6 +1,8 @@
 name: Android checks
 on:
+  # Branches run through their pull request; tags run only the release workflow.
   push:
+    branches: [main]
   pull_request:
 permissions:
   contents: read
