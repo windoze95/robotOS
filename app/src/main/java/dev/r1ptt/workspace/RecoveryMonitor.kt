@@ -22,13 +22,20 @@ class RecoveryMonitor(private val app: App) {
     }
     private val network = object : ConnectivityManager.NetworkCallback() {
         private var available: Network? = null
+        private var usable = false
         override fun onAvailable(network: Network) {
             available = network
+            usable = false
             app.workspace.requireRecovery()
         }
         override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
-            if (network == available && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET))
-                app.workspace.recoverNow()
+            if (network != available) return
+            // Tailscale's VPN stays the default network, so a radio cut, a reconnect and every
+            // bandwidth update all land here rather than in onLost/onAvailable. Check on a real
+            // reconnect or to retry a pending check; the radio state itself is never touched here.
+            val wasUsable = usable
+            usable = dev.r1ptt.power.RadioPolicy.usable(caps)
+            if (usable && (!wasUsable || app.workspace.recoveryPending)) app.workspace.recoverNow()
         }
         override fun onLost(network: Network) {
             if (network == available) {

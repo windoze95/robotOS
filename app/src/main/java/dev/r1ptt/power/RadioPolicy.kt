@@ -96,10 +96,10 @@ class RadioPolicy(private val ctx: Context, private val store: ConfigStore) {
 
     fun isOnline(): Boolean {
         val n = cm.activeNetwork ?: return false
-        return cm.getNetworkCapabilities(n)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+        return cm.getNetworkCapabilities(n)?.let(::usable) == true
     }
 
-    /** Waits up to [timeoutMs] for a network that claims internet access. */
+    /** Waits up to [timeoutMs] for a network that can actually carry traffic. */
     suspend fun awaitOnline(timeoutMs: Long): Boolean {
         if (isOnline()) return true
         var callback: ConnectivityManager.NetworkCallback? = null
@@ -109,9 +109,7 @@ class RadioPolicy(private val ctx: Context, private val store: ConfigStore) {
                     val resumed = AtomicBoolean(false)
                     val cb = object : ConnectivityManager.NetworkCallback() {
                         override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
-                            if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-                                resumed.compareAndSet(false, true)
-                            ) cont.resume(true)
+                            if (usable(caps) && resumed.compareAndSet(false, true)) cont.resume(true)
                         }
                     }
                     callback = cb
@@ -151,15 +149,26 @@ class RadioPolicy(private val ctx: Context, private val store: ConfigStore) {
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
     )
 
-    private companion object {
-        const val TAG = "r1ptt"
-        const val WIFI_ON = "cmd wifi set-wifi-enabled enabled"
-        const val WIFI_OFF = "cmd wifi set-wifi-enabled disabled"
+    companion object {
+        private const val TAG = "r1ptt"
+        private val PHYSICAL = intArrayOf(NetworkCapabilities.TRANSPORT_WIFI, NetworkCapabilities.TRANSPORT_CELLULAR,
+            NetworkCapabilities.TRANSPORT_ETHERNET, NetworkCapabilities.TRANSPORT_USB, NetworkCapabilities.TRANSPORT_BLUETOOTH)
+
+        /**
+         * Tailscale's VPN stays the default network, still claiming internet, while the radios are
+         * cut or mobile data is down. It is only usable when it rides on a real transport.
+         */
+        fun usable(caps: NetworkCapabilities): Boolean =
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                (!caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) || PHYSICAL.any(caps::hasTransport))
+
+        private const val WIFI_ON = "cmd wifi set-wifi-enabled enabled"
+        private const val WIFI_OFF = "cmd wifi set-wifi-enabled disabled"
 
         // `cmd connectivity airplane-mode` first; the settings + broadcast pair for builds without it.
-        const val AIRPLANE_ON = "(cmd connectivity airplane-mode enable || (settings put global airplane_mode_on 1; " +
+        private const val AIRPLANE_ON = "(cmd connectivity airplane-mode enable || (settings put global airplane_mode_on 1; " +
             "am broadcast -a android.intent.action.AIRPLANE_MODE --ez state true))"
-        const val AIRPLANE_OFF = "(cmd connectivity airplane-mode disable || (settings put global airplane_mode_on 0; " +
+        private const val AIRPLANE_OFF = "(cmd connectivity airplane-mode disable || (settings put global airplane_mode_on 0; " +
             "am broadcast -a android.intent.action.AIRPLANE_MODE --ez state false))"
     }
 }
