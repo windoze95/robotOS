@@ -1,7 +1,7 @@
 # robotOS hub
 
 A Python 3.9+ standard-library service for one shared robotOS workspace and individually enrolled
-R1 devices. SQLite stores prompt revisions, editing leases, submission receipts, cached Hermes
+R1 devices. SQLite stores current prompts and revision numbers, editing leases, submission receipts, cached Hermes
 replies, device command receipts and administrative history. Audio lives in private durable files
 beside the database. Hermes owns agent execution, session history and scheduled jobs. Saving and
 syncing workspace content run independently of Hermes and its MCP subprocess.
@@ -74,6 +74,13 @@ Stop the service before a file-copy backup, or use SQLite's backup API for a liv
 and copy its referenced immutable media. Include WAL state if taking a raw live filesystem snapshot;
 a database-file-only copy while running is insufficient. Restore with the service stopped. Keep
 backups private because they contain notes, recordings, session records and host credentials.
+
+Schema 4 creates the current tables directly and upgrades older databases in one transaction.
+It removes unused prompt-version history, the superseded `lost_applied` flag, an unused control
+timestamp and redundant submission metadata. Submitted text, source blocks, replies, request
+identities, credentials and recovery policy remain intact. Newer database versions are refused
+without changing their schema. Restore a pre-upgrade backup before rolling back to an older hub.
+The R1 also compacts unused draft and command-receipt fields in its local cache without clearing it.
 
 ## Scale
 

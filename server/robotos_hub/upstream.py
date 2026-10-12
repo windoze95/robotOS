@@ -200,8 +200,10 @@ class Workers:
                 if self.config.hermes_provider:
                     payload['provider'] = self.config.hermes_provider
             # Save exact request, identity and capabilities before crossing the network boundary.
+            receipt_caps = {key: value for key, value in (original if recovery else caps).items()
+                            if key in {'durable', 'retention_seconds', 'stop', 'approval'}}
             db.execute("UPDATE runs SET status='submitting',upstream_payload=?,upstream_identity=?,capabilities=?,submitted_at=COALESCE(submitted_at,?),updated_at=? WHERE id=?",
-                       (canonical(payload), self.client.identity, canonical(original if recovery else caps), now(), now(), run_id))
+                       (canonical(payload), self.client.identity, canonical(receipt_caps), now(), now(), run_id))
             self.store.change(db, 'run', run_id)
         try:
             admission = self.client.hermes('POST', '/v1/runs', payload, {'Idempotency-Key': run_id})

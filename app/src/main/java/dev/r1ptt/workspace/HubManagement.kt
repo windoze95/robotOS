@@ -99,7 +99,7 @@ class HubManagement(private val app: App, private val hub: WorkspaceClient) {
             .put("app_version", app.updates.installedVersion()).put("battery", if (level >= 0 && scale > 0) level * 100 / scale else JSONObject.NULL)
             .put("charging", (battery?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0)
             .put("capabilities", capabilities()).put("settings_revision", state.optLong("settings_revision"))
-            .put("settings", appliedSettings()).put("lost_applied", state.optBoolean("lost"))
+            .put("settings", appliedSettings())
             .put("applied_policy_revision", state.optLong("applied_policy_revision")).put("security", security())
         if (locationAllowed()) lastLocation()?.let { packet.put("location", it) }
         val response = hub.api("POST", "/devices/self/check-in", packet, recovery = true)

@@ -20,6 +20,7 @@ LOCAL_ONLY_SETTINGS = {'remote_management', 'location_reporting', 'allow_clear_w
 RECOVERY_COMMANDS = {'ring', 'stop_ring', 'show_message', 'lock', 'locate', 'clear_workspace', 'factory_reset'}
 SECURITY_FIELDS = {'app_restriction_available', 'secure_lock_configured', 'device_admin_active', 'device_owner',
                    'secure_lock_available', 'secure_lock_applied', 'workspace_restricted'}
+SCHEMA_VERSION = 4
 
 
 def now():
@@ -75,14 +76,19 @@ class Store:
         self.media_dir.mkdir(mode=0o700, exist_ok=True)
         os.chmod(self.media_dir, 0o700)
         self._media_lock = threading.Lock()
-        with self.connection() as db:
-            db.executescript('''
+        with self.transaction() as db:
+            version = db.execute('PRAGMA user_version').fetchone()[0]
+            if version > SCHEMA_VERSION:
+                raise ValueError('Workspace database requires a newer robotOS hub; refusing to downgrade it')
+            schema = '''
             CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY, name TEXT NOT NULL, workspace_hash TEXT UNIQUE NOT NULL,
               recovery_hash TEXT UNIQUE NOT NULL, revision INTEGER NOT NULL, settings_revision INTEGER NOT NULL,
               desired_settings TEXT NOT NULL, applied_settings TEXT NOT NULL, applied_settings_revision INTEGER NOT NULL DEFAULT 0,
               capabilities TEXT NOT NULL, lost INTEGER NOT NULL, revoked INTEGER NOT NULL, lost_message TEXT NOT NULL,
-              lost_applied INTEGER NOT NULL DEFAULT 0, app_version TEXT, battery INTEGER, charging INTEGER,
-              location TEXT, last_seen INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+              app_version TEXT, battery INTEGER, charging INTEGER,
+              location TEXT, last_seen INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+              policy_revision INTEGER NOT NULL DEFAULT 1, applied_policy_revision INTEGER NOT NULL DEFAULT 0,
+              policy_applied_at INTEGER, security TEXT NOT NULL DEFAULT '{}');
             CREATE TABLE IF NOT EXISTS enrollments(hash TEXT PRIMARY KEY, name TEXT NOT NULL, expires_at INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS sessions(hash TEXT PRIMARY KEY, csrf TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS media(id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, size INTEGER NOT NULL, content_type TEXT NOT NULL, created_at INTEGER NOT NULL);
@@ -90,39 +96,69 @@ class Store:
               media_id TEXT, revision INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, creation_hash TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS prompts(id TEXT PRIMARY KEY, title TEXT NOT NULL, instruction TEXT NOT NULL, blocks TEXT NOT NULL,
               revision INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, creation_hash TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS prompt_versions(prompt_id TEXT NOT NULL, revision INTEGER NOT NULL, snapshot TEXT NOT NULL, PRIMARY KEY(prompt_id,revision));
             CREATE TABLE IF NOT EXISTS leases(prompt_id TEXT PRIMARY KEY, actor TEXT NOT NULL, token TEXT NOT NULL, expires_at INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, prompt_id TEXT NOT NULL, prompt_revision INTEGER NOT NULL,
               snapshot TEXT NOT NULL, status TEXT NOT NULL, output TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '',
               remote_id TEXT, upstream_payload TEXT, upstream_identity TEXT, requester TEXT, capabilities TEXT NOT NULL DEFAULT '{}',
-              approval TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, submitted_at INTEGER);
+              approval TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, submitted_at INTEGER, hermes_session_id TEXT);
             CREATE TABLE IF NOT EXISTS run_requests(request_id TEXT PRIMARY KEY, payload_hash TEXT NOT NULL, run_id TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS controls(request_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, kind TEXT NOT NULL,
-              payload TEXT NOT NULL, status TEXT NOT NULL, result TEXT NOT NULL, created_at INTEGER NOT NULL);
+              payload TEXT NOT NULL, status TEXT NOT NULL, result TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS commands(id TEXT PRIMARY KEY, device_id TEXT NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL,
               expires_at INTEGER NOT NULL, status TEXT NOT NULL, result TEXT NOT NULL DEFAULT '{}', payload_hash TEXT NOT NULL,
-              created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+              created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, issuer_role TEXT NOT NULL DEFAULT '');
             CREATE TABLE IF NOT EXISTS resume(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS changes(seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, entity_id TEXT NOT NULL,
               action TEXT NOT NULL, created_at INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT NOT NULL, action TEXT NOT NULL,
               device_id TEXT, created_at INTEGER NOT NULL);
-            INSERT OR IGNORE INTO resume VALUES(1,0,'{}');
-            ''')
-            # Upgrade existing installations in place; lost policy survives service upgrades/restarts.
-            columns = {row['name'] for row in db.execute('PRAGMA table_info(devices)')}
-            for name, definition in [('policy_revision', 'INTEGER NOT NULL DEFAULT 1'),
-                                     ('applied_policy_revision', 'INTEGER NOT NULL DEFAULT 0'),
-                                     ('policy_applied_at', 'INTEGER'), ('security', "TEXT NOT NULL DEFAULT '{}'")]:
-                if name not in columns:
-                    db.execute('ALTER TABLE devices ADD COLUMN ' + name + ' ' + definition)
-            command_columns = {row['name'] for row in db.execute('PRAGMA table_info(commands)')}
-            if 'issuer_role' not in command_columns:
-                db.execute("ALTER TABLE commands ADD COLUMN issuer_role TEXT NOT NULL DEFAULT ''")
-            run_columns = {row['name'] for row in db.execute('PRAGMA table_info(runs)')}
-            if 'hermes_session_id' not in run_columns:
-                db.execute('ALTER TABLE runs ADD COLUMN hermes_session_id TEXT')
-            db.execute('PRAGMA user_version=3')
+            '''
+            # Execute individually: executescript would commit before the upgrade is complete.
+            definitions = {}
+            for statement in schema.split(';'):
+                if statement.strip():
+                    header, definition = statement.strip().split('(', 1)
+                    definitions[header.split()[-1]] = definition
+                    db.execute(statement)
+            if version < SCHEMA_VERSION:
+                # Keep old backups/installations readable without replaying migrations on new databases.
+                for table, additions in {
+                    'devices': [('policy_revision', 'INTEGER NOT NULL DEFAULT 1'),
+                                ('applied_policy_revision', 'INTEGER NOT NULL DEFAULT 0'),
+                                ('policy_applied_at', 'INTEGER'), ('security', "TEXT NOT NULL DEFAULT '{}'")],
+                    'commands': [('issuer_role', "TEXT NOT NULL DEFAULT ''")],
+                    'runs': [('hermes_session_id', 'TEXT')],
+                }.items():
+                    columns = {row['name'] for row in db.execute('PRAGMA table_info(' + table + ')')}
+                    for name, definition in additions:
+                        if name not in columns:
+                            db.execute('ALTER TABLE ' + table + ' ADD COLUMN ' + name + ' ' + definition)
+                for table, obsolete in [('devices', 'lost_applied'), ('controls', 'created_at')]:
+                    columns = {row['name'] for row in db.execute('PRAGMA table_info(' + table + ')')}
+                    if obsolete in columns:
+                        # Rebuild from the current declaration, including constraints, for older SQLite versions.
+                        db.execute('CREATE TABLE ' + table + '_clean(' + definitions[table])
+                        retained = ','.join(row['name'] for row in db.execute('PRAGMA table_info(' + table + '_clean)'))
+                        db.execute('INSERT INTO ' + table + '_clean(' + retained + ') SELECT ' + retained + ' FROM ' + table)
+                        db.execute('DROP TABLE ' + table)
+                        db.execute('ALTER TABLE ' + table + '_clean RENAME TO ' + table)
+                # Submission snapshots already preserve executed revisions. Unsubmitted history is unused.
+                db.execute('DROP TABLE IF EXISTS prompt_versions')
+                for row in db.execute('SELECT id,snapshot,requester,capabilities FROM runs').fetchall():
+                    for field, obsolete in {
+                        'snapshot': ('last_run_revision', 'last_run_id', 'changed_since_run', 'state',
+                                     'id', 'revision', 'created_at', 'updated_at'),
+                        'requester': ('actor',), 'capabilities': ('runs',),
+                    }.items():
+                        if row[field] is None:
+                            continue
+                        value = json.loads(row[field])
+                        if any(key in value for key in obsolete):
+                            for key in obsolete:
+                                value.pop(key, None)
+                            db.execute('UPDATE runs SET ' + field + '=? WHERE id=?', (canonical(value), row['id']))
+                db.execute('PRAGMA user_version=' + str(SCHEMA_VERSION))
+            db.execute("INSERT OR IGNORE INTO resume VALUES(1,0,'{}')")
         os.chmod(self.path, 0o600)
         self.recover()
 
@@ -402,9 +438,7 @@ class Store:
             timestamp = now()
             db.execute('INSERT INTO prompts VALUES(?,?,?,?,1,?,?,?)', (prompt_id, title, instruction, canonical(blocks), timestamp, timestamp, payload_hash))
             self.change(db, 'prompt', prompt_id)
-            result = self.prompt(db, self._row(db, 'prompts', prompt_id))
-            db.execute('INSERT INTO prompt_versions VALUES(?,?,?)', (prompt_id, 1, canonical(result)))
-            return result
+            return self.prompt(db, self._row(db, 'prompts', prompt_id))
 
     def lease(self, actor, prompt_id, takeover=False):
         boolean(takeover, 'takeover')
@@ -449,7 +483,6 @@ class Store:
                        (title, instruction, canonical(blocks), now(), prompt_id))
             db.execute('UPDATE leases SET expires_at=? WHERE prompt_id=?', (now() + self.config.lease_seconds * 1000, prompt_id))
             result = self.prompt(db, self._row(db, 'prompts', prompt_id))
-            db.execute('INSERT INTO prompt_versions VALUES(?,?,?)', (prompt_id, result['revision'], canonical(result)))
             self.change(db, 'prompt', prompt_id)
             return result
 
@@ -484,10 +517,10 @@ class Store:
                 if active:
                     raise HubError(409, 'run_active', 'Finish or stop the current task before starting another in this prompt', run_id=active['id'])
                 run_id, timestamp = str(uuid.uuid4()), now()
-                snapshot = json.loads(db.execute('SELECT snapshot FROM prompt_versions WHERE prompt_id=? AND revision=?', (prompt_id, revision)).fetchone()[0])
-                snapshot['preview'] = preview
+                snapshot = {key: prompt[key] for key in ('title', 'instruction')}
+                snapshot.update(blocks=blocks, preview=preview)
                 db.execute('INSERT INTO runs(id,prompt_id,prompt_revision,snapshot,status,created_at,updated_at,requester) VALUES(?,?,?,?,?,?,?,?)',
-                           (run_id, prompt_id, revision, canonical(snapshot), 'queued', timestamp, timestamp, canonical({'role': actor['role'], 'id': actor['id'], 'actor': actor['actor']})))
+                           (run_id, prompt_id, revision, canonical(snapshot), 'queued', timestamp, timestamp, canonical({'role': actor['role'], 'id': actor['id']})))
                 self.change(db, 'run', run_id)
                 self.change(db, 'prompt', prompt_id)
             db.execute('INSERT INTO run_requests VALUES(?,?,?)', (request_id, payload_hash, run_id))
@@ -552,7 +585,7 @@ class Store:
                   'lost_message', 'app_version', 'battery', 'last_seen', 'created_at', 'updated_at')}
         for key in ('desired_settings', 'applied_settings', 'capabilities', 'security'):
             item[key] = json.loads(row[key])
-        for key in ('lost', 'revoked', 'lost_applied', 'charging'):
+        for key in ('lost', 'revoked', 'charging'):
             item[key] = bool(row[key]) if row[key] is not None else None
         item['location'] = json.loads(row['location']) if row['location'] else None
         return item
@@ -688,11 +721,10 @@ class Store:
             # Enrollment/owner policy owns the name; an old device cache cannot undo a rename.
             name = row['name']
             version = string(body.get('app_version', ''), 'app_version', 100)
-            lost_applied = boolean(body.get('lost_applied', bool(row['lost_applied'])), 'lost_applied')
             db.execute('''UPDATE devices SET name=?,app_version=?,battery=?,charging=?,capabilities=?,applied_settings=?,
-              applied_settings_revision=?,location=?,lost_applied=?,applied_policy_revision=?,policy_applied_at=?,security=?,last_seen=?,updated_at=? WHERE id=?''',
+              applied_settings_revision=?,location=?,applied_policy_revision=?,policy_applied_at=?,security=?,last_seen=?,updated_at=? WHERE id=?''',
               (name, version, battery, charging, canonical(capabilities), canonical(settings), applied_revision, stored_location,
-               int(lost_applied), max(applied_policy, row['applied_policy_revision']), policy_applied_at, stored_security, now(), now(), row['id']))
+               max(applied_policy, row['applied_policy_revision']), policy_applied_at, stored_security, now(), now(), row['id']))
             self._expire_commands(db, row['id'])
             if restricted:
                 self._quarantine(db, row['id'])
@@ -868,8 +900,8 @@ class Store:
                 # This transaction fences the worker's queued -> submitting admission. Work that
                 # has never crossed the network can be cancelled locally without upstream support.
                 result = canonical({'status': 'cancelled', 'run_id': run_id})
-                db.execute('INSERT INTO controls VALUES(?,?,?,?,?,?,?)',
-                           (request_id, run_id, kind, canonical(payload), 'applied', result, now()))
+                db.execute('INSERT INTO controls VALUES(?,?,?,?,?,?)',
+                           (request_id, run_id, kind, canonical(payload), 'applied', result))
                 db.execute("UPDATE runs SET status='cancelled',error='',updated_at=? WHERE id=?", (now(), run_id))
                 self.change(db, 'run', run_id)
                 self.change(db, 'prompt', run['prompt_id'])
@@ -885,5 +917,5 @@ class Store:
                 approval = json.loads(run['approval']) if run['approval'] else {}
                 if run['status'] != 'waiting_for_approval' or approval.get('request_id') != payload['request_id']:
                     raise HubError(409, 'approval_changed', 'Approval is no longer current')
-            db.execute('INSERT INTO controls VALUES(?,?,?,?,?,?,?)', (request_id, run_id, kind, canonical(payload), 'submitting', '{}', now()))
+            db.execute('INSERT INTO controls VALUES(?,?,?,?,?,?)', (request_id, run_id, kind, canonical(payload), 'submitting', '{}'))
             return dict(db.execute('SELECT * FROM controls WHERE request_id=?', (request_id,)).fetchone()), True
