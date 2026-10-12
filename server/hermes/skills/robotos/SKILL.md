@@ -49,6 +49,7 @@ the owner's management console. Ordinary MCP access does not authorize those adm
 - They ask what someone texted, whether a text went through, or about the R1 itself (battery, charging,
   whether it can text).
 - They ask for speech or a Home notice on the R1, a volume change, or a saved SMS recipient.
+- They ask to open a robotOS app, such as Notes or Prompt Builder, on the R1.
 
 ## Device controls
 
@@ -58,6 +59,17 @@ mode, and refuses to interrupt the microphone or existing speech. The user can i
 `set_volume(level)` accepts 0–1 and reports the actual applied level. `save_recipient(name, number)`
 saves a validated name and number without sending a text. Each has its own permission in robotOS →
 Hermes. If disabled, explain the setting; do not work around it through another tool.
+
+`open_app(app)` opens a built-in robotOS screen: `home`, `workspace`, `notes`, `prompt_builder`,
+`chats`, `messages`, `hermes`, `settings`, `quick_controls`, `updates` or `host_devices`.
+For `notes` or `prompt_builder`, optional `item_id` opens a saved item. Use its exact ID from
+`list_notes` or `list_prompts`, clarifying if several match. Opening a prompt shows its detail;
+it does not execute it or acquire an edit lease. Missing cached items are fetched from the host.
+This requires **Hermes → Open apps on screen**, which starts off, and an awake, unlocked R1 with
+robotOS in the foreground. It refuses to interrupt recording, unsaved note edits or approval reviews.
+It only navigates: it does not send a message, change settings, install an update or launch another
+Android app. `opening` means Android accepted the launch; `opened` means the existing workspace
+screen navigated. Keep the request ID for receipt recovery.
 
 ## Your name on the R1
 

@@ -12,7 +12,7 @@ talk; on release, it either sends what you said or types it into the text field:
 
 Hermes acts on the R1 through its `robotos` MCP tools: "text Sam I'm running late" is Hermes texting
 from the R1's SIM. When enabled, texts from your own number to the R1 go to Hermes, which texts back.
-Separate permissions allow announcements, Home notices, volume changes and saved recipients.
+Separate permissions allow announcements, Home notices, volume changes, saved recipients and opening robotOS apps.
 Plugged in, configured radios stay available. OpenAI is used only for speech. See
 [docs/HERMES.md](docs/HERMES.md).
 

@@ -239,6 +239,7 @@ class HubManagement(private val app: App, private val hub: WorkspaceClient) {
             "speak" -> "POST" to "/v1/speak"
             "show" -> "POST" to "/v1/show"
             "set_volume" -> "POST" to "/v1/volume"
+            "open_app" -> "POST" to "/v1/apps/open"
             else -> error("Unsupported device tool")
         }
         val query = mutableMapOf<String, String>()

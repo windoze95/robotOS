@@ -98,9 +98,12 @@ the host.
 
 ## Device tools and messages
 
-The four additional tools—`speak`, `show`, `set_volume` and `save_recipient`—each require a separate
+The additional tools—`speak`, `show`, `set_volume`, `save_recipient` and `open_app`—each require a separate
 permission under **Hermes**. They start off. Existing enabled SMS access is preserved. Speech
 obeys Quiet mode and refuses microphone or playback conflicts; it remains interruptible.
+`open_app` navigates to a named robotOS screen while the R1 is awake, unlocked and showing robotOS.
+Notes and Prompt Builder also accept an exact saved item ID. Opening a prompt does not run it.
+Active recording, unsaved note edits and approval reviews block navigation.
 
 Mutating device requests have persistent receipts. An interrupted response is an **unknown**
 outcome, not permission to repeat the action. SMS tool sends and owner-relay replies share the

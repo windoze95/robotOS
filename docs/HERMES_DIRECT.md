@@ -85,6 +85,7 @@ Device API endpoints all require `Authorization: Bearer <token>`:
 | `GET /v1/recipients` | Saved names and numbers. |
 | `POST /v1/speak` | `text`, up to 2000 characters; interruptible speech. |
 | `POST /v1/show` | `text`, up to 2000 characters; a dismissible Home notice without waking the display. |
+| `POST /v1/apps/open` | Required `app` from `status.open_app_targets`; optional `item_id` (1–200 letters, digits, hyphens or underscores) for `notes` or `prompt_builder`. Requires `allowOpenApps`, an awake/unlocked R1 and foreground robotOS. |
 | `POST /v1/volume` | `level` from 0 to 1; returns the applied speech volume. |
 | `POST /v1/recipients` | `name` and `number`; validates and saves a recipient. |
 | `POST /v1/name` | `name`, 1–24 letters or digits with spaces, apostrophes, hyphens or periods. Accepted only while the R1 has no name (`status.name_settable`); otherwise HTTP 403. |
@@ -95,10 +96,16 @@ get `+1` on a US SIM. SMS tool sends and owner-relay replies share `hermes.daily
 (default 100, zero means unlimited). Queued owner texts retain their original owner and connection;
 permission and identity changes are checked before forwarding and before SMS delivery.
 
-The four added controls require `hermes.allowSpeak`, `allowShow`, `allowVolume` and
-`allowSaveRecipient` respectively. Each defaults off and also requires `hermes.deviceApi`.
+The additional controls require `hermes.allowSpeak`, `allowShow`, `allowVolume`,
+`allowSaveRecipient` and `allowOpenApps` respectively. Each defaults off and also requires `hermes.deviceApi`.
 Existing enabled SMS access survives migration. Speech obeys Quiet mode and rejects microphone
 or playback conflicts. Home retains at most 20 notices.
+Opening apps refuses to interrupt capture, unsaved note edits or approval reviews. Missing items
+return 404; paired devices fetch uncached notes/prompts from their host first. `opening` means
+Android accepted a launch; `opened` means navigation inside the active workspace. Supported `app`
+values are `home`, `workspace`, `notes`, `prompt_builder`, `chats`, `messages`, `hermes`, `settings`,
+`quick_controls`, `updates` and `host_devices`. Navigation does not execute prompts, send texts,
+change settings, install updates or launch other Android packages.
 
 POST bodies accept `request_id` (16–128 letters, digits, hyphens or underscores); MCP supplies one
 when omitted. Receipts are persisted before execution and retained for at least seven days.

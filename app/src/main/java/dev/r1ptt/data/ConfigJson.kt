@@ -40,6 +40,7 @@ object ConfigJson {
             put("smsSession", c.hermes.smsSession); put("dailySendLimit", c.hermes.dailySendLimit)
             put("allowSpeak", c.hermes.allowSpeak); put("allowShow", c.hermes.allowShow)
             put("allowVolume", c.hermes.allowVolume); put("allowSaveRecipient", c.hermes.allowSaveRecipient)
+            put("allowOpenApps", c.hermes.allowOpenApps)
         })
         put("earcons", c.earcons)
         put("quiet", c.quiet)
@@ -103,6 +104,7 @@ object ConfigJson {
                 allowSpeak = h.bool("allowSpeak", base.hermes.allowSpeak), allowShow = h.bool("allowShow", base.hermes.allowShow),
                 allowVolume = h.bool("allowVolume", base.hermes.allowVolume),
                 allowSaveRecipient = h.bool("allowSaveRecipient", base.hermes.allowSaveRecipient),
+                allowOpenApps = h.bool("allowOpenApps", base.hermes.allowOpenApps),
             ).also { require(it.valid()) { "Hermes needs a 32+ character device token and the owner's full phone number." } } } ?: base.hermes,
             earcons = j.bool("earcons", base.earcons),
             quiet = j.bool("quiet", base.quiet),

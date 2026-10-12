@@ -56,6 +56,7 @@ class HermesActivity : DeviceActivity() {
     private lateinit var show: Switch
     private lateinit var volume: Switch
     private lateinit var recipients: Switch
+    private lateinit var openNotes: Switch
     private lateinit var initialLink: HermesLink
     private var approvalDialog: AlertDialog? = null
     private var approvalIdentity: Pair<String, String>? = null
@@ -122,6 +123,7 @@ class HermesActivity : DeviceActivity() {
         show = ui.toggle("Show messages on screen", cfg.hermes.allowShow); body.addView(show)
         volume = ui.toggle("Change volume", cfg.hermes.allowVolume); body.addView(volume)
         recipients = ui.toggle("Save recipients", cfg.hermes.allowSaveRecipient); body.addView(recipients)
+        openNotes = ui.toggle("Open apps on screen", cfg.hermes.allowOpenApps); body.addView(openNotes)
         body.addView(ui.note("These controls are available only while device access is on. Quiet mode still applies."))
         body.addView(ui.section(""))
         body.addView(ui.row(ui.button("Close") { finish() }, ui.button("Save", true) { save() }))
@@ -341,7 +343,8 @@ class HermesActivity : DeviceActivity() {
                     allowSpeak = if (speak.isChecked != initialLink.allowSpeak) speak.isChecked else current.allowSpeak,
                     allowShow = if (show.isChecked != initialLink.allowShow) show.isChecked else current.allowShow,
                     allowVolume = if (volume.isChecked != initialLink.allowVolume) volume.isChecked else current.allowVolume,
-                    allowSaveRecipient = if (recipients.isChecked != initialLink.allowSaveRecipient) recipients.isChecked else current.allowSaveRecipient
+                    allowSaveRecipient = if (recipients.isChecked != initialLink.allowSaveRecipient) recipients.isChecked else current.allowSaveRecipient,
+                    allowOpenApps = if (openNotes.isChecked != initialLink.allowOpenApps) openNotes.isChecked else current.allowOpenApps
                 ).also { require(it.valid()) })
             }
             toast("Saved"); finish()

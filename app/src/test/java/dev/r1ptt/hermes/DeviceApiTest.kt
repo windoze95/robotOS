@@ -11,13 +11,18 @@ import dev.r1ptt.messages.SmsController
 import dev.r1ptt.messages.SmsRecord
 import dev.r1ptt.messages.SmsStore
 import dev.r1ptt.messages.SmsTransport
+import dev.r1ptt.ui.DeviceActivity
+import dev.r1ptt.workspace.WorkspaceActivity
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Before
+import org.junit.After
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Robolectric
+import org.robolectric.android.controller.ActivityController
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.LooperMode
@@ -37,6 +42,9 @@ class DeviceApiTest {
     private lateinit var api: DeviceApi
     private val sent = CopyOnWriteArrayList<SmsRecord>()
     private val token = "d".repeat(40)
+    private var screen: ActivityController<out DeviceActivity>? = null
+
+    @After fun closeScreen() { screen?.pause()?.stop()?.destroy(); app.deviceApi.stop(); app.history.close() }
 
     @Before fun setup() {
         app = RuntimeEnvironment.getApplication() as App
@@ -191,7 +199,8 @@ class DeviceApiTest {
     @Test fun controlsRequireTheirOwnPermissionAndShowPersists() {
         for ((path, body) in listOf("/v1/speak" to JSONObject().put("text", "Hi"),
             "/v1/show" to JSONObject().put("text", "Hi"), "/v1/volume" to JSONObject().put("level", 0.5),
-            "/v1/recipients" to JSONObject().put("name", "Pat").put("number", "+15557654321")))
+            "/v1/recipients" to JSONObject().put("name", "Pat").put("number", "+15557654321"),
+            "/v1/apps/open" to JSONObject()))
             assertEquals(path, 403, post(path, body).first)
         configure { it.copy(hermes = it.hermes.copy(allowShow = true, allowVolume = true, allowSaveRecipient = true)) }
         val shown = post("/v1/show", JSONObject().put("text", "Meeting at 3"))
@@ -231,6 +240,138 @@ class DeviceApiTest {
         assertEquals(409, post("/v1/speak", JSONObject().put("text", "Hello")).first)
         api = DeviceApi(app, speak = { true })
         assertEquals(200, post("/v1/speak", JSONObject().put("text", "Hello")).first)
+    }
+
+    private fun notesScreen(): WorkspaceActivity {
+        val controller = Robolectric.buildActivity(WorkspaceActivity::class.java, WorkspaceActivity.notesIntent(app)).setup()
+        screen = controller
+        return controller.get()
+    }
+
+    private fun views(view: android.view.View): List<android.view.View> = listOf(view) +
+        if (view is android.view.ViewGroup) (0 until view.childCount).flatMap { views(view.getChildAt(it)) } else emptyList()
+
+    private fun seedNote(id: String = "note-1") = app.workspace.store.put("notes", JSONObject()
+        .put("id", id).put("kind", "text").put("title", "Packing list").put("text", "Charger and headphones"))
+
+    @Test fun openAppNavigatesToListOrExactNoteAndReplaysWithoutNavigatingAgain() {
+        seedNote()
+        configure { it.copy(hermes = it.hermes.copy(allowOpenApps = true)) }
+        val activity = notesScreen()
+        val listRequest = JSONObject().put("app", "notes").put("request_id", "open-notes-list-0001")
+        assertEquals("notes", post("/v1/apps/open", listRequest).second.getString("app"))
+        val detail = post("/v1/apps/open", JSONObject().put("app", "notes").put("item_id", "note-1").put("request_id", "open-notes-note-0001"))
+        assertEquals(detail.second.toString(), 200, detail.first)
+        assertEquals("opened", detail.second.getString("status"))
+        assertEquals("note-1", detail.second.getString("item_id"))
+        fun edits() = views(activity.window.decorView).filterIsInstance<android.widget.EditText>()
+        assertEquals(listOf("Packing list", "Charger and headphones"), edits().map { it.text.toString() })
+        // Replaying an earlier list request must not replace the note now on screen.
+        assertEquals(200, post("/v1/apps/open", listRequest).first)
+        assertEquals(2, edits().size)
+        edits()[1].setText("Unsaved local edit")
+        assertEquals(409, post("/v1/apps/open", JSONObject().put("app", "notes")).first)
+        assertEquals("Unsaved local edit", edits()[1].text.toString())
+        assertTrue(get("/v1/status").second.getJSONObject("permissions").getBoolean("open_app"))
+    }
+
+    @Test fun openAppRejectsMissingMalformedAndUnavailableTargets() {
+        configure { it.copy(hermes = it.hermes.copy(allowOpenApps = true)) }
+        assertEquals(409, post("/v1/apps/open", JSONObject().put("app", "notes")).first)
+        notesScreen()
+        assertEquals(404, post("/v1/apps/open", JSONObject().put("app", "notes").put("item_id", "missing")).first)
+        for (value in listOf("", "../notes", "x".repeat(201), 7, JSONObject.NULL))
+            assertEquals(400, post("/v1/apps/open", JSONObject().put("app", "notes").put("item_id", value)).first)
+        for (target in listOf("", "com.android.settings", "android.intent.action.VIEW", 7, JSONObject.NULL))
+            assertEquals(400, post("/v1/apps/open", JSONObject().put("app", target)).first)
+        assertEquals(400, post("/v1/apps/open", JSONObject().put("app", "messages").put("item_id", "note-1")).first)
+        app.turns.guardApprovalReview { }
+        assertEquals(409, post("/v1/apps/open", JSONObject().put("app", "notes")).first)
+        app.turns.guardApprovalReview(null)
+        shadowOf(app.getSystemService(android.os.PowerManager::class.java)).setIsInteractive(false)
+        assertEquals(409, post("/v1/apps/open", JSONObject().put("app", "notes")).first)
+        shadowOf(app.getSystemService(android.os.PowerManager::class.java)).setIsInteractive(true)
+        shadowOf(app.getSystemService(android.app.KeyguardManager::class.java)).setKeyguardLocked(true)
+        assertEquals(409, post("/v1/apps/open", JSONObject().put("app", "notes")).first)
+    }
+
+    @Test fun openAppLaunchesTheRequestedScreenAndRechecksPermissionAtLaunch() {
+        seedNote()
+        configure { it.copy(hermes = it.hermes.copy(allowOpenApps = true)) }
+        val foreground = Robolectric.buildActivity(DeviceActivity::class.java).setup()
+        screen = foreground
+        val result = post("/v1/apps/open", JSONObject().put("app", "notes").put("item_id", "note-1"))
+        assertEquals(result.second.toString(), 200, result.first)
+        assertEquals("opening", result.second.getString("status"))
+        val intent = shadowOf(foreground.get()).nextStartedActivity
+        assertEquals(WorkspaceActivity::class.java.name, intent.component!!.className)
+        val opened = Robolectric.buildActivity(WorkspaceActivity::class.java, android.content.Intent(intent)).create()
+        assertTrue(views(opened.get().window.decorView).filterIsInstance<android.widget.EditText>().any { it.text.toString() == "Packing list" })
+        opened.destroy()
+        configure { it.copy(hermes = it.hermes.copy(allowOpenApps = false)) }
+        val revoked = Robolectric.buildActivity(WorkspaceActivity::class.java, android.content.Intent(intent)).create()
+        assertTrue(revoked.get().isFinishing)
+        revoked.destroy()
+    }
+
+    @Test fun openAppFetchesAnUnsyncedSharedNoteBeforeNavigation() {
+        okhttp3.mockwebserver.MockWebServer().use { server ->
+            val note = JSONObject().put("id", "remote-note").put("title", "From the host").put("text", "Freshly saved").put("kind", "text")
+            server.enqueue(okhttp3.mockwebserver.MockResponse().setBody(note.toString()))
+            val activity = notesScreen()
+            val identity = JSONObject().put("device_id", "paired-r1").put("base_url", server.url("/").toString())
+                .put("device_token", "content-token").put("recovery_token", "recovery-token")
+            val disk = object : dev.r1ptt.data.ConfigBlobStorage { var value: String? = null; override fun read() = value; override fun write(blob: String) { value = blob } }
+            val cipher = object : dev.r1ptt.data.ConfigCipher { override fun seal(plain: String, allowKeyCreation: Boolean) = plain; override fun open(blob: String) = blob }
+            val codec = object : dev.r1ptt.data.ConfigCodec<JSONObject> { override fun encode(value: JSONObject) = value.toString(); override fun decode(plain: String) = JSONObject(plain) }
+            app.workspace.identity.javaClass.getDeclaredField("persistence").apply { isAccessible = true }
+                .set(app.workspace.identity, dev.r1ptt.data.EncryptedConfigPersistence(identity, disk, cipher, codec))
+            app.workspace.recoveryConfirmed(app.workspace.recoveryTicket())
+            configure { it.copy(hermes = it.hermes.copy(allowOpenApps = true)) }
+            val result = post("/v1/apps/open", JSONObject().put("app", "notes").put("item_id", "remote-note"))
+            assertEquals(result.second.toString(), 200, result.first)
+            assertEquals("/api/v1/notes/remote-note", server.takeRequest(1, TimeUnit.SECONDS)!!.path)
+            assertEquals("From the host", app.workspace.store.item("notes", "remote-note")!!.getString("title"))
+            assertTrue(views(activity.window.decorView).filterIsInstance<android.widget.EditText>().any { it.text.toString() == "Freshly saved" })
+        }
+    }
+
+    @Test fun openAppRoutesEveryBuiltInScreenWithoutExternalIntents() {
+        configure { it.copy(hermes = it.hermes.copy(allowOpenApps = true)) }
+        val foreground = Robolectric.buildActivity(DeviceActivity::class.java).setup()
+        screen = foreground
+        val targets = mapOf(
+            "home" to dev.r1ptt.HomeActivity::class.java, "workspace" to WorkspaceActivity::class.java,
+            "notes" to WorkspaceActivity::class.java, "prompt_builder" to WorkspaceActivity::class.java,
+            "chats" to dev.r1ptt.ChatsActivity::class.java, "messages" to dev.r1ptt.messages.MessagesActivity::class.java,
+            "hermes" to HermesActivity::class.java, "settings" to dev.r1ptt.SettingsActivity::class.java,
+            "quick_controls" to dev.r1ptt.QuickControlsActivity::class.java, "updates" to dev.r1ptt.update.UpdateActivity::class.java,
+            "host_devices" to dev.r1ptt.workspace.HubSettingsActivity::class.java)
+        for ((name, type) in targets) {
+            val result = post("/v1/apps/open", JSONObject().put("app", name))
+            assertEquals(result.second.toString(), 200, result.first)
+            assertEquals("opening", result.second.getString("status"))
+            val intent = shadowOf(foreground.get()).nextStartedActivity
+            assertEquals(type.name, intent.component!!.className)
+            assertEquals(app.packageName, intent.component!!.packageName)
+            assertNull(intent.action)
+            assertNull(intent.data)
+        }
+    }
+
+    @Test fun openAppShowsPromptBuilderOrSavedPromptWithoutRunningOrEditingIt() {
+        val prompt = JSONObject().put("id", "saved-prompt").put("title", "Plan the trip").put("instruction", "Use these notes")
+            .put("revision", 1).put("blocks", org.json.JSONArray())
+        app.workspace.store.put("prompts", prompt)
+        configure { it.copy(hermes = it.hermes.copy(allowOpenApps = true)) }
+        val activity = notesScreen()
+        assertEquals(200, post("/v1/apps/open", JSONObject().put("app", "prompt_builder")).first)
+        assertTrue(views(activity.window.decorView).filterIsInstance<android.widget.TextView>().any { it.text.toString() == "Prompt Builder" })
+        assertEquals(200, post("/v1/apps/open", JSONObject().put("app", "prompt_builder").put("item_id", "saved-prompt")).first)
+        assertTrue(views(activity.window.decorView).filterIsInstance<android.widget.TextView>().any { it.text.toString() == "Plan the trip" })
+        assertEquals(prompt.toString(), app.workspace.store.item("prompts", "saved-prompt").toString())
+        assertTrue(app.workspace.store.items("runs").isEmpty())
+        assertTrue(app.workspace.store.items("requests").isEmpty())
     }
 
     @Test fun statusTextsAndRecipientsDescribeTheDevice() {

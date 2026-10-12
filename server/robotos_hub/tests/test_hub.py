@@ -613,6 +613,21 @@ class HubTest(HubFixture):
         self.assertEqual('queued', self.store.device_action(self.mcp, dict(id='status', device_id=self.a['device_id'], tool='r1_status', arguments={}, expires_at=now()+60000))['status'])
         self.assertError('local_permission_required', self.store.create_command, self.owner, self.a['device_id'], dict(id='ring', type='ring', payload={}, expires_at=now()+60000))
 
+    def test_open_app_uses_native_permissions_and_durable_command_identity(self):
+        self.checkin(settings={'remote_management': False}, capabilities={'device_tool': True})
+        action = dict(id='open-notes-1', device_id=self.a['device_id'], tool='open_app',
+                      arguments={'app': 'notes', 'item_id': 'note-1', 'request_id': 'open-notes-1'}, expires_at=now()+60000)
+        first = self.store.device_action(self.mcp, action)
+        self.assertEqual('queued', first['status'])
+        self.assertEqual(first, self.store.device_action(self.mcp, action))
+        self.assertError('request_identity_required', self.store.device_action, self.mcp, dict(action, id='changed'))
+        self.assertError('invalid_id', self.store.device_action, self.mcp, dict(action, arguments={'app': 'notes', 'item_id': '../notes', 'request_id': 'open-notes-1'}))
+        self.assertError('invalid_arguments', self.store.device_action, self.mcp, dict(action, arguments={'app': 'com.android.settings', 'request_id': 'open-notes-1'}))
+        self.assertError('invalid_arguments', self.store.device_action, self.mcp, dict(action, arguments={'app': 'settings', 'item_id': 'note-1', 'request_id': 'open-notes-1'}))
+        self.store.patch_device(self.owner, self.a['device_id'], dict(base_revision=1, lost=True))
+        self.assertEqual('cancelled', self.store.device_action(self.mcp, action_id='open-notes-1')['status'])
+        self.assertError('device_quarantined', self.store.device_action, self.mcp, action)
+
     def test_resume_revision_and_change_feed(self):
         self.prompt()
         self.store.resume(self.a['workspace'], dict(base_revision=0, prompt_id='prompt', scroll_y=20))
