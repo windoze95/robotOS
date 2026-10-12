@@ -10,8 +10,8 @@ import android.net.NetworkCapabilities
 import android.os.SystemClock
 import android.os.PowerManager
 import android.provider.Settings
-import android.util.Log
 import dev.r1ptt.data.ConfigStore
+import dev.r1ptt.data.EventLog
 import dev.r1ptt.sys.Root
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
@@ -72,7 +72,7 @@ class RadioPolicy(
         else if (!deliberateAirplane || !wasCellular) cmds += AIRPLANE_OFF
         prefs.edit().putBoolean("cellular", cellular).apply()
         if (!cutByUs) cmds += WIFI_ON
-        if (root(cmds.joinToString("; "), 10_000) != 0) Log.w(TAG, "radio baseline incomplete (no root?)")
+        if (root(cmds.joinToString("; "), 10_000) != 0) EventLog.record("radio baseline incomplete (no root?)")
     }
 
     fun onScreenOff() = schedule()
@@ -94,8 +94,11 @@ class RadioPolicy(
         val previous = cutByUs
         cutByUs = true // Mark our change before Android emits AIRPLANE_MODE.
         if (root(cmd, 10_000) == 0) {
-            Log.i(TAG, "idle: radios off")
-        } else cutByUs = previous
+            EventLog.record("idle: radios off")
+        } else {
+            cutByUs = previous
+            EventLog.record("idle: radio cut failed")
+        }
         if (held) wake() // A cable event may have raced the root call.
     }
 
@@ -136,8 +139,8 @@ class RadioPolicy(
             val cmd = if (store.value.power.cellular && !deliberateAirplane) "$AIRPLANE_OFF; $WIFI_ON" else WIFI_ON
             if (root(cmd, 10_000) == 0) {
                 cutByUs = false
-                Log.i(TAG, "wake: radios on")
-            }
+                EventLog.record("wake: radios on")
+            } else EventLog.record("wake: radios on failed")
         }
     }
 
@@ -161,7 +164,6 @@ class RadioPolicy(
     )
 
     companion object {
-        private const val TAG = "r1ptt"
         private val PHYSICAL = intArrayOf(NetworkCapabilities.TRANSPORT_WIFI, NetworkCapabilities.TRANSPORT_CELLULAR,
             NetworkCapabilities.TRANSPORT_ETHERNET, NetworkCapabilities.TRANSPORT_USB, NetworkCapabilities.TRANSPORT_BLUETOOTH)
 

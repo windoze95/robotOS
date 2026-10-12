@@ -22,6 +22,10 @@ run() {
   run cmd overlay fabricate --target android --name R1PttImeNavBar android:bool/config_imeDrawsImeNavBar 0x12 0x0
   run cmd overlay enable com.android.shell:R1PttImeNavBar
 
+  # 2 MB log buffers instead of 256 KB: minutes of Android logs become about an hour. Applies from
+  # the next boot; provisioning resizes the running buffers. robotOS keeps its own event log too.
+  run setprop persist.logd.size 2097152
+
   # Airplane mode never touches Wi-Fi; the app owns Wi-Fi's idle cut and keeps the modem off.
   run settings put global airplane_mode_radios cell,bluetooth,nfc,wimax,uwb
 

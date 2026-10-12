@@ -92,7 +92,7 @@ jobs:
             cat "docs/releases/$GITHUB_REF_NAME.md" >> "$notes"
           fi
           gh release create "$GITHUB_REF_NAME" --repo windoze95/robotOS --verify-tag --draft --title "robotOS ${GITHUB_REF_NAME#v}" --notes-file "$notes"
-          gh release upload "$GITHUB_REF_NAME" --repo windoze95/robotOS "$RUNNER_TEMP/robotos-release/robotOS.apk" "$RUNNER_TEMP/robotos-release/update.json" "$RUNNER_TEMP/robotos-release/signer.cer" "$RUNNER_TEMP/robotos-release/SHA256SUMS"
+          gh release upload "$GITHUB_REF_NAME" --repo windoze95/robotOS "$RUNNER_TEMP/robotos-release/robotOS.apk" "$RUNNER_TEMP/robotos-release/update.json" "$RUNNER_TEMP/robotos-release/signer.cer" "$RUNNER_TEMP/robotos-release/mapping.txt" "$RUNNER_TEMP/robotos-release/SHA256SUMS"
           gh release edit "$GITHUB_REF_NAME" --repo windoze95/robotOS --draft=false --latest
       - name: Remove local release outputs
         if: always()

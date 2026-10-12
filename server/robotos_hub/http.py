@@ -307,6 +307,11 @@ class Handler(BaseHTTPRequestHandler):
                 result = self.store.devices(actor, parts[1])
             elif len(parts) == 2 and parts[0] == 'devices' and method == 'PATCH':
                 result = self.store.patch_device(actor, parts[1], self._json())
+            elif len(parts) == 3 and parts[0] == 'devices' and parts[2] == 'check-ins' and method == 'GET':
+                limit = parse_qs(parsed.query).get('limit', ['100'])[0]
+                if not limit.isdigit():
+                    raise HubError(400, 'invalid_limit', 'Invalid limit')
+                result = self.store.check_ins(actor, parts[1], int(limit))
             elif len(parts) == 3 and parts[0] == 'devices' and parts[2] == 'commands' and method in {'GET', 'POST'}:
                 result = self.store.commands(actor, parts[1]) if method == 'GET' else self.store.create_command(actor, parts[1], self._json())
             elif path == 'mcp/devices' and method == 'GET':

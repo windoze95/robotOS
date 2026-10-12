@@ -23,6 +23,8 @@ SECURITY_FIELDS = {'app_restriction_available', 'secure_lock_configured', 'devic
 SCHEMA_VERSION = 4
 # Change rows older than this are pruned; a client whose cursor predates them is told to reload.
 CHANGE_RETENTION_MS = 7 * 24 * 3600 * 1000
+# Per-device check-in history for diagnosing incidents: when each R1 reached the hub and the result.
+CHECK_IN_RETENTION_MS = 7 * 24 * 3600 * 1000
 
 
 def now():
@@ -114,6 +116,8 @@ class Store:
               action TEXT NOT NULL, created_at INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT NOT NULL, action TEXT NOT NULL,
               device_id TEXT, created_at INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS checkins(id INTEGER PRIMARY KEY AUTOINCREMENT, device_id TEXT NOT NULL, result TEXT NOT NULL,
+              app_version TEXT, created_at INTEGER NOT NULL);
             '''
             # Execute individually: executescript would commit before the upgrade is complete.
             definitions = {}
@@ -196,6 +200,7 @@ class Store:
             db.execute("UPDATE controls SET status='unknown',result=? WHERE status='submitting'", (canonical({'error': 'Host restarted before control outcome was confirmed'}),))
             # Never infer application of a command that the device has not acknowledged.
             self._prune_changes(db)
+            self._prune_check_ins(db)
         for path in self.media_dir.glob('.upload-*'):
             path.unlink(missing_ok=True)
 
@@ -206,6 +211,26 @@ class Store:
 
     def _prune_changes(self, db):
         db.execute('DELETE FROM changes WHERE created_at<?', (now() - CHANGE_RETENTION_MS,))
+
+    def _record_check_in(self, db, device_id, result, version):
+        # Time, outcome and app version only: never the request, its path or a credential.
+        row_id = db.execute('INSERT INTO checkins(device_id,result,app_version,created_at) VALUES(?,?,?,?)',
+                            (device_id, result, version, now())).lastrowid
+        if row_id % 256 == 0:
+            self._prune_check_ins(db)
+
+    def _prune_check_ins(self, db):
+        db.execute('DELETE FROM checkins WHERE created_at<?', (now() - CHECK_IN_RETENTION_MS,))
+
+    def check_ins(self, actor, device_id, limit=100):
+        """The newest check-ins of one R1, accepted or refused, for the owner."""
+        limit = integer(limit, 'limit', 1, 1000)
+        with self.connection() as db:
+            self.authorize(db, actor, 'owner')
+            self._row(db, 'devices', device_id)
+            return {'items': [{'at': row['created_at'], 'result': row['result'], 'app_version': row['app_version']}
+                              for row in db.execute('SELECT * FROM checkins WHERE device_id=? ORDER BY id DESC LIMIT ?',
+                                                    (device_id, limit))]}
 
     def _change_head(self, db):
         # AUTOINCREMENT keeps the newest sequence number here, even after its row is pruned.
@@ -695,6 +720,19 @@ class Store:
             self.change(db, 'command', row['id'])
 
     def check_in(self, actor, body):
+        try:
+            return self._check_in(actor, body)
+        except HubError as error:
+            # A refused check-in belongs in the R1's history too; other credentials are never recorded.
+            if actor['role'] == 'recovery':
+                version = body.get('app_version') if isinstance(body, dict) else None
+                with self.transaction() as db:
+                    if db.execute('SELECT 1 FROM devices WHERE id=?', (actor['id'],)).fetchone():
+                        self._record_check_in(db, actor['id'], error.code,
+                                              version if isinstance(version, str) and len(version) <= 100 else None)
+            raise
+
+    def _check_in(self, actor, body):
         with self.transaction() as db:
             self.authorize(db, actor, 'recovery')
             row = self._row(db, 'devices', actor['id'])
@@ -762,6 +800,7 @@ class Store:
             # A heartbeat that only moves last_seen is not a change; /devices still reports it.
             if reported != previous:
                 self.change(db, 'device', row['id'])
+            self._record_check_in(db, row['id'], 'ok', version)
             return {'device_id': row['id'], 'name': row['name'], **self.policy(self._row(db, 'devices', row['id'])),
                     'settings_revision': row['settings_revision'], 'settings': json.loads(row['desired_settings']), 'commands': commands}
 

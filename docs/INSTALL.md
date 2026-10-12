@@ -188,6 +188,11 @@ Work through these with the R1 on USB:
 
 ## Troubleshooting
 
+**To see what the R1 did recently,** run `adb shell dumpsys activity service dev.r1ptt/.PttService`.
+robotOS keeps about a week of recovery checks, recovery-cover changes, radio cuts and restores,
+screen, power and network changes, and voice-turn metrics on the device. It records timestamps
+and outcomes only. The hub's side is in [HUB.md](HUB.md#reading-what-happened).
+
 **The button does nothing.**
 1. Check that the app's root reader is up: `adb logcat -s r1ptt` should show "side button reader
    up on /dev/input/eventN".
