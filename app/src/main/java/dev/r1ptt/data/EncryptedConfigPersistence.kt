@@ -45,19 +45,22 @@ internal class EncryptedConfigPersistence<T>(
     private val cipher: ConfigCipher,
     private val codec: ConfigCodec<T>,
 ) {
-    private var current = defaults
-    private var failure: ConfigPersistenceException? = null
+    @Volatile private var current = defaults
+    @Volatile private var failure: ConfigPersistenceException? = null
     private var hasStoredBlob = false
+    /** Plain text of the committed blob, so an update that changes nothing skips Keystore and disk. */
+    private var storedPlain: String? = null
 
     init {
         reload()
     }
 
+    /** The last committed value. Readers never wait for an update's encryption or fsync. */
     val value: T
-        @Synchronized get() = current
+        get() = current
 
     val loadError: ConfigPersistenceException?
-        @Synchronized get() = failure
+        get() = failure
 
     /** A failed retry preserves both the file and the last successfully loaded value. */
     @Synchronized
@@ -66,9 +69,13 @@ internal class EncryptedConfigPersistence<T>(
         // A missing blob cannot unlock a failed load. Recovery must read the existing settings,
         // or the user must explicitly clear app data and start a fresh store.
         check(blob != null || failure == null) { "Stored settings disappeared during recovery" }
-        val loaded = blob?.let { codec.decode(cipher.open(it)) } ?: current
+        val plain = blob?.let { cipher.open(it) }
+        val loaded = plain?.let { codec.decode(it) } ?: current
         current = loaded
-        if (blob != null) hasStoredBlob = true
+        if (blob != null) {
+            hasStoredBlob = true
+            storedPlain = plain
+        }
         failure = null
         true
     } catch (e: Exception) {
@@ -81,6 +88,10 @@ internal class EncryptedConfigPersistence<T>(
         failure?.let { throw it }
         val next = transform(current)
         val plain = codec.encode(next)
+        if (hasStoredBlob && plain == storedPlain) {
+            current = next
+            return next
+        }
         val blob = try {
             cipher.seal(plain, allowKeyCreation = !hasStoredBlob)
         } catch (e: Exception) {
@@ -94,6 +105,7 @@ internal class EncryptedConfigPersistence<T>(
         // Publish only after encrypted bytes have been committed successfully.
         current = next
         hasStoredBlob = true
+        storedPlain = plain
         return next
     }
 }

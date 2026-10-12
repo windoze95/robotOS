@@ -137,7 +137,8 @@ Idle time is where a 1000 mAh battery goes.
     keep it awake; carrier-queued delivery after wake is not guaranteed.
 - **The screen is held on while listening.** It can time out during remote work, playback or an
   approval wait; the default timeout is 15 s at low brightness.
-- **Paired devices sync while connected.** Optional recovery check-ins briefly wake configured
+- **Paired devices sync while connected.** About every 30 seconds an R1 checks in and downloads
+  only what changed on the host. Optional recovery check-ins briefly wake configured
   radios and may obtain a permitted location fix. They are off by default and need separate battery
   measurement. Voice streams only while you hold the button.
 

@@ -292,9 +292,9 @@ class Handler(BaseHTTPRequestHandler):
                     raise HubError(404, 'not_found', 'Route not found')
             elif path == 'changes' and method == 'GET':
                 after = parse_qs(parsed.query).get('after', ['0'])[0]
-                if not after.isdigit():
+                if after != 'latest' and not after.isdigit():
                     raise HubError(400, 'invalid_cursor', 'Invalid change cursor')
-                result = self.store.changes(actor, int(after))
+                result = self.store.changes(actor, after if after == 'latest' else int(after))
             elif path == 'resume' and method in {'GET', 'PUT'}:
                 result = self.store.resume(actor, self._json() if method == 'PUT' else None)
             elif path == 'devices/self/check-in' and method == 'POST':

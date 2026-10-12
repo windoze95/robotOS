@@ -245,13 +245,20 @@ class WorkspaceClient(private val app: App) {
                 recoveryOnly()
                 if (blocked) { mutable.value = "Workspace access restricted"; return@withLock }
                 syncNotes()
-                listOf("notes", "prompts", "runs").forEach { key ->
-                    val version = store.version()
-                    store.reconcile(key, api("GET", "/$key").getJSONArray("items").objects(), version)
+                val feed = hostChanges()
+                listOf("note" to "notes", "prompt" to "prompts", "run" to "runs").forEach { (kind, key) ->
+                    if (feed.fetches(kind)) {
+                        val version = store.version()
+                        store.reconcile(key, api("GET", "/$key").getJSONArray("items").objects(), version)
+                    }
                 }
                 SharedChat.importHistory(app)
-                val resume = api("GET", "/resume")
-                store.mutate { it.put("resume", resume) }
+                if (feed.fetches("resume")) {
+                    val resume = api("GET", "/resume")
+                    store.mutate { it.put("resume", resume) }
+                }
+                // Only once everything it reported is stored: a failed fetch is retried next pass.
+                store.changeCursor = feed.cursor
                 mutable.value = when {
                     store.items("notes").any { it.optBoolean("pending") } -> "Saved on this R1 · waiting for connection"
                     store.items("drafts").isNotEmpty() -> "Notes synced · prompt draft on this R1"
@@ -262,6 +269,29 @@ class WorkspaceClient(private val app: App) {
                 throw e
             }
         }
+    }
+    /** What changed on the host since the cache's cursor. Null kinds: fetch everything. */
+    private class HostChanges(val kinds: Set<String>?, val cursor: Long?) {
+        fun fetches(kind: String) = kinds == null || kind in kinds
+    }
+    private fun hostChanges(): HostChanges {
+        var cursor = store.changeCursor ?: return HostChanges(null, changeHead())
+        val kinds = mutableSetOf<String>()
+        repeat(MAX_CHANGE_PAGES) {
+            val page = api("GET", "/changes?after=$cursor")
+            // History this R1 missed was pruned, or the host's database was replaced.
+            if (page.optBoolean("reset")) return HostChanges(null, page.getLong("cursor"))
+            page.getJSONArray("items").objects().mapTo(kinds) { it.getString("kind") }
+            cursor = page.getLong("cursor")
+            if (!page.optBoolean("more")) return HostChanges(kinds, cursor)
+        }
+        return HostChanges(null, changeHead())
+    }
+    /** Taken before a full fetch, so whatever changes meanwhile is fetched next time. Null: a host without a feed. */
+    private fun changeHead(): Long? = try {
+        api("GET", "/changes?after=latest").getLong("cursor")
+    } catch (e: HubException) {
+        if (e.status == 400 || e.status == 404) null else throw e
     }
     internal fun syncNotes() {
         check(networkAllowed) { "Check device recovery before syncing" }
@@ -407,6 +437,8 @@ class WorkspaceClient(private val app: App) {
         private const val RETRY_FIRST_MS = 1_000L
         private const val RETRY_CONFIRM_MS = 2_000L
         private const val RETRY_MAX_MS = 30_000L
+        /** Pages of 1000 changes to read before a full fetch is cheaper. */
+        private const val MAX_CHANGE_PAGES = 10
         private const val TAG = "r1ptt"
         /** Resolve durable audio IDs into a copy; failed hydration never discards a local draft. */
         fun hydrateMedia(prompt: JSONObject, note: (String) -> JSONObject?): JSONObject = prompt.copyJson().also { hydrated ->

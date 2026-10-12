@@ -637,6 +637,57 @@ class HubTest(HubFixture):
         self.assertTrue(changes['cursor'] > 0)
         self.assertNotIn('device', {item['kind'] for item in changes['items']})
 
+    def test_heartbeat_check_ins_add_no_change_rows(self):
+        def device_changes():
+            with self.store.connection() as db:
+                return db.execute("SELECT COUNT(*) FROM changes WHERE kind='device'").fetchone()[0]
+        self.checkin()
+        before = device_changes()
+        first_seen = self.store.devices(self.owner, self.a['device_id'])['last_seen']
+        with patch('robotos_hub.store.now', return_value=now() + 30000):
+            self.checkin()
+            self.checkin()
+        self.assertEqual(before, device_changes())
+        self.assertTrue(self.store.devices(self.owner, self.a['device_id'])['last_seen'] > first_seen)
+        self.checkin(battery=69)
+        self.assertEqual(before + 1, device_changes())
+
+    def test_change_feed_starts_at_head_and_resets_after_missed_history(self):
+        self.prompt()
+        latest = self.store.changes(self.a['workspace'], 'latest')
+        head = latest['cursor']
+        self.assertEqual({'cursor': head, 'more': False, 'items': []}, latest)
+        self.assertEqual({'cursor': head, 'more': False, 'items': []}, self.store.changes(self.a['workspace'], head))
+        self.store.resume(self.a['workspace'], dict(base_revision=0, prompt_id='prompt'))
+        page = self.store.changes(self.a['workspace'], head)
+        self.assertEqual(['resume'], [item['kind'] for item in page['items']])
+        # A cursor past the head belongs to a replaced database.
+        self.assertTrue(self.store.changes(self.a['workspace'], page['cursor'] + 5)['reset'])
+        # Rows up to the old head age out; a client that read them continues, one that didn't reloads.
+        with self.store.transaction() as db:
+            db.execute('UPDATE changes SET created_at=0 WHERE seq<=?', (head,))
+            self.store._prune_changes(db)
+        self.assertNotIn('reset', self.store.changes(self.a['workspace'], head))
+        reset = self.store.changes(self.a['workspace'], 0)
+        self.assertEqual({'cursor': page['cursor'], 'more': False, 'reset': True, 'items': []}, reset)
+        # With every row pruned, only a client at the head is current.
+        with self.store.transaction() as db:
+            db.execute('UPDATE changes SET created_at=0')
+            self.store._prune_changes(db)
+        self.assertNotIn('reset', self.store.changes(self.a['workspace'], page['cursor']))
+        self.assertTrue(self.store.changes(self.a['workspace'], page['cursor'] - 1)['reset'])
+
+    def test_change_feed_pages_say_when_more_follow(self):
+        with self.store.transaction() as db:
+            for i in range(1001):
+                self.store.change(db, 'note', 'n%d' % i)
+        first = self.store.changes(self.owner, 0)
+        self.assertTrue(first['more'])
+        self.assertEqual(1000, len(first['items']))
+        second = self.store.changes(self.owner, first['cursor'])
+        self.assertFalse(second['more'])
+        self.assertEqual(self.store.changes(self.owner, 'latest')['cursor'], second['cursor'])
+
 
 class HttpTest(HubFixture):
     def setUp(self):
@@ -690,6 +741,14 @@ class HttpTest(HubFixture):
         self.assertEqual(200, self.request('GET', 'session', headers={'Cookie': cookie})[0])
         self.assertEqual(200, self.request('POST', 'logout', {}, {'Cookie': cookie, 'X-CSRF-Token': body['csrf_token']})[0])
         self.assertEqual(401, self.request('GET', 'session', headers={'Cookie': cookie})[0])
+
+    def test_change_cursor_accepts_latest_and_rejects_other_words(self):
+        headers = {'Authorization': 'Bearer ' + self.a['device_token']}
+        status, body, _ = self.request('GET', 'changes?after=latest', headers=headers)
+        self.assertEqual(200, status)
+        self.assertEqual([], body['items'])
+        self.assertEqual(200, self.request('GET', 'changes?after=' + str(body['cursor']), headers=headers)[0])
+        self.assertEqual(400, self.request('GET', 'changes?after=newest', headers=headers)[0])
 
     def test_http_scopes_dns_rebinding_limits_and_upload(self):
         self.assertEqual(421, self.request('GET', 'health', headers={'Host': 'evil.example'})[0])

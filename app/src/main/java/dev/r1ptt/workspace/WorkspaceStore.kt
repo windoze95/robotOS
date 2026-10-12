@@ -1,6 +1,7 @@
 package dev.r1ptt.workspace
 
 import dev.r1ptt.data.AtomicConfigFile
+import dev.r1ptt.data.ConfigBlobStorage
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -13,17 +14,25 @@ internal fun JSONObject.copyJson() = JSONObject(toString())
 internal fun newId(): String = UUID.randomUUID().toString()
 
 /** Atomic snapshots include both cache and pending writes. Failed loads never silently reset data. */
-class WorkspaceStore(directory: File) {
+class WorkspaceStore internal constructor(directory: File, private val disk: ConfigBlobStorage) {
+    constructor(directory: File) : this(directory, AtomicConfigFile(File(directory, "workspace.json")))
     val mediaDir = File(directory, "media").apply { mkdirs() }
-    private val disk = AtomicConfigFile(File(directory, "workspace.json"))
     var loadError: String? = null
         private set
-    private var data = try { (disk.read()?.let(::JSONObject) ?: JSONObject()).also {
+    /**
+     * The last durable snapshot, never modified once published. Writers replace it under the lock
+     * after their write is on disk; readers take it without the lock, so an fsync never stalls a screen.
+     */
+    @Volatile private var data = try { (disk.read()?.let(::JSONObject) ?: JSONObject()).also {
         if (compactCache(it)) disk.write(it.toString())
     } } catch (_: Exception) {
         loadError = "Saved workspace data could not be loaded. It has been preserved for recovery; writes are disabled."
         JSONObject()
     }
+    /** [data] as written, so a mutation that changes nothing skips the disk. */
+    private var written = data.toString()
+    /** The host change-feed position this cache is current to. In memory only: a restart reloads everything. */
+    @Volatile var changeCursor: Long? = null
     /** Keep edit leases in the active editor; stored drafts need only their content and revision. */
     private fun compactCache(root: JSONObject): Boolean {
         var changed = false
@@ -49,18 +58,21 @@ class WorkspaceStore(directory: File) {
         }
         return changed
     }
-    @Synchronized fun snapshot(): JSONObject = data.copyJson()
+    fun snapshot(): JSONObject = data.copyJson()
     @Synchronized fun mutate(change: (JSONObject) -> Unit) {
         check(loadError == null) { loadError.orEmpty() }
-        val next = data.copyJson()
+        val next = JSONObject(written)
         change(next)
         compactCache(next)
-        disk.write(next.toString())
+        val blob = next.toString()
+        if (blob == written) return
+        disk.write(blob)
+        written = blob
         data = next
     }
     fun items(key: String): List<JSONObject> = snapshot().optJSONArray(key)?.objects().orEmpty()
     fun item(key: String, id: String): JSONObject? = items(key).find { it.optString("id") == id }
-    @Synchronized fun version(): Long = data.optLong("cache_clock")
+    fun version(): Long = data.optLong("cache_clock")
     private fun stamp(root: JSONObject, key: String, id: String) {
         val next = root.optLong("cache_clock") + 1
         root.put("cache_clock", next)
@@ -136,8 +148,12 @@ class WorkspaceStore(directory: File) {
     @Synchronized fun finishChat(conversation: String, runId: String) {
         if (item("shared_chat_links", conversation)?.optString("run_id") == runId) remove("shared_chat_links", conversation)
     }
-    fun resumeAfterEnrollment() = mutate { it.put("frozen", false) }
+    fun resumeAfterEnrollment() {
+        changeCursor = null
+        mutate { it.put("frozen", false) }
+    }
     @Synchronized fun clearShared() {
+        changeCursor = null
         mutate { root -> root.put("frozen", true); listOf("notes", "prompts", "drafts", "note_drafts", "runs", "resume", "requests", "shared_chat_links", "chat_attachments").forEach { root.remove(it) } }
         val recordings = mediaDir.listFiles() ?: error("Local recordings could not be enumerated for erasure")
         recordings.forEach { java.nio.file.Files.deleteIfExists(it.toPath()) }

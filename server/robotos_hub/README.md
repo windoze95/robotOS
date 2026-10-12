@@ -90,8 +90,15 @@ Version 1 returns full note and prompt snapshots. Prompt detail uses
 not acquire an editing lease. `GET /runs` remains available for existing R1 synchronization and
 MCP clients. It never silently truncates saved items; this fits a personal workspace shared by a
 few R1s. Very large histories increase response size and device
-memory use. Paginated snapshots and incremental materialized client state are future scaling work.
-The change feed itself pages at 1000 events, with an explicit cursor for continuing through updates.
+memory use. Paginated snapshots are future scaling work.
+
+`GET /changes?after=N` pages at 1000 events with an explicit cursor, and `more` says another page
+follows. `after=latest` returns only the current head, so a client that has just loaded its lists
+starts there instead of replaying history. Events older than seven days are pruned. A cursor from
+before the oldest kept event, or past the head of a replaced database, gets `reset: true` with the
+head, and the client reloads its lists. A check-in that changes nothing but `last_seen` adds no
+event; `GET /devices` still reports it. The R1 reads the feed on each 30-second sync and downloads
+only the collections it names.
 
 ## Validation
 

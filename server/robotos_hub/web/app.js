@@ -63,7 +63,8 @@ function shell() {
 }
 function head(title,subtitle='',actions='') {return `<header class="page-head"><div><h1>${h(title)}</h1>${subtitle?`<p>${h(subtitle)}</p>`:''}</div>${actions?`<div class="actions">${actions}</div>`:''}</header><div id="page-error" class="notice error" role="alert" hidden></div>`;}
 function empty(title,copy,actions='') {return `<section class="empty"><h2>${h(title)}</h2><p>${h(copy)}</p>${actions?`<div class="actions">${actions}</div>`:''}</section>`;}
-async function enterWorkspace() {shell();s.recovery=await localEntries();await navigate();clearInterval(pollTimer);pollTimer=setInterval(poll,5000);}
+// Polling starts at the newest change: the first view loads its lists in full anyway.
+async function enterWorkspace() {shell();s.recovery=await localEntries();s.cursor=(await api('/changes?after=latest')).cursor;await navigate();clearInterval(pollTimer);pollTimer=setInterval(poll,5000);}
 async function navigate() {
   await saveDraftLocal();
   const previous=s.draft?.id, token=s.lease?.lease_token;
@@ -424,6 +425,8 @@ async function poll() {
   const turn=s.loading;
   try {
     const changes=await api('/changes?after='+s.cursor);s.cursor=changes.cursor;
+    // A reset means this cursor fell behind pruned history: reload as if everything changed.
+    const changed=changes.reset||changes.items?.length;
     if(turn!==s.loading)return;
     const inDialog=$('#dialog').open;
     if(s.view==='prompts'&&s.draft){
@@ -436,8 +439,8 @@ async function poll() {
       if(!inDialog&&beforeLease!==Boolean(s.lease))updateEditorStatus();
     }
     else if(s.view==='devices'&&!inDialog){const before=JSON.stringify([s.devices,s.device,s.commands,s.recovery]);const devices=(await api('/devices')).items;if(turn!==s.loading)return;s.devices=devices;await loadDevice();if(turn!==s.loading)return;if(before!==JSON.stringify([s.devices,s.device,s.commands,s.recovery]))preserveView(renderDevices);}
-    else if(changes.items?.length&&!inDialog&&s.view==='notes'){s.notes=(await api('/notes')).items;if(!$('#note-search')?.matches(':focus'))renderNotes();}
-    else if(changes.items?.length&&!inDialog&&s.view==='prompts'){s.prompts=builderPrompts((await api('/prompts')).items);if(!$('#prompt-search')?.matches(':focus'))renderPrompts();}
+    else if(changed&&!inDialog&&s.view==='notes'){s.notes=(await api('/notes')).items;if(!$('#note-search')?.matches(':focus'))renderNotes();}
+    else if(changed&&!inDialog&&s.view==='prompts'){s.prompts=builderPrompts((await api('/prompts')).items);if(!$('#prompt-search')?.matches(':focus'))renderPrompts();}
   }catch(error){if(error.status!==401)setOnline(false);}finally{polling=false;}
 }
 
