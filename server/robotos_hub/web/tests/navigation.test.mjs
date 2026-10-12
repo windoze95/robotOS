@@ -5,18 +5,18 @@ import {webcrypto} from 'node:crypto';
 import vm from 'node:vm';
 import * as model from '../model.mjs';
 
-// Exercise the real navigation and submit handlers without a browser or a live Hermes.
+// Exercise the real navigation and editing handlers without a browser or a live Hermes.
 // DOM rendering is recorded; all network traffic is explicit in each fixture.
 const source=readFileSync(new URL('../app.js',import.meta.url),'utf8');
 function consoleFixture(hash, responses) {
   const nodes=new Map(),calls=[];
   const node=selector=>{
-    if(!nodes.has(selector))nodes.set(selector,{innerHTML:'',textContent:'',hidden:false,dataset:{},classList:{toggle(){}},addEventListener(){},focus(){},scrollIntoView(){}});
+    if(!nodes.has(selector))nodes.set(selector,{innerHTML:'',textContent:'',hidden:false,dataset:{},classList:{toggle(){}},addEventListener(){},focus(){},scrollIntoView(){},showModal(){this.open=true;},close(){this.open=false;},querySelector(){return null;}});
     return nodes.get(selector);
   };
   const context=vm.createContext({
     ...model,h:model.escapeHTML,URLSearchParams,structuredClone,AbortController,crypto:webcrypto,setTimeout:(callback,delay)=>setTimeout(callback,delay).unref(),clearTimeout,setInterval,clearInterval,
-    window:{addEventListener(){}},
+    window:{addEventListener(){},scrollY:0},
     document:{querySelector:node,querySelectorAll:selector=>selector==='#prompt-title,#prompt-instruction,#blocks textarea'?[node('#prompt-title'),node('#prompt-instruction')]:[],addEventListener(){},hidden:false},
     location:{hash},
     history:{replaceState(_state,_title,next){context.location.hash=next;}},
@@ -29,62 +29,80 @@ function consoleFixture(hash, responses) {
       return {ok:status<400,status,text:async()=>JSON.stringify(response.body??response)};
     }
   });
-  vm.runInContext(source.slice(source.indexOf('\nconst $'),source.lastIndexOf('\ntry{s.session'))+'\nglobalThis.testConsole={s,shell,navigate,handleAction};',context);
+  vm.runInContext(source.slice(source.indexOf('\nconst $'),source.lastIndexOf('\ntry{s.session'))+'\nglobalThis.testConsole={s,shell,navigate,handleAction,poll};',context);
   context.testConsole.s.session={csrf_token:'fixture'};
   context.testConsole.shell();
   return {...context.testConsole,nodes,calls,location:context.location};
 }
 const prompt={id:'p',revision:2,state:'draft',title:'Saved idea',instruction:'Current edited version',blocks:[]};
-function promptResponses(submissions) {
+function promptResponses() {
   return {
     'GET /prompts':{items:[prompt]},'GET /notes':{items:[]},'GET /resume':{},
-    'GET /prompts/p':prompt,'GET /prompts/p/submissions':{items:submissions},
+    'GET /prompts/p':prompt,
     'POST /prompts/p/lease':{lease_token:'edit-token',expires_at:Date.now()+90000}
   };
 }
-test('a legacy unknown submission opens its prompt, preserving the original outcome without submitting again',async()=>{
+test('a legacy unknown submission opens its source editor without exposing execution controls or resubmitting',async()=>{
   const receipt={id:'uncertain',prompt_id:'p',prompt_revision:2,status:'submission_unknown',created_at:1,snapshot:{preview:'Exact original submitted text'}};
-  const app=consoleFixture('#runs/uncertain',{'GET /runs/uncertain':receipt,...promptResponses([receipt])});
+  const original=structuredClone(receipt);
+  const app=consoleFixture('#runs/uncertain',{'GET /runs/uncertain':receipt,...promptResponses()});
   await app.navigate();
-  assert.equal(app.location.hash,'#prompts/p?submission=uncertain');
+  assert.equal(app.location.hash,'#prompts/p');
   assert.equal(app.s.view,'prompts');
-  assert.equal(app.s.selectedRunId,'uncertain');
+  assert.equal(app.s.id,'p');
   assert.doesNotMatch(app.nodes.get('#app').innerHTML,/href="#runs"/);
-  const result=app.nodes.get('#prompt-result').innerHTML;
-  assert.match(result,/Hermes has not confirmed/);
-  assert.match(result,/Exact original submitted text/);
-  assert.match(result,/Check submission/);
-  assert.match(result,/Stop Hermes request/);
-  assert.doesNotMatch(result,/Send to Hermes again/);
-  await app.handleAction({dataset:{action:'run-prompt'}});
-  assert.equal(app.calls.filter(call=>call.method==='POST').length,0,'reading the reply neither takes editing control nor submits another execution');
-  assert.equal(app.calls.some(call=>call.path==='/runs'),false,'no global execution-history fetch');
+  const html=app.nodes.get('#content').innerHTML;
+  assert.match(html,/Prompt preview/);
+  assert.match(html,/Current edited version/);
+  assert.doesNotMatch(html,/prompt-result|Hermes reply|Check submission|Stop Hermes|Send to Hermes|data-action=".*run/);
+  for(const action of ['run-prompt','retry-run','run-again','reconcile-run','approve-run','deny-run','stop-run'])await app.handleAction({dataset:{action,id:'uncertain'}});
+  assert.equal(app.calls.filter(call=>call.method!=='GET').length,0,'old execution actions cannot dispatch requests');
+  assert.equal(app.calls.some(call=>call.path==='/runs'||call.path.endsWith('/submissions')),false);
+  assert.deepEqual(receipt,original,'reading a legacy link does not change the receipt');
 });
 test('a missing old run link falls back to saved prompts with no execution or global history request',async()=>{
-  const app=consoleFixture('#runs/missing',{'GET /runs/missing':{status:404,body:{error:'Not found'}},...promptResponses([])});
+  const app=consoleFixture('#runs/missing',{'GET /runs/missing':{status:404,body:{error:'Not found'}},...promptResponses()});
   await app.navigate();
   assert.equal(app.location.hash,'#prompts');
   assert.equal(app.s.id,null);
   assert.match(app.nodes.get('#content').innerHTML,/Saved idea/);
   assert.equal(app.calls.some(call=>call.method!=='GET'||call.path==='/runs'||call.path.endsWith('/submissions')),false);
 });
-test('Hermes approvals, saved replies and immutable prompt text remain inside their prompt',async()=>{
-  const current={id:'current',prompt_id:'p',prompt_revision:2,status:'waiting_for_approval',created_at:3,approval:{request_id:'permission',message:'Read the selected file?'},snapshot:{preview:'Sent revision two'},hermes:{session_id:'hermes-session',run_id:'hermes-request'}};
-  const earlier={id:'earlier',prompt_id:'p',prompt_revision:1,status:'completed',created_at:1,output:'Saved Hermes reply',snapshot:{preview:'Sent revision one'}};
-  const app=consoleFixture('#prompts/p',promptResponses([current,earlier]));
+test('saved prompts and previews ignore legacy execution metadata and never fetch replies',async()=>{
+  const saved={...prompt,state:'ran',last_run_id:'old-reply',last_run_revision:1,changed_since_run:true};
+  const responses={...promptResponses(),'GET /prompts':{items:[saved]},'GET /prompts/p':saved,'GET /changes?after=0':{cursor:1,items:[{type:'run'}]}};
+  const app=consoleFixture('#prompts',responses);
   await app.navigate();
-  const html=app.nodes.get('#prompt-result').innerHTML;
-  assert.match(html,/Hermes needs permission/);
-  assert.match(html,/data-action="approve-run" data-id="current" data-approval="permission"/);
-  assert.match(html,/data-action="deny-run"/);
-  assert.match(html,/<details class="run-history"><summary>Earlier submissions of this prompt \(1\)/);
-  assert.match(html,/Saved Hermes reply/);
-  assert.match(html,/Sent revision one/);
-  assert.match(html,/hermes-session/);
-  assert.doesNotMatch(html,/#runs|https?:\/\//);
+  assert.doesNotMatch(app.nodes.get('#content').innerHTML,/Ran|Changed since last run|Hermes reply|Send to Hermes/);
+  app.location.hash='#prompts/p?submission=old-reply';
+  await app.navigate();
+  await app.poll();
+  assert.doesNotMatch(app.nodes.get('#content').innerHTML,/Ran|Changed since last run|Hermes reply|prompt-result|run-prompt/);
+  assert.equal(app.calls.some(call=>call.path.includes('/runs')||call.path.endsWith('/submissions')||call.method!=='GET'),false);
+});
+test('shared chat records stay out of saved prompt lists and note destination choices',async()=>{
+  const chat={...prompt,id:'shared-chat',title:'Private chat turn'};
+  const app=consoleFixture('#prompts',{...promptResponses(),'GET /prompts':{items:[prompt,chat]},'GET /resume':{prompt_id:chat.id}});
+  await app.navigate();
+  assert.equal(app.s.prompts.length,1);
+  assert.doesNotMatch(app.nodes.get('#content').innerHTML,/Private chat turn|shared-chat|Resume prompt/);
+  app.s.notes=[{id:'note',kind:'text',title:'A note',text:'Text'}];
+  await app.handleAction({dataset:{action:'note-to-prompt',id:'note'}});
+  assert.match(app.nodes.get('#dialog').innerHTML,/Saved idea/);
+  assert.doesNotMatch(app.nodes.get('#dialog').innerHTML,/Private chat turn|shared-chat/);
+});
+test('a direct or legacy link to chat storage cannot open it in the editor',async()=>{
+  const responses={...promptResponses(),'GET /runs/chat-reply':{id:'chat-reply',prompt_id:'shared-chat'}};
+  for(const hash of ['#prompts/shared-chat','#runs/chat-reply']){
+    const app=consoleFixture(hash,responses);
+    await app.navigate();
+    assert.equal(app.s.id,null);
+    assert.equal(app.s.draft,null);
+    assert.equal(app.calls.some(call=>call.path.startsWith('/prompts/shared-')||call.method!=='GET'),false);
+  }
 });
 test('opening a prompt is read-only until Edit prompt, and takeover is separately explicit',async()=>{
-  const responses=promptResponses([]);
+  const responses=promptResponses();
   responses['POST /prompts/p/lease']={status:409,body:{error:'Editing control is elsewhere'}};
   const app=consoleFixture('#prompts/p',responses);
   await app.navigate();
@@ -100,7 +118,7 @@ test('opening a prompt is read-only until Edit prompt, and takeover is separatel
   assert.equal(app.nodes.get('#prompt-instruction').readOnly,false);
 });
 test('a delayed edit refresh cannot overwrite a different prompt after navigation',async()=>{
-  const responses=promptResponses([]),app=consoleFixture('#prompts/p',responses);
+  const responses=promptResponses(),app=consoleFixture('#prompts/p',responses);
   await app.navigate();
   let finish,started;
   const waiting=new Promise(resolve=>started=resolve);
@@ -116,7 +134,7 @@ test('a delayed edit refresh cannot overwrite a different prompt after navigatio
   assert.equal(app.s.lease.lease_token,'other-lease');
 });
 test('a delayed lease cannot apply after leaving and returning to the same prompt',async()=>{
-  const responses=promptResponses([]),app=consoleFixture('#prompts/p',responses);
+  const responses=promptResponses(),app=consoleFixture('#prompts/p',responses);
   await app.navigate();
   let finish,started;
   const waiting=new Promise(resolve=>started=resolve);
@@ -129,4 +147,20 @@ test('a delayed lease cannot apply after leaving and returning to the same promp
   await edit;
   assert.equal(app.s.lease,null);
   assert.equal(app.calls.filter(call=>call.path==='/prompts/p').length,before,'a stale edit does not start its follow-up refresh');
+});
+
+test('polling a competing prompt revision preserves the browser draft and revokes local editing control',async()=>{
+  const responses={...promptResponses(),'GET /changes?after=0':{cursor:1,items:[{type:'prompt'}]}};
+  const app=consoleFixture('#prompts/p',responses);
+  await app.navigate();
+  await app.handleAction({dataset:{action:'edit-prompt'}});
+  app.s.draft.instruction='Unsaved browser edit';app.s.dirty=true;
+  responses['GET /prompts/p']={...prompt,revision:3,instruction:'Saved from the R1'};
+  await app.poll();
+  assert.equal(app.s.draft.instruction,'Unsaved browser edit');
+  assert.equal(app.s.saved.revision,2);
+  assert.equal(app.s.conflict,true);
+  assert.equal(app.s.lease,null);
+  assert.equal(app.nodes.get('#prompt-instruction').readOnly,true);
+  assert.match(app.nodes.get('#edit-notice').innerHTML,/Review versions/);
 });

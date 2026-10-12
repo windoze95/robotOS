@@ -28,7 +28,8 @@ class WorkspaceStore(directory: File) {
     private fun compactCache(root: JSONObject): Boolean {
         var changed = false
         mapOf("notes" to listOf("capture_hash"), "note_drafts" to listOf("capture_hash"),
-            "prompts" to listOf("lease_token", "lease_expires_at"), "drafts" to listOf("lease_token", "lease_expires_at"),
+            "prompts" to listOf("lease_token", "lease_expires_at", "state", "last_run_revision", "changed_since_run"),
+            "drafts" to listOf("lease_token", "lease_expires_at", "state", "last_run_revision", "changed_since_run"),
             "receipts" to listOf("type")).forEach { (key, fields) ->
             val items = root.optJSONArray(key)?.objects() ?: return@forEach
             if (items.any { item -> fields.any(item::has) }) {
@@ -72,7 +73,7 @@ class WorkspaceStore(directory: File) {
         if (existing.optLong("revision") > incoming.optLong("revision") || existing.optLong("updated_at") > incoming.optLong("updated_at")) return existing
         return incoming
     }
-    private val sharedKeys = setOf("notes", "prompts", "drafts", "note_drafts", "runs", "requests", "shared_chat_links")
+    private val sharedKeys = setOf("notes", "prompts", "drafts", "note_drafts", "runs", "requests", "shared_chat_links", "chat_attachments")
     fun put(key: String, item: JSONObject) = mutate { root ->
         check(key !in sharedKeys || !root.optBoolean("frozen")) { "This local workspace was cleared; pair it again before saving shared data" }
         val existing = root.optJSONArray(key)?.objects().orEmpty().find { it.optString("id") == item.getString("id") }
@@ -118,9 +119,26 @@ class WorkspaceStore(directory: File) {
         root.put(key, JSONArray(merged + retained))
     }
     fun saveDraft(prompt: JSONObject) = put("drafts", prompt)
+    /** A delayed sync cannot replace the durable identity of a newer question in this chat. */
+    @Synchronized fun confirmChatAdmission(conversation: String, operation: String, requestId: String, runId: String): Boolean {
+        val pending = item("shared_chat_links", conversation) ?: return false
+        if (pending.optString("operation") != operation || pending.optString("request_id") != requestId ||
+            pending.stringOrEmpty("run_id").let { it.isNotBlank() && it != runId }) return false
+        mutate { root ->
+            val links = root.optJSONArray("shared_chat_links")?.objects().orEmpty()
+            root.put("shared_chat_links", JSONArray(links.map { if (it.optString("id") == conversation) it.put("run_id", runId) else it }))
+            if (pending.optJSONObject("prompt") != null) root.put("chat_attachments", JSONArray(
+                root.optJSONArray("chat_attachments")?.objects().orEmpty().filterNot { it.optString("id") == conversation }))
+        }
+        return true
+    }
+    /** Completion belongs to one receipt, even if another caller has already begun a follow-up. */
+    @Synchronized fun finishChat(conversation: String, runId: String) {
+        if (item("shared_chat_links", conversation)?.optString("run_id") == runId) remove("shared_chat_links", conversation)
+    }
     fun resumeAfterEnrollment() = mutate { it.put("frozen", false) }
     @Synchronized fun clearShared() {
-        mutate { root -> root.put("frozen", true); listOf("notes", "prompts", "drafts", "note_drafts", "runs", "resume", "requests", "shared_chat_links").forEach { root.remove(it) } }
+        mutate { root -> root.put("frozen", true); listOf("notes", "prompts", "drafts", "note_drafts", "runs", "resume", "requests", "shared_chat_links", "chat_attachments").forEach { root.remove(it) } }
         val recordings = mediaDir.listFiles() ?: error("Local recordings could not be enumerated for erasure")
         recordings.forEach { java.nio.file.Files.deleteIfExists(it.toPath()) }
         check(mediaDir.listFiles()?.isEmpty() == true) { "Some local recordings could not be erased" }

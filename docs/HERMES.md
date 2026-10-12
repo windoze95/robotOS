@@ -2,7 +2,8 @@
 
 Hermes owns execution, sessions, conversation history and scheduled jobs. The robotOS hub owns
 shared notes, prompt revisions and device policy. It retains submission receipts and confirmed
-replies for prompt status and device handoff; it does not mirror Hermes session history or schedule jobs. The R1 uses its own revocable workspace credential; enrollment
+replies for shared R1 chats and device handoff; it does not mirror Hermes session history or
+schedule jobs. The R1 uses its own revocable workspace credential; enrollment
 never gives it the host's Hermes API key or owner password.
 
 ```text
@@ -43,13 +44,17 @@ Its configuration, task controls and direct Device API are documented in
 - **Push-to-talk:** after recovery verification succeeds, hold the button and talk. The R1
   transcribes speech, submits the text through the hub and speaks the completed reply. Dictation
   with the keyboard open inserts text without sending it.
-- **Hermes → Saved prompts** opens saved prompts. Open a prompt to read its Hermes reply
-  or use available approval/cancel controls; viewing a reply does not take editing control. **Host & devices** opens pairing and local recovery settings. Models and server
-  credentials are managed on the host; paired devices do not show the legacy model picker or
+- **Workspace → Prompt Builder** collects notes and saves prompts. **Run in new chat** opens
+  a fresh chat with the prompt attached, then waits for **Send**. Tap the attachment to edit it
+  in Prompt Builder; **Save and return to chat** updates the attachment. The browser console
+  edits and saves prompts only.
+- **Hermes → Chats** opens shared conversations. **Host & devices** opens pairing and local
+  recovery settings. Models and server credentials are managed on the host; paired devices do
+  not show the legacy model picker or
   direct connection form.
 - **Chats** shows shared conversation results. Existing local conversations stay saved separately.
-  An unsent draft and reading position remain local; use a saved prompt for an acknowledged
-  handoff between devices.
+  Unsent drafts, prompt attachments and reading positions remain local; use a saved prompt for
+  an acknowledged handoff between devices.
 - **Hermes device permissions** control access to the R1, speech, notices, volume, saved
   recipients and SMS. Pairing preserves existing permissions and never silently enables them.
 - **Texting Hermes:** when owner passthrough is enabled locally, texts from the configured owner
@@ -64,22 +69,23 @@ SMS and device permissions. A sleeping R1 with radios off cannot receive new pol
 wake, foreground or reconnect, robotOS verifies recovery status before revealing saved content
 or resuming ordinary actions. An unreachable hub leaves it restricted until verification succeeds.
 
-## Prompt replies and approvals
+## Chat replies and approvals
 
-Each saved prompt shows its Hermes progress and reply. The hub reserves a durable submission
+Replies appear in the chat that sent the request. **Chat activity** shows pending work,
+approvals and cancellation controls. The hub reserves a durable submission
 identity before dispatch and caches the confirmed result. A dropped
 connection, unknown submission or missing receipt never authorizes a replacement request.
-Open the original prompt and check its submission. Reconciliation may reuse its original identity only while the original
-Hermes service advertises a valid durable deduplication window. Otherwise inspect that original
+Open the original chat's activity to check its submission. Reconciliation may reuse its original
+identity only while the original Hermes service advertises a valid durable deduplication window.
+Otherwise inspect that original
 service before deciding what happened.
 
-**Stop speech** silences local audio. **Stop** beside a prompt reply requests remote cancellation;
+**Stop speech** silences local audio. **Stop task** in Chat activity requests remote cancellation;
 the run remains unresolved until Hermes confirms an outcome. Approval choices apply to the
 exact run and approval identity. **Allow once** and **Deny** are explicit on-screen actions;
-the wheel and side button cannot authorize them. A prompt is marked **Ran** only after the hub
-confirms completion and stores the reply.
+the wheel and side button cannot authorize them. Prompt Builder has no execution status.
 
-The prompt retains the confirmed Hermes run and session identifiers when available. Older saved
+Submission receipts retain the confirmed Hermes run and session identifiers when available. Older saved
 replies may lack a session identifier; robotOS does not guess one. The Hermes dashboard has its
 own address and authentication, separate from the API connection. Manage schedules in Hermes;
 robotOS has no separate scheduler or global execution-history screen.
@@ -110,9 +116,11 @@ For the wire contract, see [HUB_PROTOCOL.md](../server/HUB_PROTOCOL.md).
 ## Checks and evidence
 
 After installation, verify the hub's `/api/v1/ready` endpoint over its final HTTPS origin, enroll
-one R1 and verify that the console shows its current state. Submit one harmless prompt, confirm
-its reply and **Ran** status, then open that same saved result on the R1. Before relying on a
-second R1, repeat enrollment and test saved prompt/note handoff without resubmitting the run.
+one R1 and verify that the console shows its current state. Save a harmless prompt in the browser
+and open it on the R1. **Run in new chat** should attach it without sending. Tap the attachment,
+edit and save back to the chat, then tap **Send** and confirm its reply there. Before relying on
+a second R1, repeat enrollment and test saved prompt/note and completed chat handoff without
+resubmitting the request.
 
 Automated suites cover capabilities, identity/replay, approvals, cancellation, permissions,
 receipts, quotas and recovery boundaries. One R1 has passed the reversible offline-wake/lost/restore

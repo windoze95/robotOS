@@ -178,13 +178,42 @@ class ScreensSnapshotTest {
             app.workspace.store.put("runs", JSONObject().put("id", "preview-reply").put("prompt_id", "preview-prompt")
                 .put("status", "completed").put("prompt_revision", 1).put("snapshot", draft)
                 .put("output", "Start with reconnect, then test a saved prompt on both devices."))
-            dev.r1ptt.workspace.WorkspaceActivity::class.java.getDeclaredMethod("promptDetail", String::class.java, String::class.java)
-                .apply { isAccessible = true }.invoke(workspace.get(), "preview-prompt", null)
-            snap(workspace.get(), "workspace-prompt-reply")
-            assertTrue(all(workspace.get().window.decorView).filterIsInstance<TextView>().any { it.text == "Hermes reply" })
+            dev.r1ptt.workspace.WorkspaceActivity::class.java.getDeclaredMethod("promptDetail", String::class.java)
+                .apply { isAccessible = true }.invoke(workspace.get(), "preview-prompt")
+            snap(workspace.get(), "workspace-saved-prompt")
+            assertTrue(all(workspace.get().window.decorView).filterIsInstance<TextView>().any { it.text == "Run in new chat" })
         } finally { workspace.pause().stop().destroy() }
         val host = open(dev.r1ptt.workspace.HubSettingsActivity::class.java)
         try { snap(host.get(), "workspace-pairing") } finally { host.pause().stop().destroy() }
+    }
+
+    @Test fun promptAttachmentFitsTheR1ComposerAndLeavesNormalTypingAfterSend() {
+        configured()
+        val prompt = JSONObject().put("id", "staged-builder").put("title", "Next release")
+            .put("instruction", "Turn these observations into a test plan.").put("revision", 2).put("blocks", org.json.JSONArray())
+        app.workspace.store.put("prompts", prompt)
+        app.workspace.store.put("chat_attachments", JSONObject().put("id", "shared-staged").put("prompt_id", "staged-builder"))
+        app.history.importShared("shared-staged", "Next release", emptyList())
+        app.history.select("shared-staged")
+        val home = open(HomeActivity::class.java)
+        try {
+            online(home.get())
+            snap(home.get(), "workspace-chat-attachment")
+            val attachment = home.get().findViewById<TextView>(R.id.prompt_attachment)
+            assertEquals(View.VISIBLE, attachment.visibility)
+            assertTrue(attachment.width > 240)
+            assertTrue(attachment.height >= 72)
+            assertEquals(View.GONE, home.get().findViewById<View>(R.id.input).visibility)
+            assertEquals("Send", home.get().findViewById<View>(R.id.send).contentDescription)
+            dev.r1ptt.workspace.PromptAttachment.accepted(app, "shared-staged")
+            app.history.importShared("shared-staged", "Next release", listOf(
+                Msg(Msg.USER, "Turn these observations into a test plan.", promptId = "staged-builder", promptTitle = "Next release", promptRevision = 2),
+                Msg(Msg.ASSISTANT, "Start with reconnect, then test editing on both devices.")))
+            settle()
+            snap(home.get(), "workspace-prompt-chat")
+            assertEquals(View.GONE, attachment.visibility)
+            assertEquals(View.VISIBLE, home.get().findViewById<View>(R.id.input).visibility)
+        } finally { home.pause().stop().destroy() }
     }
 
     /** Public screenshots use only these staged fixtures, never a connected device's data. */

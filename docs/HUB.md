@@ -1,7 +1,7 @@
 # Shared workspace and device management
 
 The robotOS host service stores notes, recordings, prompt revisions and device policy. It keeps
-submission receipts and confirmed Hermes replies with their prompts. Hermes owns agent execution,
+submission receipts and confirmed replies for shared R1 chats. Hermes owns agent execution,
 session history and scheduled jobs. R1 devices and the browser use the same hub API, and Hermes
 accesses the workspace through the robotOS MCP adapter. The service
 runs independently of Hermes, so saving and syncing do not require an agent turn.
@@ -128,18 +128,23 @@ Only one client holds the edit lease for a prompt. Continuing on a
 second client fences the old editor; stale saves are rejected and the client retains its unsaved
 work. Independent note captures can coexist. Captures saved before a connection fails may sync
 later; the strict recovery gate blocks further paired-device use until verification succeeds.
-Canonical prompt edits and Run require the host.
+Shared prompt edits and chat submission require the host.
 
-Open a saved prompt to see its Hermes progress and reply without taking editing control. Choose
-to edit only when changing the prompt. Results and approvals stay with the prompt; there is no
-separate Runs library. Save for later means manually returning to the prompt; scheduled jobs
-are managed by Hermes.
+On the R1, open a saved prompt and choose **Run in new chat**. robotOS opens a fresh chat with a
+**Prompt Builder** card in the composer and waits for **Send**. Tapping the card opens that prompt
+in the builder, where **Save and return to chat** updates the attachment. The attached composer
+does not accept typing or dictation. Once sent, its exact text and source revision stay with the
+chat message; later prompt edits do not rewrite it.
 
-Submitting reserves an immutable prompt revision before dispatch. Duplicate taps attach to the same
-submission. Run again explicitly creates another attempt. A prompt becomes Ran only when Hermes confirms
-completion and stores the reply. Changes after execution show Changed since last run. A dropped
-connection or unknown submission never authorizes a replacement request. Stop requests remain
-pending until Hermes confirms their outcome. Approvals apply to the exact run and approval ID.
+The browser console edits, previews and saves prompts. Prompt Builder does not show replies or
+execution status. Replies appear in Chats, with pending work, approval and cancellation controls
+in **Chat activity**. Older Prompt Builder submissions remain accessible under **Chats → Earlier
+chats**. Save for later means returning to the saved prompt; Hermes manages scheduled jobs.
+
+Sending reserves an immutable message snapshot before dispatch. Duplicate taps keep the same
+submission identity. A dropped connection or unknown submission never authorizes a replacement
+request. Stop requests remain pending until Hermes confirms their outcome. Approvals apply to
+the exact request and approval ID.
 
 The service permits only one active run per prompt/session, including across revisions. An
 uncertain submission can be checked explicitly using its original identity only while Hermes's
@@ -147,9 +152,10 @@ advertised durable deduplication window remains valid. Otherwise it stays unreso
 on the original host. The service does not infer failure from a timeout.
 
 Paired PTT uses shared conversations with immutable turn snapshots. Completed replies sync into
-Chats on both R1s, and the host retains conversation context. An unsent local draft and scroll
-position remain local. The last shared prompt is available through Continue; changing devices
-does not silently replace an unsent draft. Existing conversations from before pairing remain local.
+Chats on both R1s, and the host retains conversation context. Unsent chat drafts, attachments and
+scroll positions remain local; their saved source prompts sync between devices. The last shared
+prompt is available through Continue; changing devices does not silently replace an unsent draft.
+Existing conversations from before pairing remain local.
 
 ## Device management and recovery
 
@@ -272,7 +278,8 @@ action:
 | Check | Required observation |
 |---|---|
 | New paired device | Its own enrollment succeeds; host API/owner keys are absent from device setup; local permissions retain their prior values. |
-| Two-device handoff | Save a note, recording and prompt on A; wait for Synced; continue on B with the same content/revision and completed run result. |
+| Two-device handoff | Save a note, recording and prompt on A; wait for Synced; continue on B with the same content/revision. Completed chat replies also appear in Chats. |
+| Prompt attachment | On an R1, Run in new chat opens the Prompt Builder card without sending. Tap to edit, save back to the same chat, then Send; the reply appears in that chat. |
 | Concurrent editing | Continue editing on B while A has an old editor open; A's stale save is rejected and its unsaved work remains recoverable. |
 | Offline lost/restore | Mark an asleep offline R1 lost; wake stays restricted; reconnect acknowledges the exact policy; offline restoration waits for fresh verification. |
 | Adaptive secure lock | With a locally configured PIN and approved admin/management permissions, repeat the reversible lost test and inspect Android's actual lock screen and the console's separate acknowledgment. |

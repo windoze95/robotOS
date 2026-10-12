@@ -118,6 +118,11 @@
 
         <LinearLayout android:id="@+id/composer" android:layout_width="match_parent" android:layout_height="wrap_content"
             android:gravity="bottom" android:paddingStart="12dp" android:paddingEnd="12dp" android:paddingTop="4dp" android:paddingBottom="12dp">
+            <TextView android:id="@+id/prompt_attachment" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
+                android:minHeight="72dp" android:background="@drawable/field" android:visibility="gone"
+                android:paddingStart="18dp" android:paddingEnd="14dp" android:paddingTop="10dp" android:paddingBottom="10dp"
+                android:textColor="@color/fg" android:textSize="17sp" android:maxLines="4" android:ellipsize="end"
+                android:clickable="true" android:focusable="true" />
             <EditText android:id="@+id/input" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
                 android:minHeight="52dp" android:background="@drawable/field" android:hint="Message Hermes"
                 android:contentDescription="Message to Hermes" android:imeOptions="actionSend" android:importantForAutofill="no"

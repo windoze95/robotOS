@@ -395,6 +395,12 @@ class Store:
                 raise HubError(400, 'invalid_blocks', 'Block IDs must be unique and block kind valid')
             ids.add(block_id)
             block = {'id': block_id, 'kind': kind, 'text': string(item.get('text', ''))}
+            if item.get('prompt') is not None:
+                source = item['prompt']
+                if kind != 'text' or not isinstance(source, dict):
+                    raise HubError(400, 'invalid_blocks', 'Invalid Prompt Builder attachment')
+                block['prompt'] = {'id': identifier(source.get('id')), 'revision': integer(source.get('revision'), minimum=1),
+                                   'title': string(source.get('title', ''), 'title', 500)}
             if item.get('note_id'):
                 # Deleted notes are allowed: blocks are independent immutable content snapshots.
                 block['note_id'] = identifier(item['note_id'])
@@ -410,10 +416,7 @@ class Store:
         item = {key: row[key] for key in ('id', 'title', 'instruction', 'revision', 'created_at', 'updated_at')}
         item['blocks'] = json.loads(row['blocks'])
         run = db.execute('SELECT * FROM runs WHERE prompt_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1', (row['id'],)).fetchone()
-        item.update(last_run_revision=run['prompt_revision'] if run else None, last_run_id=run['id'] if run else None,
-                    changed_since_run=bool(run and run['prompt_revision'] != row['revision']))
-        item['state'] = ('draft' if not run else 'running' if run['status'] in ACTIVE - {'submission_unknown'} else
-                         'ran' if run['status'] == 'completed' else 'needs_attention')
+        item['last_run_id'] = run['id'] if run else None
         return item
 
     def prompts(self, actor, prompt_id=None):

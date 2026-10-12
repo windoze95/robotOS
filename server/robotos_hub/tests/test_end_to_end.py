@@ -126,7 +126,7 @@ class EndToEndTest(unittest.TestCase):
         result = self.call('POST', '/runs/' + run['id'] + '/approval', {'request_id': 'approval-control', 'approval_id': 'approval-1', 'choice': 'once'}, self.b['workspace'])
         self.assertEqual('completed', result['status'])
         self.assertEqual('The confirmed reply', result['output'])
-        self.assertEqual('ran', self.call('GET', '/prompts/shared-conversation', credentials=self.a['workspace'])['state'])
+        self.assertEqual(run['id'], self.call('GET', '/prompts/shared-conversation', credentials=self.a['workspace'])['last_run_id'])
         receipts = self.call('GET', '/prompts/shared-conversation/submissions', credentials=self.b['workspace'])['items']
         self.assertEqual([run['id']], [receipt['id'] for receipt in receipts])
         self.assertEqual('The confirmed reply', receipts[0]['output'])

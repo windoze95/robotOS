@@ -41,10 +41,16 @@ Audio notes are not synced until their media upload is confirmed. Keep local aud
 
 ## Prompt Builder
 
+Prompt Builder collects notes and saves reusable prompts. The browser console is an editor;
+it does not submit prompts or show execution status, approvals or replies. On the R1, **Run in
+new chat** opens a fresh chat with a distinct Prompt Builder attachment and waits for **Send**.
+Tapping the attachment reopens its source prompt for editing. Saving returns the edited prompt
+to the same unsent chat. Once sent, the message keeps the exact text and source revision used.
+
 Hermes owns sessions, conversation history, execution and scheduling. The hub's `runs` records
-are submission receipts and cached replies attached to saved prompt revisions, not a separate
-job scheduler or conversation-history store. Existing route names remain compatible with R1
-synchronization and MCP clients. The R1 and web UI show replies within their saved prompt.
+are transport receipts and cached replies for R1 chat synchronization and MCP clients. Their
+existing API names remain compatible. Chat entities use `shared-` prompt IDs and are excluded
+from Prompt Builder lists and note destinations. Execution controls and replies belong to chat.
 
 - `GET /prompts` / `GET /prompts/{id}`.
 - `POST /prompts {id,title,instruction,blocks:[]}` creates a draft.
@@ -52,7 +58,7 @@ synchronization and MCP clients. The R1 and web UI show replies within their sav
   A takeover fences the previous editor. Same owner/device renews without changing the token.
 - `PUT /prompts/{id} {base_revision,lease_token,title,instruction,blocks}` commits a revision.
   Unchanged content renews the lease and returns the current revision without creating another
-  executable revision or marking a completed prompt as changed.
+  revision.
 - `POST /prompts/{id}/release {lease_token}` releases only the matching editor lease.
 - `POST /prompts/{id}/run {revision,request_id,run_again:false|true}` reserves one run atomically.
   Default Run attaches to the existing run for the revision. Explicit Run again creates a new
@@ -67,22 +73,24 @@ synchronization and MCP clients. The R1 and web UI show replies within their sav
 - `GET /changes?after=<sequence>` returns `{cursor,items}`. Clients also refresh on foreground.
 - `GET /resume` / `PUT /resume {prompt_id,block_id,scroll_y,base_revision}` saves last shared place.
 
-Prompt blocks: `{id, note_id?, kind:"text"|"audio", text, media_id?}`. Blocks are ordered;
+Prompt blocks: `{id, note_id?, kind:"text"|"audio", text, media_id?, prompt?}`. Blocks are ordered;
 their text is a snapshot editable independently from the source note. Original media remains
 attached. Preview is instruction followed by nonempty block text separated by blank lines.
 Run is rejected while an audio block lacks a usable transcript. New notes can be created directly
 inside the builder. Removing a block never deletes its source note.
+On a chat text block, optional `prompt:{id,revision,title}` identifies the saved source prompt.
+This provenance is captured with the message; later edits do not change text already sent.
 
-Prompt shape: `{id,title,instruction,blocks,revision,created_at,updated_at,last_run_revision,
-last_run_id,state:"draft"|"running"|"ran"|"needs_attention",changed_since_run}`.
+Prompt shape: `{id,title,instruction,blocks,revision,created_at,updated_at,last_run_id}`.
 Run shape: `{id,prompt_id,prompt_revision,status,output,error,created_at,updated_at,approval?,snapshot,hermes}`.
+`last_run_id` identifies the latest receipt for chat admission checks; it is not a prompt status.
 `hermes` is `{run_id,session_id}`: confirmed upstream identifiers or null. The session identifier
 comes from Hermes's validated status response, not the requested session alias. Older receipts
 can have a run identifier but no session identifier. These fields contain no host address or
 credential. Optional session metadata never blocks an otherwise valid completion.
 Snapshot includes the immutable saved prompt plus exact `preview`; session ID remains stable per prompt.
 Statuses: queued, submitting, submission_unknown, running, waiting_for_approval, stopping,
-completed, failed, cancelled, interrupted. Mark Ran only after completed output is stored.
+completed, failed, cancelled, interrupted. Completion is recorded only after output is stored.
 Unknown submissions keep the original identity and are never blindly replaced.
 
 ## Device management

@@ -58,13 +58,17 @@ legacy streamed reply finishes. Outside robotOS, Android's existing wheel behavi
 
 Quiet mode and Stay reachable are independent. Neither turns SMS relay or Hermes's device
 permissions on. Network availability, successful contact with Hermes and inbound device access
-are separate states. Paired devices use **Hermes → Host & devices** and **Saved prompts**;
+are separate states. Paired devices use **Hermes → Host & devices** and **Chats**;
 unpaired legacy connections retain **Check connection**.
 
 ## Hermes tasks and approvals
 
-Paired R1s open saved prompts and their Hermes replies through **Hermes → Saved prompts**. The host manages models and
-credentials; paired screens do not offer the legacy direct model picker or connection form.
+Paired R1s build and save prompts in **Workspace → Prompt Builder**. **Run in new chat** opens a
+new chat with a distinct prompt attachment and waits for **Send**. Tap the attachment to edit
+in the builder, then **Save and return to chat**. The attached composer does not accept free
+typing or dictation. Replies and task controls live in Chats and **Chat activity**; the browser
+remains an editor. The host manages models and credentials; paired screens do not offer the
+legacy direct model picker or connection form.
 Saved content and actions remain behind recovery verification on boot, wake, foreground and
 reconnect. See [HERMES.md](HERMES.md) for the shared workflow. The local task-record controls
 below describe the optional unpaired direct connection.
