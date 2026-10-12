@@ -13,6 +13,8 @@ import android.view.Gravity
 import android.widget.LinearLayout
 import dev.r1ptt.data.History
 import dev.r1ptt.workspace.SharedChat
+import dev.r1ptt.workspace.SharedChatActivity
+import dev.r1ptt.workspace.PromptAttachment
 import dev.r1ptt.ui.DeviceActivity
 import dev.r1ptt.ui.Fonts
 import kotlinx.coroutines.MainScope
@@ -39,7 +41,7 @@ class ChatsActivity : DeviceActivity() {
             scope.launch { if (app.workspace.identity.paired && !app.workspace.blocked) runCatching {
                 app.workspace.sync(); SharedChat.importHistory(app)
             } }
-            scope.launch { app.workspace.status.collect { if (app.workspace.blocked) render(app.history.flow.value) } }
+            scope.launch { app.workspace.status.collect { if (it != "Syncing…") render(app.history.flow.value) } }
         }
     }
     override fun onPause() { observations?.cancel(); observations = null; super.onPause() }
@@ -59,6 +61,18 @@ class ChatsActivity : DeviceActivity() {
         val local = snapshot.chats.filterNot { it.id.startsWith("shared-") }
         if (local.isNotEmpty()) body.addView(ui.section("On this R1"))
         local.forEach { chat -> body.addView(row(chat, chat.id == snapshot.convId)) }
+        if (app.workspace.identity.paired) {
+            // Pre-chat Prompt Builder submissions remain readable without adding execution back to the editor.
+            val earlier = app.workspace.store.items("runs").filterNot { it.optString("prompt_id").startsWith("shared-") }
+                .sortedByDescending { it.optLong("created_at") }
+            if (earlier.isNotEmpty()) body.addView(ui.section("Earlier chats"))
+            earlier.forEach { reply ->
+                val title = reply.optJSONObject("snapshot")?.optString("title").orEmpty().ifBlank { "Earlier chat" }
+                body.addView(ui.actionRow(title, SharedChatActivity.label(reply)) {
+                    startActivity(SharedChatActivity.intent(this, reply.optString("prompt_id"), reply.getString("id")))
+                })
+            }
+        }
     }
 
     /** Title, when it was last used, and the start of its latest message; the current chat is outlined. */
@@ -102,10 +116,21 @@ class ChatsActivity : DeviceActivity() {
     }
 
     private fun actions(chat: History.Conversation) {
+        if (PromptAttachment.attached(app, chat.id) && app.workspace.store.item("shared_chat_links", chat.id) == null) {
+            showDeviceDialog(AlertDialog.Builder(this).setTitle(chat.title)
+                .setMessage("This prompt is attached on this R1 and has not been sent. Your saved prompt stays in Prompt Builder.")
+                .setPositiveButton("Open chat") { _, _ -> app.history.select(chat.id); finish() }
+                .setNeutralButton("Discard chat draft") { _, _ ->
+                    if (!app.turns.busy && app.workspace.store.item("shared_chat_links", chat.id) == null) {
+                        PromptAttachment.accepted(app, chat.id); app.history.remove(chat.id)
+                    }
+                }.setNegativeButton("Close", null))
+            return
+        }
         if (chat.id.startsWith("shared-")) {
             showDeviceDialog(AlertDialog.Builder(this).setTitle(chat.title)
-                .setMessage("This conversation is synced from the host. Manage its prompt and runs in Workspace.")
-                .setPositiveButton("Workspace") { _, _ -> startActivity(android.content.Intent(this, dev.r1ptt.workspace.WorkspaceActivity::class.java)) }
+                .setMessage("This conversation is synced from the host. Review its current reply or pending request in Chat activity.")
+                .setPositiveButton("Chat activity") { _, _ -> startActivity(SharedChatActivity.intent(this, chat.id)) }
                 .setNegativeButton("Close", null))
             return
         }

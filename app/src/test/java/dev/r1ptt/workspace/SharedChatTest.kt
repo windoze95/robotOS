@@ -5,6 +5,7 @@ import dev.r1ptt.data.ConfigBlobStorage
 import dev.r1ptt.data.ConfigCipher
 import dev.r1ptt.data.ConfigCodec
 import dev.r1ptt.data.EncryptedConfigPersistence
+import dev.r1ptt.data.Msg
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.MutableStateFlow
 import android.os.Looper
@@ -117,6 +118,213 @@ class SharedChatTest {
             }
         }
     }
+
+    /** Several chats/turns, plus an admission reply that can be lost until explicitly restored. */
+    private class AttachmentHost : Dispatcher() {
+        private val prompts = linkedMapOf<String, JSONObject>()
+        private val runs = linkedMapOf<String, JSONObject>()
+        private val requests = linkedMapOf<String, Triple<String, Long, String>>()
+        val submissionKeys = CopyOnWriteArrayList<String>()
+        @Volatile var dropRunReplies = false
+        @Volatile var executions = 0
+        @Synchronized fun seed(prompt: JSONObject) { prompts[prompt.getString("id")] = prompt.copyJson() }
+        @Synchronized fun receipt(id: String) = runs.getValue(id).copyJson()
+        private fun response(value: JSONObject, code: Int = 200) = MockResponse().setResponseCode(code).setBody(value.toString())
+        @Synchronized override fun dispatch(request: RecordedRequest): MockResponse {
+            val path = request.path!!.removePrefix("/api/v1")
+            val data = request.body.readUtf8().takeIf(String::isNotBlank)?.let(::JSONObject) ?: JSONObject()
+            val id = path.split('/').getOrNull(2).orEmpty()
+            return when {
+                path == "/devices/self/check-in" -> response(JSONObject().put("device_id", "r1-a").put("lost", false).put("revoked", false)
+                    .put("settings_revision", 0).put("settings", JSONObject()).put("commands", JSONArray()))
+                path == "/notes" && request.method == "GET" -> response(JSONObject().put("items", JSONArray()))
+                path == "/prompts" && request.method == "GET" -> response(JSONObject().put("items", JSONArray(prompts.values.map { it.copyJson() })))
+                path == "/runs" && request.method == "GET" -> response(JSONObject().put("items", JSONArray(runs.values.map { it.copyJson() })))
+                path == "/prompts" && request.method == "POST" -> {
+                    assertFalse(prompts.containsKey(data.getString("id")))
+                    val created = data.copyJson().put("revision", 1).put("created_at", 1L).put("updated_at", 1L)
+                    prompts[created.getString("id")] = created
+                    response(created)
+                }
+                path.endsWith("/lease") -> response(JSONObject().put("lease_token", "lease-$id").put("expires_at", System.currentTimeMillis() + 60_000))
+                path.endsWith("/release") -> response(JSONObject())
+                path.startsWith("/prompts/") && path.endsWith("/run") -> {
+                    val key = data.getString("request_id")
+                    val revision = data.getLong("revision")
+                    submissionKeys += key
+                    val known = requests[key]
+                    val run = if (known != null) {
+                        assertEquals(id, known.first); assertEquals(revision, known.second)
+                        runs.getValue(known.third)
+                    } else {
+                        val saved = prompts.getValue(id)
+                        assertEquals(saved.getLong("revision"), revision)
+                        executions++
+                        val runId = "attached-run-$executions"
+                        JSONObject().put("id", runId).put("prompt_id", id).put("prompt_revision", revision)
+                            .put("status", "completed").put("output", "Reply $executions").put("snapshot", saved.copyJson())
+                            .put("created_at", executions * 10L).put("updated_at", executions * 10L + 1).also { receipt ->
+                                runs[runId] = receipt
+                                requests[key] = Triple(id, revision, runId)
+                                saved.put("last_run_id", runId)
+                            }
+                    }
+                    if (dropRunReplies) MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST) else response(run)
+                }
+                path.startsWith("/prompts/") && request.method == "GET" -> prompts[id]?.let { response(it) }
+                    ?: response(JSONObject().put("code", "not_found"), 404)
+                path.startsWith("/prompts/") && request.method == "PUT" -> {
+                    val saved = prompts.getValue(id)
+                    assertEquals(saved.getLong("revision"), data.getLong("base_revision"))
+                    val next = data.copyJson().put("revision", saved.getLong("revision") + 1).put("updated_at", saved.optLong("updated_at") + 1)
+                    prompts[id] = next
+                    response(next)
+                }
+                path.startsWith("/runs/") -> response(runs.getValue(id))
+                path == "/resume" -> response(JSONObject().put("revision", 0))
+                else -> response(JSONObject().put("code", "unexpected_path"), 404)
+            }
+        }
+    }
+
+    private fun savedAttachment(revision: Long = 1, title: String = "Travel prompt", text: String = "  Keep these exact words.\nIncluding spacing.  ") = JSONObject()
+        .put("id", "saved-template").put("title", title).put("revision", revision).put("updated_at", revision)
+        .put("instruction", "Summarize the notes in order.")
+        .put("blocks", JSONArray().put(JSONObject().put("id", "written-note").put("kind", "text").put("text", text))
+            .put(JSONObject().put("id", "recorded-note").put("kind", "audio").put("text", "Transcript from a recording.").put("media_id", "recording-1")))
+
+    /** Recovery check-in applies on Main; pump it while network work uses the background scope. */
+    private fun <T> background(work: suspend () -> T): T {
+        val executor = Executors.newSingleThreadExecutor()
+        return try {
+            val future = executor.submit<T> { runBlocking { work() } }
+            val until = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+            while (!future.isDone && System.nanoTime() < until) { shadowOf(Looper.getMainLooper()).idle(); Thread.sleep(5) }
+            future.get(1, TimeUnit.SECONDS)
+        } finally { executor.shutdownNow() }
+    }
+
+    @Test fun openingPromptAttachmentsWaitsForSendAndAlwaysCreatesANewChat() {
+        MockWebServer().use { server ->
+            server.start(); val app = configured(server.url("/").toString())
+            val saved = savedAttachment(); app.workspace.store.put("prompts", saved)
+            val old = app.history.convId
+            app.history.saveDraft("An unrelated unsent message", old)
+            val first = PromptAttachment.open(app, saved)
+            val second = PromptAttachment.open(app, saved)
+            assertNotEquals(first, second)
+            assertTrue(first.startsWith("shared-")); assertTrue(second.startsWith("shared-"))
+            assertTrue(PromptAttachment.attached(app, first)); assertTrue(PromptAttachment.attached(app, second))
+            assertEquals(second, app.history.convId)
+            assertTrue(app.history.messages.isEmpty())
+            assertTrue(app.workspace.store.items("shared_chat_links").isEmpty())
+            assertTrue(app.workspace.store.items("runs").isEmpty())
+            assertEquals(0, server.requestCount)
+            app.history.select(old)
+            assertEquals("An unrelated unsent message", app.history.draft)
+        }
+    }
+
+    @Test fun anUnsentAttachmentUsesNewlySavedEditsButRejectsAnUnsavedDraft() {
+        val app = configured("https://workspace.example")
+        val saved = savedAttachment(); app.workspace.store.put("prompts", saved)
+        val chat = PromptAttachment.open(app, saved)
+        val edited = savedAttachment(2, "Updated travel prompt", "Saved after opening the chat")
+        app.workspace.store.put("prompts", edited)
+        val delivery = PromptAttachment.delivery(app, chat)
+        assertEquals(WorkspaceClient.preview(edited), delivery.text)
+        assertEquals(2L, delivery.prompt.getLong("revision"))
+        assertEquals("Updated travel prompt", delivery.prompt.getString("title"))
+        app.workspace.store.saveDraft(savedAttachment(2, "Unsaved title", "Not saved to the host"))
+        try { PromptAttachment.delivery(app, chat); fail("An unsaved edit must not silently send an older saved version") }
+        catch (expected: IllegalStateException) { assertTrue(expected.message!!.contains("Save your edits")) }
+        assertTrue(PromptAttachment.attached(app, chat))
+    }
+
+    @Test fun sendingAnAttachmentPreservesExactInputAndProvenanceAfterTheTemplateChanges() {
+        MockWebServer().use { server ->
+            val host = AttachmentHost(); server.dispatcher = host; server.start()
+            val app = configured(server.url("/").toString())
+            val saved = savedAttachment(); app.workspace.store.put("prompts", saved); host.seed(saved)
+            val chat = PromptAttachment.open(app, saved)
+            val delivery = PromptAttachment.delivery(app, chat)
+            val reply = background { SharedChat.ask(app, chat, delivery.text, "Device context", delivery.prompt, onAdmitted = {
+                assertTrue(PromptAttachment.attached(app, chat))
+                PromptAttachment.accepted(app, chat)
+            }) }
+            assertEquals("Reply 1", reply)
+            assertEquals(1, host.executions)
+            assertFalse(PromptAttachment.attached(app, chat))
+            val snapshot = host.receipt("attached-run-1").getJSONObject("snapshot").getJSONArray("blocks").getJSONObject(0)
+            assertEquals(WorkspaceClient.preview(saved), snapshot.getString("text"))
+            assertEquals("saved-template", snapshot.getJSONObject("prompt").getString("id"))
+            val user = app.history.messages.single { it.role == Msg.USER }
+            assertEquals(delivery.text, user.text)
+            assertEquals("saved-template", user.promptId); assertEquals("Travel prompt", user.promptTitle); assertEquals(1L, user.promptRevision)
+            app.workspace.store.put("prompts", savedAttachment(2, "Edited after sending", "This must not replace the chat's message"))
+            SharedChat.importHistory(app)
+            assertEquals(user, app.history.messages.single { it.role == Msg.USER })
+            assertEquals(delivery.text, host.receipt("attached-run-1").getJSONObject("snapshot").getJSONArray("blocks").getJSONObject(0).getString("text"))
+        }
+    }
+
+    @Test fun anUncertainAttachmentRetriesItsFrozenTextAndReferenceAfterTemplateEdits() {
+        MockWebServer().use { server ->
+            val host = AttachmentHost().apply { dropRunReplies = true }; server.dispatcher = host; server.start()
+            val app = configured(server.url("/").toString())
+            val saved = savedAttachment(); app.workspace.store.put("prompts", saved); host.seed(saved)
+            val chat = PromptAttachment.open(app, saved)
+            val original = PromptAttachment.delivery(app, chat)
+            val failure = background { runCatching { SharedChat.ask(app, chat, original.text, "Frozen device context", original.prompt) }.exceptionOrNull() }
+            assertTrue(failure is IOException)
+            val pending = app.workspace.store.item("shared_chat_links", chat)!!
+            assertTrue(pending.stringOrEmpty("run_id").isBlank())
+            assertTrue(PromptAttachment.attached(app, chat))
+            val changed = savedAttachment(2, "New source title", "A newer template body")
+            app.workspace.store.put("prompts", changed); host.seed(changed)
+            val retry = PromptAttachment.delivery(app, chat)
+            assertEquals(original.text, retry.text)
+            assertEquals(original.prompt.toString(), retry.prompt.toString())
+            host.dropRunReplies = false
+            assertEquals("Reply 1", background { SharedChat.ask(app, chat, retry.text, pending.getString("instruction"), retry.prompt) })
+            assertEquals(1, host.executions)
+            assertEquals(listOf(pending.getString("request_id")), host.submissionKeys.distinct())
+            assertEquals(1L, app.history.messages.single { it.role == Msg.USER }.promptRevision)
+            assertEquals(original.text, app.history.messages.single { it.role == Msg.USER }.text)
+            assertNull(app.workspace.store.item("shared_chat_links", chat))
+            assertFalse(PromptAttachment.attached(app, chat))
+        }
+    }
+
+    @Test fun syncingALostAdmissionReplyRepairsItsLinkBeforeAllowingAFollowUp() {
+        MockWebServer().use { server ->
+            val host = AttachmentHost().apply { dropRunReplies = true }; server.dispatcher = host; server.start()
+            val app = configured(server.url("/").toString())
+            val saved = savedAttachment(); app.workspace.store.put("prompts", saved); host.seed(saved)
+            val chat = PromptAttachment.open(app, saved)
+            val delivery = PromptAttachment.delivery(app, chat)
+            assertTrue(background { runCatching { SharedChat.ask(app, chat, delivery.text, "Original context", delivery.prompt) }.exceptionOrNull() } is IOException)
+            val original = app.workspace.store.item("shared_chat_links", chat)!!
+            assertTrue(original.stringOrEmpty("run_id").isBlank())
+            background { app.workspace.sync() }
+            val reconciled = app.workspace.store.item("shared_chat_links", chat)!!
+            assertEquals("attached-run-1", reconciled.getString("run_id"))
+            assertEquals(original.getString("operation"), reconciled.getString("operation"))
+            assertEquals(original.getString("request_id"), reconciled.getString("request_id"))
+            assertFalse(PromptAttachment.attached(app, chat))
+            assertEquals("Reply 1", app.history.messages.last().text)
+            host.dropRunReplies = false
+            assertEquals("Reply 2", background { SharedChat.ask(app, chat, "A distinct follow-up", "Current device context") })
+            assertEquals(2, host.executions)
+            assertEquals(2, host.submissionKeys.distinct().size)
+            val users = app.history.messages.filter { it.role == Msg.USER }
+            assertEquals(listOf(delivery.text, "A distinct follow-up"), users.map { it.text })
+            assertEquals("saved-template", users[0].promptId)
+            assertEquals("", users[1].promptId)
+            assertNull(app.workspace.store.item("shared_chat_links", chat))
+        }
+    }
+
     @Test fun completedChatImportsSharedHistoryWhileKeepingLegacyConversation() = runBlocking {
         MockWebServer().use { server ->
             val host = Host(); server.dispatcher = host; server.start()

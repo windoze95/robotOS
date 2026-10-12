@@ -30,9 +30,9 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34], application = App::class)
 class PairedConnectionUiTest {
     private val app get() = RuntimeEnvironment.getApplication() as App
-    private fun pair() {
+    private fun pair(base: String = "https://workspace.example", token: String? = null) {
         // No network credentials: these tests exercise only the native navigation surfaces.
-        val identity = JSONObject().put("device_id", "paired-r1").put("base_url", "https://workspace.example")
+        val identity = JSONObject().put("device_id", "paired-r1").put("base_url", base).apply { if (token != null) put("device_token", token) }
         val disk = object : ConfigBlobStorage { var value: String? = null; override fun read() = value; override fun write(blob: String) { value = blob } }
         val cipher = object : ConfigCipher { override fun seal(plain: String, allowKeyCreation: Boolean) = plain; override fun open(blob: String) = blob }
         val codec = object : ConfigCodec<JSONObject> { override fun encode(value: JSONObject) = value.toString(); override fun decode(plain: String) = JSONObject(plain) }
@@ -47,7 +47,7 @@ class PairedConnectionUiTest {
         all(activity.window.decorView).single { it.contentDescription?.toString()?.startsWith("Connections.") == true }.performClick()
     }
 
-    @Test fun pairedHermesUsesTheHostAndSavedPromptsWhileKeepingLocalPermissions() {
+    @Test fun pairedHermesUsesTheHostAndChatsWhileKeepingLocalPermissions() {
         pair()
         val controller = Robolectric.buildActivity(HermesActivity::class.java).create()
         val activity = controller.get()
@@ -60,12 +60,9 @@ class PairedConnectionUiTest {
         assertTrue(permissions.containsAll(listOf("Let Hermes access this R1", "Relay my texts to Hermes", "Speak announcements", "Show messages on screen", "Change volume", "Save recipients")))
         buttons(root).single { it.text == "Host & devices" }.performClick()
         assertEquals(HubSettingsActivity::class.java.name, shadowOf(activity).nextStartedActivity.component!!.className)
-        buttons(root).single { it.text == "Saved prompts" }.performClick()
-        val route = shadowOf(activity).nextStartedActivity
-        assertEquals(WorkspaceActivity::class.java.name, route.component!!.className)
-        val workspace = Robolectric.buildActivity(WorkspaceActivity::class.java, route).create()
-        assertEquals("prompts", currentScreen(workspace.get()))
-        workspace.destroy(); controller.destroy()
+        buttons(root).single { it.text == "Chats" }.performClick()
+        assertEquals(dev.r1ptt.ChatsActivity::class.java.name, shadowOf(activity).nextStartedActivity.component!!.className)
+        controller.destroy()
     }
 
     @Test fun pairedSettingsReplacesDirectCredentialsAndKeepsSpeechSettings() {
@@ -108,67 +105,119 @@ class PairedConnectionUiTest {
         controller.destroy()
     }
 
-    @Test fun savedPromptShowsItsHermesReplyAndExactInputWithoutTakingEditingControl() {
+    @Test fun savedPromptOnlyOffersEditingAndNewChatWithNoExecutionState() {
         pair()
-        val sent = seedPrompt("completed", "Reply stored by Hermes")
-        app.workspace.store.put("prompts", sent.copyJson().put("instruction", "Newer unsent instruction")
+        val saved = seedPrompt("completed", "Reply stored by Hermes")
+        app.workspace.store.put("prompts", saved.copyJson().put("instruction", "Newer saved instruction")
             .put("revision", 2).put("changed_since_run", true))
         val controller = Robolectric.buildActivity(WorkspaceActivity::class.java, WorkspaceActivity.promptsIntent(app)).create()
-        val activity = controller.get()
-        openSavedPrompt(activity)
+        val activity = controller.get(); openSavedPrompt(activity)
         assertEquals("prompt", currentScreen(activity))
-        val text = texts(activity)
-        assertTrue("Hermes reply" in text)
-        assertTrue("Reply stored by Hermes" in text)
-        assertTrue("Changed since last run" in text)
+        assertTrue(buttons(activity.window.decorView).map { it.text.toString() }.containsAll(listOf("Edit prompt", "Run in new chat")))
+        assertTrue("Newer saved instruction" in texts(activity))
+        assertFalse(texts(activity).any { it in setOf("Hermes reply", "Reply stored by Hermes", "Changed since last run", "Ran · reply saved") })
         assertTrue(all(activity.window.decorView).filterIsInstance<EditText>().isEmpty())
         assertNull(activity.javaClass.getDeclaredField("prompt").apply { isAccessible = true }.get(activity))
         assertTrue(activity.window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE != 0)
-        buttons(activity.window.decorView).single { it.text == "View text sent to Hermes" }.performClick()
-        assertTrue("Original instruction" in texts(activity))
-        assertFalse("Newer unsent instruction" in texts(activity))
-        @Suppress("DEPRECATION") activity.onBackPressed()
-        assertEquals("prompt", currentScreen(activity))
-        buttons(activity.window.decorView).single { it.text == "View saved prompt" }.performClick()
-        assertTrue("Newer unsent instruction" in texts(activity))
-        @Suppress("DEPRECATION") activity.onBackPressed()
-        @Suppress("DEPRECATION") activity.onBackPressed()
-        assertEquals("prompts", currentScreen(activity))
         controller.destroy()
     }
 
-    @Test fun uncertainSubmissionOffersOriginalRequestCheckWithoutRepeatControls() {
-        pair(); seedPrompt("submission_unknown", "")
+    @Test fun runInNewChatAttachesWithoutSendingAndLeavesOriginalChatDraft() {
+        pair(); seedPrompt("completed", "Earlier reply")
+        val old = app.history.convId
+        app.history.saveDraft("Unsent normal message")
         val controller = Robolectric.buildActivity(WorkspaceActivity::class.java, WorkspaceActivity.promptsIntent(app)).create()
         val activity = controller.get(); openSavedPrompt(activity)
-        val labels = buttons(activity.window.decorView).map { it.text.toString() }
-        assertTrue("Check submission" in labels)
-        assertTrue("Stop task" in labels)
-        assertFalse(labels.any { it in setOf("Run again", "Send to Hermes", "Send changes to Hermes") })
-        assertFalse("Ran · reply saved" in texts(activity))
+        buttons(activity.window.decorView).single { it.text == "Run in new chat" }.performClick()
+        val next = app.history.convId
+        assertTrue(next.startsWith("shared-"))
+        assertNotEquals("saved-prompt", next)
+        assertTrue(PromptAttachment.attached(app))
+        assertEquals("saved-prompt", PromptAttachment.source(app)!!.getString("id"))
+        assertTrue(app.history.messages.isEmpty())
+        assertTrue(app.workspace.store.items("shared_chat_links").isEmpty())
+        assertEquals(1, app.workspace.store.items("runs").size)
+        assertEquals(dev.r1ptt.HomeActivity::class.java.name, shadowOf(activity).nextStartedActivity.component!!.className)
+        app.history.select(old)
+        assertEquals("Unsent normal message", app.history.draft)
         controller.destroy()
     }
 
-    @Test fun confirmedReplyMarksTheSameRevisionRanBeforeTheNextPromptSync() {
-        pair()
-        val saved = seedPrompt("completed", "Reply stored by Hermes")
-        app.workspace.store.put("prompts", saved.put("state", "draft"))
+    @Test fun sharedChatRecordsAreExcludedFromPromptBuilder() {
+        pair(); val saved = seedPrompt("completed", "Earlier reply")
+        app.workspace.store.put("prompts", saved.copyJson().put("id", "shared-chat").put("title", "Chat question"))
+        app.workspace.store.put("drafts", saved.copyJson().put("id", "shared-pending").put("title", "Chat in flight"))
         val controller = Robolectric.buildActivity(WorkspaceActivity::class.java, WorkspaceActivity.promptsIntent(app)).create()
-        val activity = controller.get(); openSavedPrompt(activity)
-        assertTrue("Ran · reply saved" in texts(activity))
-        assertFalse("Draft" in texts(activity))
+        val text = texts(controller.get()).joinToString("\n")
+        assertTrue(text.contains("Travel notes"))
+        assertFalse(text.contains("Chat question"))
+        assertFalse(text.contains("Chat in flight"))
         controller.destroy()
     }
 
-    @Test fun approvalControlsRemainAvailableUnderTheSavedPrompt() {
-        pair(); seedPrompt("waiting_for_approval", "")
-        val controller = Robolectric.buildActivity(WorkspaceActivity::class.java, WorkspaceActivity.promptsIntent(app)).create()
-        val activity = controller.get(); openSavedPrompt(activity)
-        val labels = buttons(activity.window.decorView).map { it.text.toString() }
-        assertTrue(labels.containsAll(listOf("Allow once", "Deny", "Stop task")))
-        assertTrue("Approve the requested action" in texts(activity))
-        assertFalse("Ran · reply saved" in texts(activity))
+    @Test fun attachedComposerOpensBuilderInsteadOfKeyboardAndBlocksDictation() {
+        pair(); val saved = seedPrompt("completed", "Earlier reply")
+        val conversation = PromptAttachment.open(app, saved)
+        val controller = Robolectric.buildActivity(dev.r1ptt.HomeActivity::class.java).create()
+        val activity = controller.get()
+        activity.javaClass.getDeclaredMethod("renderHistory", dev.r1ptt.data.History.Snapshot::class.java)
+            .apply { isAccessible = true }.invoke(activity, app.history.flow.value)
+        val attachment = activity.findViewById<TextView>(dev.r1ptt.R.id.prompt_attachment)
+        assertEquals(View.VISIBLE, attachment.visibility)
+        assertEquals(View.GONE, activity.findViewById<EditText>(dev.r1ptt.R.id.input).visibility)
+        assertTrue(attachment.text.contains("PROMPT BUILDER"))
+        assertTrue(attachment.text.contains("Travel notes"))
+        assertFalse(activity.canDictate())
+        activity.insert("Cannot replace the prompt")
+        assertTrue(app.history.draft.isEmpty())
+        attachment.performClick()
+        val route = shadowOf(activity).nextStartedActivity
+        assertEquals(WorkspaceActivity::class.java.name, route.component!!.className)
+        assertEquals("saved-prompt", route.getStringExtra("dev.r1ptt.workspace.PROMPT_ID"))
+        assertEquals(conversation, route.getStringExtra("dev.r1ptt.workspace.RETURN_CHAT"))
+        assertTrue(app.workspace.store.items("shared_chat_links").isEmpty())
         controller.destroy()
+    }
+
+    @Test fun attachedEditorReopensLocalDraftAndBackPreservesItForTheSameChat() {
+        pair(); val saved = seedPrompt("completed", "Earlier reply")
+        val conversation = PromptAttachment.open(app, saved)
+        val controller = Robolectric.buildActivity(WorkspaceActivity::class.java, WorkspaceActivity.promptsIntent(app)).create()
+        val activity = controller.get()
+        okhttp3.mockwebserver.MockWebServer().use { server ->
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): okhttp3.mockwebserver.MockResponse {
+                    val body = when {
+                        request.path!!.endsWith("/lease") -> JSONObject().put("lease_token", "editor-lease").put("revision", 1)
+                        request.path!!.endsWith("/release") -> JSONObject()
+                        request.path!!.endsWith("/prompts/saved-prompt") -> saved
+                        else -> JSONObject().put("items", JSONArray())
+                    }
+                    return okhttp3.mockwebserver.MockResponse().setBody(body.toString())
+                }
+            }
+            server.start(); pair(server.url("/").toString(), "test-workspace")
+            val draft = saved.copyJson().put("instruction", "Unsent local edits")
+            app.workspace.store.put("drafts", draft)
+            activity.javaClass.getDeclaredField("returnChat").apply { isAccessible = true }.set(activity, conversation)
+            activity.javaClass.getDeclaredMethod("openPrompt", String::class.java, Boolean::class.javaPrimitiveType,
+                List::class.java, Int::class.javaPrimitiveType, Boolean::class.javaPrimitiveType)
+                .apply { isAccessible = true }.invoke(activity, "saved-prompt", false, emptyList<JSONObject>(), 0, false)
+            val until = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5)
+            while (currentScreen(activity) != "builder" && System.nanoTime() < until) {
+                shadowOf(android.os.Looper.getMainLooper()).idle(); Thread.sleep(5)
+            }
+            assertEquals("builder", currentScreen(activity))
+            val field = all(activity.window.decorView).filterIsInstance<EditText>().single { it.text.toString() == "Unsent local edits" }
+            field.setText("Local edit after returning")
+            assertEquals("Local edit after returning", app.workspace.store.item("drafts", "saved-prompt")!!.getString("instruction"))
+            assertTrue(buttons(activity.window.decorView).any { it.text == "Save and return to chat" })
+            @Suppress("DEPRECATION") activity.onBackPressed()
+            assertEquals(conversation, app.history.convId)
+            assertEquals("Local edit after returning", app.workspace.store.item("drafts", "saved-prompt")!!.getString("instruction"))
+            assertEquals("Original instruction", PromptAttachment.source(app)!!.getString("instruction"))
+            controller.destroy()
+        }
     }
 
     @Test fun workspaceHasNoSeparateRunsDestination() {

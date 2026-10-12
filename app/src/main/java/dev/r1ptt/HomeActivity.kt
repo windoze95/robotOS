@@ -55,6 +55,9 @@ import dev.r1ptt.ui.Fonts
 import dev.r1ptt.ui.LevelBars
 import dev.r1ptt.ui.PulseView
 import dev.r1ptt.ui.VoiceStage
+import dev.r1ptt.workspace.PromptAttachment
+import dev.r1ptt.workspace.SharedChatActivity
+import dev.r1ptt.workspace.WorkspaceActivity
 
 /**
  * The launcher, and the only screen most people will see: the conversation, one line about what
@@ -71,6 +74,7 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
     private lateinit var list: LinearLayout
     private lateinit var live: TextView
     private lateinit var input: EditText
+    private lateinit var attachment: TextView
     private lateinit var send: TextView
     private lateinit var stage: VoiceStage
     private lateinit var menuSheet: FrameLayout
@@ -126,6 +130,8 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
         list = findViewById(R.id.list)
         live = findViewById(R.id.live)
         input = findViewById(R.id.input)
+        attachment = findViewById(R.id.prompt_attachment)
+        attachment.setOnClickListener { editAttachment() }
         send = findViewById(R.id.send)
         stage = findViewById(R.id.stage)
         menuSheet = findViewById(R.id.menu_sheet)
@@ -151,7 +157,10 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
         findViewById<View>(R.id.chat_title).setOnClickListener { startActivity(Intent(this, ChatsActivity::class.java)) }
         findViewById<View>(R.id.controls).setOnClickListener { startActivity(Intent(this, QuickControlsActivity::class.java)) }
         findViewById<View>(R.id.menu).setOnClickListener { openMenu() }
-        findViewById<View>(R.id.hermes_task).setOnClickListener { startActivity(Intent(this, dev.r1ptt.hermes.HermesActivity::class.java)) }
+        findViewById<View>(R.id.hermes_task).setOnClickListener {
+            startActivity(if (app.workspace.identity.paired) SharedChatActivity.intent(this, app.history.convId)
+                else Intent(this, dev.r1ptt.hermes.HermesActivity::class.java))
+        }
         findViewById<View>(R.id.hermes_notice).setOnClickListener { app.notices.state.value.lastOrNull()?.let(::openNotice) }
         findViewById<View>(R.id.latest).setOnClickListener { followLatest = true; scrollToEnd() }
         findViewById<View>(R.id.turn_bar).setOnClickListener { statusAction?.invoke() }
@@ -204,6 +213,7 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
             s.launch { AudioPlayback.flow.collect { render(app.turns.state.value) } }
             s.launch { app.history.errors.collect { render(app.turns.state.value) } }
             if (!app.workspace.identity.paired) s.launch { app.hermesRuns.state.collect { renderTask(it) } }
+            else s.launch { app.workspace.status.collect { render(app.turns.state.value); renderEmpty() } }
             s.launch { app.notices.state.collect(::renderNotices) }
         }
         render(app.turns.state.value)
@@ -248,10 +258,12 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
 
     // ---- DictationTarget ----
 
-    override fun isActive(): Boolean = resumed && imeVisible && input.hasFocus()
+    override fun isActive(): Boolean = resumed && (PromptAttachment.attached(app) || imeVisible && input.hasFocus())
+    override fun canDictate(): Boolean = !PromptAttachment.attached(app)
+    override fun dictationUnavailable() { showToast("Tap the attached prompt to edit it in Prompt Builder") }
 
     override fun showPartial(text: String) {
-        if (text.isEmpty()) return
+        if (text.isEmpty() || PromptAttachment.attached(app)) return
         val start = put(text)
         input.text.setSpan(provisional, start, input.selectionEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
     }
@@ -278,6 +290,7 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
      * before it if needed; leaves the cursor after it. Returns where the text (and space) starts.
      */
     private fun put(text: String): Int {
+        if (PromptAttachment.attached(app)) return 0
         val e: Editable = input.text
         var start = e.getSpanStart(provisional)
         var end = e.getSpanEnd(provisional)
@@ -295,6 +308,15 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
     override fun sendTyped(): Boolean {
         if (app.updates.installing) return false // retain unsent text during the installer handoff
         if (app.store.loadError != null || app.history.errors.value != null) { render(app.turns.state.value); return false }
+        if (PromptAttachment.attached(app)) {
+            if (app.turns.busy) return true
+            try {
+                val delivery = PromptAttachment.delivery(app)
+                hideKeyboard()
+                app.turns.sendText(delivery.text, delivery.prompt)
+            } catch (e: IllegalStateException) { showToast(e.message ?: "Open Prompt Builder to check this prompt") }
+            return true
+        }
         val text = input.text.toString().trim()
         if (text.isEmpty()) return false
         if (submittedDraft == text && app.turns.busy) return true
@@ -316,6 +338,7 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
 
     /** The text field, even where a wide Stop button had taken its place, focused with the keyboard up. */
     private fun openComposer() {
+        if (PromptAttachment.attached(app)) { editAttachment(); return }
         input.visibility = View.VISIBLE
         input.requestFocus()
         renderAction(shown())
@@ -323,8 +346,20 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
     }
 
     private fun showKeyboard() {
+        if (PromptAttachment.attached(app)) { editAttachment(); return }
         input.requestFocus()
         getSystemService(InputMethodManager::class.java).showSoftInput(input, 0)
+    }
+
+    private fun editAttachment() {
+        if (app.workspace.blocked) return
+        if (app.turns.busy) { showToast("Wait for this message to finish sending"); return }
+        if (app.workspace.store.item("shared_chat_links", app.history.convId) != null) {
+            startActivity(SharedChatActivity.intent(this, app.history.convId)); return
+        }
+        val prompt = PromptAttachment.source(app) ?: run { showToast("Sync to restore this prompt"); return }
+        hideKeyboard()
+        startActivity(WorkspaceActivity.promptIntent(this, prompt.getString("id"), app.history.convId))
     }
 
     // ---- rendering ----
@@ -345,6 +380,7 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
         renderLive(s)
         renderStrip(s)
         renderAction(s)
+        if (app.workspace.identity.paired) renderSharedTask()
         // Remote work and spoken replies do not need the backlight held on.
         if (s.phase == Phase.LISTENING || s.phase == Phase.DICTATING) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -460,18 +496,27 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
      */
     private fun renderAction(s: TurnState) {
         val stop = stoppable(s)
-        val wide = stop && !imeVisible && input.text.isEmpty() && !input.hasFocus()
+        val attached = PromptAttachment.attached(app)
+        val source = if (attached) PromptAttachment.source(app) else null
+        val pending = if (attached) app.workspace.store.item("shared_chat_links", app.history.convId) else null
+        val title = (pending?.optJSONObject("prompt") ?: source)?.optString("title").orEmpty().ifBlank { "Saved prompt" }
+        val hint = if (pending != null) "Send to retry original request" else "Tap to edit · Send when ready"
+        attachment.text = cardLabel("Prompt Builder", R.color.accent).append(title).append("\n")
+            .append(hint, RelativeSizeSpan(.7f), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        attachment.contentDescription = "Prompt Builder: $title. $hint"
+        val wide = stop && !attached && !imeVisible && input.text.isEmpty() && !input.hasFocus()
         val label = if (stop) stopLabel() else ""
         val glyph = when {
             stop -> R.drawable.ic_stop
-            input.text.isNotBlank() -> R.drawable.ic_send
+            attached || input.text.isNotBlank() -> R.drawable.ic_send
             else -> R.drawable.ic_keyboard
         }
-        val key = listOf(glyph, label, wide)
+        val key = listOf(glyph, label, wide, attached)
         if (key == shownAction) return
         shownAction = key
         val filled = glyph != R.drawable.ic_keyboard
-        input.visibility = if (wide) View.GONE else View.VISIBLE
+        input.visibility = if (wide || attached) View.GONE else View.VISIBLE
+        attachment.visibility = if (attached) View.VISIBLE else View.GONE
         findViewById<View>(R.id.type).visibility = if (wide) View.VISIBLE else View.GONE
         send.layoutParams = (send.layoutParams as LinearLayout.LayoutParams).apply {
             width = if (wide) 0 else LinearLayout.LayoutParams.WRAP_CONTENT
@@ -523,7 +568,7 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
 
     private fun renderEmpty() {
         val empty = findViewById<LinearLayout>(R.id.empty)
-        val showing = list.childCount == 0 && !imeVisible
+        val showing = list.childCount == 0 && !imeVisible && !PromptAttachment.attached(app)
         empty.visibility = if (showing) View.VISIBLE else View.GONE
         (scroll.getChildAt(0) as LinearLayout).gravity = if (showing) Gravity.CENTER_VERTICAL else Gravity.TOP
         val setup = setupNeeded()
@@ -565,6 +610,8 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
             followLatest = snap.followLatest
             scroll.post { if (renderedConv == snap.convId) { if (followLatest) scrollToEnd() else scroll.scrollTo(0, snap.scrollY) } }
         } else if (msgs.size > start && followLatest) scrollToEnd()
+        renderAction(shown())
+        if (app.workspace.identity.paired) renderSharedTask()
     }
 
     /** Your words in an orange bubble; Hermes's replies full width under a small label. */
@@ -574,6 +621,10 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
         if (m.role == Msg.USER) {
             gravity = Gravity.END
             setPadding(dp(40), dp(14), 0, dp(2))
+            if (m.promptId.isNotEmpty()) addView(ui.mono("PROMPT BUILDER · ${m.promptTitle.ifBlank { "Saved prompt" }}", R.color.accent, 11f, 800).apply {
+                setPadding(dp(8), 0, dp(8), dp(5))
+                maxLines = 2
+            })
             addView(TextView(this@HomeActivity).apply {
                 text = m.text
                 textSize = textSp
@@ -683,6 +734,29 @@ class HomeActivity : dev.r1ptt.ui.DeviceActivity(), DictationTarget {
         if (app.workspace.identity.paired) return
         app.hermesRuns.confirmAdmittedDraft(app.history)
         app.hermesRuns.reconcile(app.history)
+    }
+
+    private fun renderSharedTask() {
+        val card = findViewById<TextView>(R.id.hermes_task)
+        val run = SharedChatActivity.latest(app, app.history.convId)
+        val pending = app.workspace.store.item("shared_chat_links", app.history.convId)
+        if (app.workspace.blocked || (run == null && pending == null) || run?.optString("status") == "completed") {
+            card.visibility = View.GONE
+            return
+        }
+        card.visibility = View.VISIBLE
+        val urgent = run?.optString("status") in setOf("waiting_for_approval", "waiting_approval", "awaiting_approval")
+        val trouble = run == null || run.optString("status") in setOf("failed", "submission_unknown", "interrupted", "unknown")
+        val tint = when { urgent -> R.color.on_accent; trouble -> R.color.error; else -> R.color.accent }
+        val detail = if (urgent) run?.optJSONObject("approval")?.let(SharedChatActivity::approvalDescription) ?: "Review this request"
+            else run?.let(SharedChatActivity::label) ?: "Send not yet confirmed"
+        card.text = cardLabel(if (urgent) "Approval needed" else "Chat activity", tint).append(detail)
+        card.setTextColor(getColor(if (urgent) R.color.on_accent else R.color.fg))
+        card.background = ui.pressable(ui.background(if (urgent) R.color.accent else R.color.field, 18).apply {
+            if (!urgent) setStroke(dp(1), getColor(if (trouble) R.color.error else R.color.outline))
+        }, 18, onAccent = urgent)
+        card.setCompoundDrawablesRelativeWithIntrinsicBounds(ui.icon(R.drawable.ic_hermes, tint), null,
+            ui.icon(R.drawable.ic_chevron_right, if (urgent) R.color.on_accent else R.color.faint), null)
     }
 
     private fun drawTask(state: HermesRunState) {

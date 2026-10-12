@@ -19,10 +19,13 @@ examples, not device, speech or carrier acceptance evidence.
 | Quick controls | [quick-controls.png](quick-controls.png) |
 | Settings | [settings.png](settings.png) |
 | Native Prompt Builder | [workspace-builder.png](workspace-builder.png) |
+| Unsent prompt attachment | [workspace-chat-attachment.png](workspace-chat-attachment.png) |
+| Prompt in chat | [workspace-prompt-chat.png](workspace-prompt-chat.png) |
 | Web Prompt Builder | [workspace-console.jpg](workspace-console.jpg) |
 
-The native workspace image uses `ScreensSnapshotTest` with staged notes. The web console image
-was captured from a disposable local host with fictional notes and synthetic audio. It demonstrates
+The native workspace images use `ScreensSnapshotTest` with staged notes and chat messages.
+The prompt attachment and reply images come from `promptAttachmentFitsTheR1ComposerAndLeavesNormalTypingAfterSend`; no request is sent. The web console image
+was captured from a disposable local host with a fictional note and saved prompt. It demonstrates
 the browser UI, not an enrolled physical R1 or a live Hermes execution.
 
 ## Refresh

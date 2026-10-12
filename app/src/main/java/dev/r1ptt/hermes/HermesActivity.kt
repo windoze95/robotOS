@@ -27,7 +27,7 @@ import dev.r1ptt.messages.SmsRecipientText
 import dev.r1ptt.net.friendly
 import dev.r1ptt.ui.DeviceActivity
 import dev.r1ptt.workspace.HubSettingsActivity
-import dev.r1ptt.workspace.WorkspaceActivity
+import dev.r1ptt.ChatsActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -154,7 +154,7 @@ class HermesActivity : DeviceActivity() {
     private fun renderTask(state: HermesRunState) {
         if (paired) {
             tasks.removeAllViews()
-            tasks.addView(ui.button("Saved prompts") { startActivity(WorkspaceActivity.promptsIntent(this)) })
+            tasks.addView(ui.button("Chats") { startActivity(Intent(this, ChatsActivity::class.java)) })
             return
         }
         // Do not rebuild the form or steal wheel position for every streamed token.

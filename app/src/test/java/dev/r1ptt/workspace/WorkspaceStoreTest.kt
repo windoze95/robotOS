@@ -122,7 +122,9 @@ class WorkspaceStoreTest {
         assertEquals("completed", restored.getString("status"))
         assertEquals("Confirmed reply", restored.getString("output"))
         assertEquals("hermes-session", restored.getJSONObject("hermes").getString("session_id"))
-        assertEquals(current.toString(), store.item("prompts", "prompt")!!.toString())
+        val cached = store.item("prompts", "prompt")!!
+        listOf("state", "last_run_revision", "changed_since_run").forEach { assertFalse(cached.has(it)); current.remove(it) }
+        assertEquals(current.toString(), cached.toString())
         val restarted = WorkspaceStore(root)
         assertEquals(restored.toString(), restarted.item("runs", "run")!!.toString())
     }
@@ -131,6 +133,18 @@ class WorkspaceStoreTest {
         assertFalse(store.beginCommand(command(target = "device-b"), "device-a", 1000))
         assertEquals("failed", store.item("receipts", "c1")!!.getString("status"))
         assertFalse(store.beginCommand(command("expired", expiry = 1000), "device-a", 1000))
+    }
+    @Test fun delayedAdmissionAndCompletionCannotReplaceANewerChatQuestion() {
+        val store = WorkspaceStore(temporary.newFolder())
+        store.put("shared_chat_links", JSONObject().put("id", "shared-chat").put("operation", "new-operation").put("request_id", "new-request"))
+        assertFalse(store.confirmChatAdmission("shared-chat", "old-operation", "old-request", "old-run"))
+        store.finishChat("shared-chat", "old-run")
+        assertEquals("new-request", store.item("shared_chat_links", "shared-chat")!!.getString("request_id"))
+        assertTrue(store.confirmChatAdmission("shared-chat", "new-operation", "new-request", "new-run"))
+        store.finishChat("shared-chat", "old-run")
+        assertEquals("new-run", store.item("shared_chat_links", "shared-chat")!!.getString("run_id"))
+        store.finishChat("shared-chat", "new-run")
+        assertNull(store.item("shared_chat_links", "shared-chat"))
     }
     @Test fun clearingSharedDataPreservesRecoveryReceiptsAndDeletesAudio() {
         val root = temporary.newFolder(); val store = WorkspaceStore(root)

@@ -59,9 +59,10 @@ DNS rebinding. Do not point a public unauthenticated reverse proxy at the listen
   mode, brightness, text size and screen timeout; device-applied settings are tracked separately.
 - Lock, erase, reset, update and reboot require a recent browser sign-in, exact device confirmation,
   a reported capability and its local permission. MCP cannot issue destructive management actions.
-- Submission receipts reserve an immutable prompt revision before network dispatch. Default Run attaches to the
-  existing revision's attempt; explicit Run again uses a new stable request ID. Hermes session identity
-  remains stable for a prompt across revisions. A prompt is Ran only after completed output is saved.
+- Prompt Builder saves and edits reusable text. On the R1, Run in new chat attaches a prompt to a
+  fresh Hermes conversation and waits for Send. The browser remains an editor. Submission receipts
+  preserve the exact sent text and source revision; retries retain the same request identity.
+  Follow-up messages retain their chat's Hermes session. Replies and approvals belong to chat.
 - Restarted in-flight admissions become `submission_unknown`. `POST /runs/{id}/reconcile {}` only
   reuses the original ID and exact payload if both original and fresh Hermes capabilities advertise
   durable deduplication and the retained window still covers the submission. Otherwise inspect the

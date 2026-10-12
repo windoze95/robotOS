@@ -208,6 +208,12 @@ class WorkspaceClient(private val app: App) {
         }
     }
     fun saveLocalDraft(prompt: JSONObject) {
+        val saved = store.item("prompts", prompt.getString("id"))
+        if (saved != null && saved.optLong("revision") == prompt.optLong("revision") &&
+            listOf("title", "instruction", "blocks").all { saved.opt(it)?.toString() == prompt.opt(it)?.toString() }) {
+            store.remove("drafts", prompt.getString("id"))
+            return
+        }
         store.saveDraft(prompt); mutable.value = "Prompt draft saved on this R1 · save to sync"
     }
     fun capture(title: String, text: String, audio: File? = null, mime: String = "audio/mp4"): JSONObject {
@@ -292,15 +298,6 @@ class WorkspaceClient(private val app: App) {
     fun release(prompt: JSONObject) { scope.launch { lock.withLock { runCatching {
         api("POST", "/prompts/${prompt.getString("id")}/release", JSONObject().put("lease_token", prompt.optString("lease_token")))
     } } } }
-    suspend fun run(prompt: JSONObject, again: Boolean = false): JSONObject = withContext(Dispatchers.IO) { lock.withLock {
-        val key = "${prompt.getString("id")}:${prompt.getLong("revision")}:$again"
-        val pending = store.items("requests").find { it.optString("key") == key }
-        val request = pending ?: JSONObject().put("id", newId()).put("key", key).put("revision", prompt.getLong("revision"))
-            .put("request_id", newId()).put("run_again", again).also { store.put("requests", it) }
-        api("POST", "/prompts/${prompt.getString("id")}/run", request).also {
-            store.put("runs", it); store.remove("requests", request.getString("id"))
-        }
-    } }
     suspend fun runAction(id: String, action: String, approvalId: String? = null, choice: String? = null): JSONObject = withContext(Dispatchers.IO) { lock.withLock {
         val key = "$id:$action:${approvalId.orEmpty()}:${choice.orEmpty()}"
         val request = store.items("requests").find { it.optString("key") == key } ?: JSONObject().put("id", newId()).put("key", key)

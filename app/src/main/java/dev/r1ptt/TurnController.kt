@@ -20,6 +20,8 @@ import dev.r1ptt.net.SttClient
 import dev.r1ptt.net.TtsClient
 import dev.r1ptt.net.friendly
 import dev.r1ptt.workspace.SharedChat
+import dev.r1ptt.workspace.PromptAttachment
+import org.json.JSONObject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -300,9 +302,8 @@ class TurnController(private val app: App) : Gestures.Listener {
         val t = target
         when {
             interrupted -> interrupted = false // that press already stopped the reply
-            privateInputScreen && app.screen.tapWasWake() -> {} // waking a private draft cannot review/send it
+            app.screen.tapWasWake() -> {} // waking a draft or attached prompt cannot send it
             t != null && t.isActive() -> if (!t.sendTyped()) t.hideKeyboard()
-            app.screen.tapWasWake() -> {} // the tap that turned the screen on
             else -> app.screen.sleepNow()
         }
     }
@@ -395,7 +396,7 @@ class TurnController(private val app: App) : Gestures.Listener {
     }
 
     /** A message typed into the launcher's text field: Hermes + text-to-speech. */
-    fun sendText(text: String) {
+    fun sendText(text: String, prompt: JSONObject? = null) {
         if (!app.workspace.networkAllowed) { fail("Workspace access is restricted on this R1"); return }
         if (!app.updates.allowVoice()) return
         app.store.loadError?.let { fail(it); settle(); return }
@@ -406,7 +407,7 @@ class TurnController(private val app: App) : Gestures.Listener {
         dictationBlockedPress = false
         app.radio.onActivity()
         app.screen.holdAwake()
-        launch { turn -> ask(turn, text) }
+        launch { turn -> if (prompt != null) askShared(turn, text, PromptAttachment.reference(prompt)) else ask(turn, text) }
     }
 
     // ---- the turn ----
@@ -599,22 +600,25 @@ class TurnController(private val app: App) : Gestures.Listener {
         finishSpeech(turn, speaker)
     }
 
-    private suspend fun askShared(turn: Turn, text: String) {
+    private suspend fun askShared(turn: Turn, text: String, attachment: JSONObject? = null) {
         app.history.errors.value?.let { throw IOException(it) }
         val oldConversation = turn.conversation
         turn.conversation = SharedChat.conversation(app, oldConversation)
-        app.history.saveDraft(text, turn.conversation)
+        if (attachment == null) app.history.saveDraft(text, turn.conversation)
         if (oldConversation != turn.conversation) app.history.confirmDraft(text, oldConversation)
         _state.value = TurnState(phase = Phase.THINKING)
         awaitNetwork()
         val cfg = app.store.value
         val identity = app.workspace.identity.value
-        val context = cfg.systemPrompt + deviceContext(cfg) +
-            " This request came from robotOS device_id=${identity.getString("device_id")}. Use that exact device_id for device tools unless the user explicitly chooses another device."
-        val reply = SharedChat.ask(app, turn.conversation, text, context,
+        val pending = app.workspace.store.item("shared_chat_links", turn.conversation)
+        val context = if (attachment != null && pending?.optJSONObject("prompt") != null) pending.getString("instruction") else
+            cfg.systemPrompt + deviceContext(cfg) +
+                " This request came from robotOS device_id=${identity.getString("device_id")}. Use that exact device_id for device tools unless the user explicitly chooses another device."
+        val reply = SharedChat.ask(app, turn.conversation, text, context, attachment,
             onAdmitted = { runId ->
                 turn.sharedOperation = runId
                 app.history.confirmDraft(text, turn.conversation)
+                if (attachment != null) PromptAttachment.accepted(app, turn.conversation)
                 if (turn.remoteStopRequested) scope.launch { runCatching { app.workspace.runAction(runId, "stop") } }
             },
             onStatus = { status -> if (current === turn) _state.update { it.copy(note = status) } }).trim()

@@ -135,7 +135,8 @@ class HubTest(HubFixture):
         self.fake.state = 'completed'
         self.workers.tick()
         prompt = self.store.prompts(self.b['workspace'], 'prompt')
-        self.assertEqual('ran', prompt['state'])
+        self.assertNotIn('state', prompt)
+        self.assertEqual(runs[0]['id'], prompt['last_run_id'])
         self.assertEqual('saved result', self.store.runs(self.b['workspace'], runs[0]['id'])['output'])
 
     def test_active_session_prevents_new_revision_or_run_again_overlap(self):
@@ -162,8 +163,9 @@ class HubTest(HubFixture):
         lease = self.store.lease(self.owner, 'prompt')
         saved = self.store.update_prompt(self.owner, 'prompt', dict(prompt, base_revision=1, lease_token=lease['lease_token']))
         self.assertEqual(1, saved['revision'])
-        self.assertEqual('ran', saved['state'])
-        self.assertFalse(saved['changed_since_run'])
+        self.assertNotIn('state', saved)
+        self.assertNotIn('changed_since_run', saved)
+        self.assertNotIn('last_run_revision', saved)
         attached = self.store.reserve_run(self.owner, 'prompt', dict(revision=saved['revision'], request_id='second'))
         self.assertEqual(run['id'], attached['id'])
         self.workers.tick()
@@ -229,7 +231,7 @@ class HubTest(HubFixture):
         self.assertEqual('saved result', upgraded['output'])
         self.assertEqual({'run_id': 'remote-' + run['id'], 'session_id': None}, upgraded['hermes'])
 
-    def test_completed_requires_an_explicit_string_result_before_ran(self):
+    def test_completed_requires_an_explicit_string_result(self):
         self.prompt()
         run = self.store.reserve_run(self.owner, 'prompt', dict(revision=1, request_id='first'))
         self.workers.tick()
@@ -238,10 +240,9 @@ class HubTest(HubFixture):
             with patch.object(self.fake, 'hermes', return_value=invalid):
                 self.workers.tick()
             self.assertEqual('running', self.store.runs(self.owner, run['id'])['status'])
-            self.assertNotEqual('ran', self.store.prompts(self.owner, 'prompt')['state'])
         self.fake.state = 'completed'
         self.workers.tick()
-        self.assertEqual('ran', self.store.prompts(self.owner, 'prompt')['state'])
+        self.assertEqual('completed', self.store.runs(self.owner, run['id'])['status'])
         self.assertEqual('saved result', self.store.runs(self.owner, run['id'])['output'])
 
     def test_malformed_hermes_capabilities_are_rejected_explicitly(self):
@@ -283,7 +284,7 @@ class HubTest(HubFixture):
         self.workers.tick()
         self.assertEqual(expected, self.fake.submissions[0][0]['input'])
 
-    def test_immutable_run_snapshot_and_changed_since_run(self):
+    def test_immutable_run_snapshot_survives_prompt_edit(self):
         self.prompt()
         run = self.store.reserve_run(self.a['workspace'], 'prompt', dict(revision=1, request_id='first'))
         lease = self.store.lease(self.a['workspace'], 'prompt')
@@ -291,7 +292,31 @@ class HubTest(HubFixture):
         self.workers.tick()
         self.assertEqual('Do the work', self.fake.submissions[0][0]['input'])
         self.assertEqual('Do the work', self.store.runs(self.owner, run['id'])['snapshot']['instruction'])
-        self.assertTrue(self.store.prompts(self.owner, 'prompt')['changed_since_run'])
+        self.assertEqual(2, self.store.prompts(self.owner, 'prompt')['revision'])
+
+    def test_prompt_attachment_provenance_is_immutable_and_new_chats_have_new_sessions(self):
+        source = self.prompt()
+        provenance = dict(id=source['id'], revision=source['revision'], title=source['title'])
+        receipts = []
+        for conversation in ('shared-first', 'shared-second'):
+            self.store.create_prompt(self.owner, dict(id=conversation, title=source['title'], instruction='',
+                blocks=[dict(id=conversation + '-message', kind='text', text='Do the work', prompt=provenance)]))
+            receipts.append(self.store.reserve_run(self.owner, conversation, dict(revision=1, request_id=conversation)))
+        self.workers.tick()
+        self.assertEqual(2, len(self.fake.submissions))
+        self.assertNotEqual(self.fake.submissions[0][0]['session_id'], self.fake.submissions[1][0]['session_id'])
+        lease = self.store.lease(self.owner, 'prompt')
+        self.store.update_prompt(self.owner, 'prompt', dict(base_revision=1, lease_token=lease['lease_token'], title='Edited', instruction='New instruction', blocks=[]))
+        first = self.store.runs(self.owner, receipts[0]['id'])
+        self.assertEqual(provenance, first['snapshot']['blocks'][0]['prompt'])
+        self.assertEqual('Do the work', first['snapshot']['preview'])
+        self.assertEqual('Do the work', self.fake.submissions[0][0]['input'])
+
+    def test_prompt_attachment_rejects_invalid_provenance(self):
+        for provenance in ('bad', dict(id='source', revision=0), dict(id='../bad', revision=1)):
+            with self.assertRaises(HubError):
+                self.store.create_prompt(self.owner, dict(id='invalid', title='Invalid', instruction='',
+                    blocks=[dict(id='text', kind='text', text='Text', prompt=provenance)]))
 
     def test_unknown_submission_never_blindly_retried_and_safe_reconciliation(self):
         self.prompt()

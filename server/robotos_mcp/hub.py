@@ -25,8 +25,8 @@ WORKSPACE_TOOLS = [
     schema("read_note", "Read a workspace note", "Read one saved note or voice transcript.", {"id": STRING}, ["id"]),
     schema("save_note", "Save a workspace note", "Save a written note in the shared workspace. Keep the same id on retries.",
            {"id": STRING, "title": STRING, "text": STRING}, ["title", "text"]),
-    schema("list_prompts", "Saved prompts", "List shared prompts and their saved/run state."),
-    schema("read_prompt", "Read a saved prompt", "Read a prompt's exact saved revision, source blocks and last run.", {"id": STRING}, ["id"]),
+    schema("list_prompts", "Saved prompts", "List saved shared prompts."),
+    schema("read_prompt", "Read a saved prompt", "Read a prompt's exact saved revision and source blocks.", {"id": STRING}, ["id"]),
     schema("create_prompt", "Create a saved prompt", "Save a new prompt for later. This does not run it. Existing prompts are edited in the R1 or web builder.",
            {"id": STRING, "title": STRING, "instruction": STRING,
             "blocks": {"type": "array", "items": {"type": "object", "properties": {

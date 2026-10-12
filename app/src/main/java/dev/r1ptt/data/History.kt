@@ -12,7 +12,8 @@ import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
-data class Msg(val role: String, val text: String, val at: Long = System.currentTimeMillis(), val deliveryKey: String = "") {
+data class Msg(val role: String, val text: String, val at: Long = System.currentTimeMillis(), val deliveryKey: String = "",
+               val promptId: String = "", val promptTitle: String = "", val promptRevision: Long = 0) {
     companion object { const val USER = "user"; const val ASSISTANT = "assistant" }
 }
 
@@ -241,7 +242,9 @@ class History(dir: File) {
 
     private fun write(db: SQLiteDatabase, record: Record) {
         val messages = JSONArray()
-        record.messages.forEach { messages.put(JSONObject().put("role", it.role).put("text", it.text).put("at", it.at).put("deliveryKey", it.deliveryKey)) }
+        record.messages.forEach { messages.put(JSONObject().put("role", it.role).put("text", it.text).put("at", it.at).put("deliveryKey", it.deliveryKey).apply {
+            if (it.promptId.isNotEmpty()) put("prompt", JSONObject().put("id", it.promptId).put("title", it.promptTitle).put("revision", it.promptRevision))
+        }) }
         val values = ContentValues().apply {
             put("id", record.id); put("title", record.title); put("messages", messages.toString()); put("draft", record.draft)
             put("updated", record.updatedAt); put("scroll_y", record.scrollY); put("follow_latest", if (record.followLatest) 1 else 0)
@@ -252,7 +255,10 @@ class History(dir: File) {
         db.execSQL("INSERT OR REPLACE INTO history_meta(name,value) VALUES('active',?)", arrayOf(id))
     }
     private fun parseMessages(array: JSONArray) = (maxOf(0, array.length() - MAX_MESSAGES) until array.length()).map {
-        array.getJSONObject(it).let { m -> Msg(m.getString("role"), m.getString("text"), m.optLong("at"), m.optString("deliveryKey")) }
+        array.getJSONObject(it).let { m -> val prompt = m.optJSONObject("prompt")
+            Msg(m.getString("role"), m.getString("text"), m.optLong("at"), m.optString("deliveryKey"),
+                prompt?.optString("id").orEmpty(), prompt?.optString("title").orEmpty(), prompt?.optLong("revision") ?: 0)
+        }
     }
     private fun titleFor(messages: List<Msg>) = messages.firstOrNull { it.role == Msg.USER }?.text?.replace('\n', ' ')?.take(48) ?: "New chat"
     private fun newId() = UUID.randomUUID().toString()

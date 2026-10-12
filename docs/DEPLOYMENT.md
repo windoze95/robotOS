@@ -129,8 +129,8 @@ separate from private tailnet HTTPS; do not run both proxies on the same host po
 Verify `/api/v1/ready` on the hub's final HTTPS origin and `/health` on Hermes's final HTTPS
 origin. Read `private/owner-password` locally, sign in to the hub console, and create a separate
 enrollment code for each R1 under Devices. Enter the hub URL and code in **Workspace settings**.
-No shared host credential belongs on an R1. Submit one harmless prompt and confirm its completed
-reply and **Ran** status to verify authenticated execution, then open the saved result on the R1.
+No shared host credential belongs on an R1. Save one harmless prompt, choose **Run in new chat**
+on the R1, verify that it waits with an attachment, then tap **Send** and confirm its reply in chat.
 
 Keep the host available: paired R1s remain restricted after waking or reconnecting until the hub
 verifies their policy. [HUB.md](HUB.md) covers permissions, recovery, saved prompt handoff and

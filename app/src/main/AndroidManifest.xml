@@ -60,6 +60,7 @@
         </activity>
 
         <activity android:name=".workspace.WorkspaceActivity" android:exported="false" android:screenOrientation="portrait" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".workspace.SharedChatActivity" android:exported="false" android:screenOrientation="portrait" />
         <activity android:name=".workspace.HubSettingsActivity" android:exported="false" android:screenOrientation="portrait" android:windowSoftInputMode="adjustResize" />
         <receiver android:name=".workspace.HubRecoveryReceiver" android:exported="false">
             <intent-filter>
