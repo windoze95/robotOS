@@ -1,7 +1,7 @@
 package dev.r1ptt.workspace
 
-import android.util.Log
 import dev.r1ptt.App
+import dev.r1ptt.data.EventLog
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -67,7 +67,7 @@ class WorkspaceClient(private val app: App) {
                 val ticket = recoveryFence.renew()
                 confirming = ticket
                 retryMs = RETRY_FIRST_MS
-                Log.i(TAG, "recovery: grace wake, confirming in the background")
+                EventLog.record("recovery: grace wake, confirming in the background")
                 deadline?.cancel()
                 deadline = scope.launch {
                     withTimeoutOrNull(confirmCapMs) { app.radio.awaitOnline(confirmCapMs); delay(confirmMs) }
@@ -85,7 +85,7 @@ class WorkspaceClient(private val app: App) {
     /** The host did not confirm a grace wake in time: end the grace and take the screen back. */
     private fun recapture(ticket: Long) {
         synchronized(this) { if (confirming != ticket) return }
-        Log.i(TAG, "recovery: grace wake not confirmed in time, screen recaptured")
+        EventLog.record("recovery: grace wake not confirmed in time, screen recaptured")
         verifiedAt = 0
         requireRecovery(checkNow = app.getSystemService(android.os.PowerManager::class.java).isInteractive)
     }
@@ -123,7 +123,7 @@ class WorkspaceClient(private val app: App) {
                 outcome = if (e is HubException) "host error ${e.status}" else e.javaClass.simpleName
             }
             finally {
-                Log.i(TAG, "recovery check: $outcome after ${android.os.SystemClock.elapsedRealtime() - started} ms")
+                EventLog.record("recovery check: $outcome after ${android.os.SystemClock.elapsedRealtime() - started} ms")
                 recoveryFence.offline(ticket)
                 if (wake) app.radio.hold("workspace-wake-recovery", false)
                 if (!recoveryFence.verified()) mutable.value = when {
@@ -439,7 +439,6 @@ class WorkspaceClient(private val app: App) {
         private const val RETRY_MAX_MS = 30_000L
         /** Pages of 1000 changes to read before a full fetch is cheaper. */
         private const val MAX_CHANGE_PAGES = 10
-        private const val TAG = "r1ptt"
         /** Resolve durable audio IDs into a copy; failed hydration never discards a local draft. */
         fun hydrateMedia(prompt: JSONObject, note: (String) -> JSONObject?): JSONObject = prompt.copyJson().also { hydrated ->
             hydrated.getJSONArray("blocks").objects().forEach { block ->

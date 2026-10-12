@@ -677,6 +677,22 @@ class HubTest(HubFixture):
         self.assertNotIn('reset', self.store.changes(self.a['workspace'], page['cursor']))
         self.assertTrue(self.store.changes(self.a['workspace'], page['cursor'] - 1)['reset'])
 
+    def test_check_in_history_keeps_results_for_the_owner_only(self):
+        self.checkin()
+        self.assertError('policy_revision_conflict', self.checkin, applied_policy_revision=99)
+        self.assertError('wrong_scope', self.store.check_in, self.a['workspace'], {})
+        history = self.store.check_ins(self.owner, self.a['device_id'])['items']
+        self.assertEqual(['policy_revision_conflict', 'ok'], [item['result'] for item in history])
+        self.assertEqual({'at', 'result', 'app_version'}, set(history[0]))
+        self.assertEqual('1.0', history[1]['app_version'])
+        self.assertEqual(1, len(self.store.check_ins(self.owner, self.a['device_id'], 1)['items']))
+        self.assertEqual([], self.store.check_ins(self.owner, self.b['device_id'])['items'])
+        self.assertError('wrong_scope', self.store.check_ins, self.a['workspace'], self.a['device_id'])
+        with self.store.transaction() as db:
+            db.execute('UPDATE checkins SET created_at=0')
+            self.store._prune_check_ins(db)
+        self.assertEqual([], self.store.check_ins(self.owner, self.a['device_id'])['items'])
+
     def test_change_feed_pages_say_when_more_follow(self):
         with self.store.transaction() as db:
             for i in range(1001):
@@ -741,6 +757,16 @@ class HttpTest(HubFixture):
         self.assertEqual(200, self.request('GET', 'session', headers={'Cookie': cookie})[0])
         self.assertEqual(200, self.request('POST', 'logout', {}, {'Cookie': cookie, 'X-CSRF-Token': body['csrf_token']})[0])
         self.assertEqual(401, self.request('GET', 'session', headers={'Cookie': cookie})[0])
+
+    def test_check_in_history_over_http_is_owner_only(self):
+        self.checkin()
+        path = 'devices/' + self.a['device_id'] + '/check-ins'
+        owner = {'Authorization': 'Bearer ' + 'o' * 40}
+        status, body, _ = self.request('GET', path + '?limit=1', headers=owner)
+        self.assertEqual(200, status)
+        self.assertEqual(['ok'], [item['result'] for item in body['items']])
+        self.assertEqual(403, self.request('GET', path, headers={'Authorization': 'Bearer ' + self.a['device_token']})[0])
+        self.assertEqual(400, self.request('GET', path + '?limit=many', headers=owner)[0])
 
     def test_change_cursor_accepts_latest_and_rejects_other_words(self):
         headers = {'Authorization': 'Bearer ' + self.a['device_token']}

@@ -8,6 +8,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import dev.r1ptt.App
+import dev.r1ptt.data.EventLog
 
 /** Event driven: no polling or battery exception is needed to recover when the R1 wakes/connects. */
 class RecoveryMonitor(private val app: App) {
@@ -23,6 +24,17 @@ class RecoveryMonitor(private val app: App) {
     private val network = object : ConnectivityManager.NetworkCallback() {
         private var available: Network? = null
         private var usable = false
+        private var described = ""
+        /** Logs real transitions only: bandwidth updates repeat the same description. */
+        private fun note(caps: NetworkCapabilities?) {
+            val state = when {
+                caps == null || !dev.r1ptt.power.RadioPolicy.usable(caps) -> "network: no usable connection"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "network: Wi-Fi"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "network: mobile data"
+                else -> "network: connected"
+            }
+            if (state != described) { described = state; EventLog.record(state) }
+        }
         override fun onAvailable(network: Network) {
             available = network
             usable = false
@@ -35,11 +47,13 @@ class RecoveryMonitor(private val app: App) {
             // reconnect or to retry a pending check; the radio state itself is never touched here.
             val wasUsable = usable
             usable = dev.r1ptt.power.RadioPolicy.usable(caps)
+            note(caps)
             if (usable && (!wasUsable || app.workspace.recoveryWanted)) app.workspace.recoverNow()
         }
         override fun onLost(network: Network) {
             if (network == available) {
                 available = null
+                note(null)
                 // Pocket mode deliberately cuts Wi-Fi. Fence unless still fresh, but never acquire a
                 // radio hold that would undo that cut; wake/onAvailable will verify.
                 app.workspace.fenceUnlessFresh()

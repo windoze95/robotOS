@@ -609,6 +609,7 @@ class RecoveryProtectionTest {
         val controller = Robolectric.buildActivity(DeviceActivity::class.java).create().start().resume().visible()
         val activity = controller.get()
         activity.setContentView(TextView(activity).apply { text = "Private cached history" })
+        val before = dev.r1ptt.data.EventLog.lines().size
         app.workspace.requireRecovery(checkNow = false)
         shadowOf(Looper.getMainLooper()).idle()
         app.workspace.recoveryConfirmed(app.workspace.recoveryTicket())
@@ -620,6 +621,10 @@ class RecoveryProtectionTest {
         shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(1_000))
         assertEquals(View.VISIBLE, activity.findViewById<View>(android.R.id.content).visibility)
         assertTrue(activity.window.decorView.find(dev.r1ptt.ui.LogoGlow::class.java).isEmpty())
+        // The on-device record shows when the cover came and went.
+        val cover = dev.r1ptt.data.EventLog.lines().drop(before).map { it.substringAfter(" ", "").substringAfter(" ").substringAfter(" ") }
+            .filter { it.startsWith("recovery cover") }
+        assertEquals(listOf("recovery cover shown", "recovery cover lifted"), cover)
         controller.pause().stop().destroy()
     }
 

@@ -16,8 +16,10 @@ DEST=$(cd "$DEST" && pwd)
 cd "$ROOT"
 ./gradlew --no-daemon --no-build-cache --console=plain -PreleaseTag="$TAG" -PreleaseSigning=true :app:assembleRelease
 cp app/build/outputs/apk/release/app-release.apk "$DEST/robotOS.apk"
+# R8 mapping, so stack traces and lock samples from installed builds can be decoded.
+cp app/build/outputs/mapping/release/mapping.txt "$DEST/mapping.txt"
 node tools/release/manifest.mjs create "$DEST" "$TAG" "$COMMIT"
 java tools/release/SignManifest.java "$DEST/payload.json" "$DEST/update.json" "$DEST/signer.cer"
 node tools/release/manifest.mjs verify "$DEST"
-(cd "$DEST" && shasum -a 256 robotOS.apk update.json signer.cer > SHA256SUMS)
+(cd "$DEST" && shasum -a 256 robotOS.apk update.json signer.cer mapping.txt > SHA256SUMS)
 rm "$DEST/payload.json"

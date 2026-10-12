@@ -100,6 +100,10 @@ head, and the client reloads its lists. A check-in that changes nothing but `las
 event; `GET /devices` still reports it. The R1 reads the feed on each 30-second sync and downloads
 only the collections it names.
 
+`GET /devices/{id}/check-ins?limit=N` (owner only, newest first, up to 1000) returns a week of
+that R1's check-ins as `{at, result, app_version}`. `result` is `ok` or the refused check-in's
+error code. Requests, paths and credentials are never stored.
+
 ## Validation
 
 ```sh

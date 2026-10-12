@@ -88,6 +88,8 @@ rootsh "magisk --sqlite \"REPLACE INTO policies (uid,policy,until,logging,notifi
 say "Making it the home screen (preserving Android lock and administrator settings)"
 adb shell cmd package set-home-activity "$PKG/.HomeActivity" >/dev/null
 
+say "Keeping more Android log history"
+adb shell logcat -G 2M >/dev/null 2>&1 || warn "Couldn't resize the log buffers; they grow after the next reboot."
 say "Display defaults"
 adb shell settings put system screen_off_timeout 15000
 adb shell settings put system screen_brightness_mode 0

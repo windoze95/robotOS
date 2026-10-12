@@ -249,6 +249,24 @@ An installer handoff is not proof of installation and may require confirmation o
 stay unconfirmed until the installed version is reported. Full-device reset, reboot and installation
 need physical acceptance; automated tests do not establish those results.
 
+### Reading what happened
+
+The hub keeps a week of each R1's check-ins, accepted or refused: the time, the result (`ok` or the
+refusal's error code) and the app version, never the request or a credential. The owner can read
+them with `GET /api/v1/devices/{id}/check-ins?limit=100`, newest first. A gap shows when the R1
+could not reach the host.
+
+The R1 keeps its own record of about the last week:
+- recovery checks and their outcomes;
+- the recovery cover showing, lifting or being swiped away;
+- radio cuts and restores;
+- screen, power and network changes;
+- voice-turn metrics.
+
+It holds timestamps and outcomes only. Read it over USB with
+`adb shell dumpsys activity service dev.r1ptt/.PttService`. Together the two records give the
+device's and the host's side of an incident.
+
 ## Backups and recovery
 
 Back up the live database using SQLite's online backup operation, together with every referenced

@@ -44,6 +44,8 @@ class App : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        dev.r1ptt.data.EventLog.start(filesDir)
+        dev.r1ptt.data.EventLog.record("app started, robotOS ${runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull()}")
         store = ConfigStore(this)
         history = History(filesDir)
         radio = RadioPolicy(this, store)

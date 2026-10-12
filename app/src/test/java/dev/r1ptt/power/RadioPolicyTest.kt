@@ -27,6 +27,7 @@ class RadioPolicyTest {
         while (queued.isNotEmpty()) queued.removeFirst().run()
         assertEquals(1, commands.size)
         assertFalse(app.getSharedPreferences("radio", 0).getBoolean("cut", true))
+        assertEquals(1, dev.r1ptt.data.EventLog.lines().count { it.endsWith(" wake: radios on") })
     }
 
     @Test fun aFailedWakeIsRetriedByTheNextTrigger() {

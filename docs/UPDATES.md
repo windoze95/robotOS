@@ -38,8 +38,10 @@ build does not establish successful installation, voice behavior or battery life
   made public/latest only after all uploads succeed. A failed draft is left for the owner to
   inspect; retries never replace an existing release automatically. Avoid simultaneous manual
   publishing outside this workflow, which cannot participate in its concurrency lock.
-- The workflow uploads exactly `robotOS.apk`, `update.json`, `signer.cer` (public certificate)
-  and `SHA256SUMS`. It does not upload a keystore, passwords, a Magisk ZIP or OS images.
+- The workflow uploads exactly `robotOS.apk`, `update.json`, `signer.cer` (public certificate),
+  `mapping.txt` and `SHA256SUMS`. `mapping.txt` is R8's map back to the open source names; it lets
+  stack traces from an installed build be read. It does not upload a keystore, passwords, a Magisk
+  ZIP or OS images.
   Third-party actions are pinned to full commit IDs. Release build credentials exist only in
   the signing step; the temporary keystore is removed on step exit.
 

@@ -369,12 +369,16 @@ open class DeviceActivity : Activity() {
             phases.postDelayed(showPage, COVER_MS)
         }
         private fun noteGate(blocked: Boolean) {
-            if (blocked && !gateUp) restartCover()
+            if (blocked && !gateUp) {
+                restartCover()
+                dev.r1ptt.data.EventLog.record("recovery cover shown")
+            } else if (!blocked && gateUp) dev.r1ptt.data.EventLog.record("recovery cover lifted")
             gateUp = blocked
         }
         private fun coverBeat() = SystemClock.uptimeMillis() - coverFrom < COVER_MS
         private fun revealPage() {
             revealed = true
+            dev.r1ptt.data.EventLog.record("recovery page opened by swipe")
             showPage.run()
         }
         private fun coverHold() = coverFrom + MIN_COVER_MS - SystemClock.uptimeMillis()

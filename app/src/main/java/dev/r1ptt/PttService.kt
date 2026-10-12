@@ -16,6 +16,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import dev.r1ptt.data.EventLog
 import dev.r1ptt.input.Gestures
 import dev.r1ptt.input.PressRouter
 import dev.r1ptt.input.SideButton
@@ -44,7 +45,9 @@ class PttService : Service() {
     /** On external power the radios stay up, so texts and Hermes reach the R1; this enables nothing else. */
     private val powerEvents = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
-            (application as App).radio.hold("power", i.action == Intent.ACTION_POWER_CONNECTED)
+            val connected = i.action == Intent.ACTION_POWER_CONNECTED
+            EventLog.record(if (connected) "power connected" else "power disconnected")
+            (application as App).radio.hold("power", connected)
         }
     }
 
@@ -53,11 +56,13 @@ class PttService : Service() {
             val app = application as App
             when (i.action) {
                 Intent.ACTION_SCREEN_OFF -> {
+                    EventLog.record("screen off")
                     app.screen.onScreenOff()
                     app.radio.onScreenOff()
                     app.battery.record(c, "screen_off")
                 }
                 Intent.ACTION_SCREEN_ON -> {
+                    EventLog.record("screen on")
                     app.screen.onScreenOn()
                     app.radio.onScreenOn()
                     app.battery.record(c, "screen_on")
@@ -148,6 +153,13 @@ class PttService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    /** `adb shell dumpsys activity service dev.r1ptt/.PttService` prints the on-device event record. */
+    override fun dump(fd: java.io.FileDescriptor?, writer: java.io.PrintWriter, args: Array<out String>?) {
+        val app = application as App
+        writer.println("robotOS ${app.updates.installedVersion()} event log, oldest first. ${app.battery.summary()}")
+        EventLog.lines().forEach(writer::println)
+    }
 
     override fun onDestroy() {
         main.removeCallbacksAndMessages(null)
