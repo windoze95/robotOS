@@ -35,7 +35,8 @@ class HubManagement(private val app: App, private val hub: WorkspaceClient) {
     private fun management() = permissions.allowed("remote_management")
     private fun locationAllowed() = permissions.allowed("location_reporting") && app.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED &&
         app.checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION) == PackageManager.PERMISSION_GRANTED
-    private fun secureLock() = app.getSystemService(KeyguardManager::class.java).isDeviceSecure && policies.isAdminActive(admin) && policies.hasGrantedPolicy(admin, DeviceAdminInfo.USES_POLICY_FORCE_LOCK)
+    internal var deviceLock = dev.r1ptt.sys.DeviceLock(app)
+    private fun secureLock() = deviceLock.available()
     fun capabilities(): JSONObject = JSONObject().apply {
         put("ring", management()); put("stop_ring", management()); put("show_message", management())
         put("lock", management() && permissions.allowed("secure_lock") && secureLock())
@@ -64,8 +65,16 @@ class HubManagement(private val app: App, private val hub: WorkspaceClient) {
             if (state.optBoolean("secure_lock_applied")) hub.identity.update { it.put("secure_lock_applied", false) }
         } else if (!state.optBoolean("secure_lock_applied")) {
             // Persist evidence only after Android accepts the request. Never invent a credential.
-            if (runCatching { policies.lockNow() }.isSuccess)
-                hub.identity.update { it.put("secure_lock_applied", true) }
+            fun lock() = runCatching { deviceLock.lockNow() }.getOrDefault(false).also { locked ->
+                if (locked) {
+                    hub.identity.update { it.put("secure_lock_applied", true) }
+                    dev.r1ptt.data.EventLog.record("lost mode: Android locked")
+                }
+            }
+            // Device admin locks at once; root can block, so it locks off the main thread.
+            if (deviceLock.usesRoot()) kotlin.concurrent.thread(name = "lost-lock") {
+                if (lock()) main.post { dev.r1ptt.ui.DeviceActivity.refreshRecovery(app) }
+            } else lock()
         }
         dev.r1ptt.ui.DeviceActivity.refreshRecovery(app)
     }
@@ -184,8 +193,10 @@ class HubManagement(private val app: App, private val hub: WorkspaceClient) {
                 hub.identity.update { it.put("return_message", text) }; app.notices.add(text)
                 finish("applied", "Return information saved for display")
             }
-            "lock" -> withContext(Dispatchers.Main) {
-                check(secureLock()); policies.lockNow(); hub.identity.update { it.put("secure_lock_applied", true) }
+            "lock" -> {
+                check(secureLock()); check(deviceLock.lockNow()) { "Android did not lock" }
+                hub.identity.update { it.put("secure_lock_applied", true) }
+                dev.r1ptt.data.EventLog.record("remote lock: Android locked")
                 finish("applied", "Android secure lock requested")
             }
             "locate" -> {

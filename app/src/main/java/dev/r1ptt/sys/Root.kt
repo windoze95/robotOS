@@ -18,6 +18,10 @@ object Root {
     private const val TAG = "r1ptt"
     private val pool = Executors.newCachedThreadPool()
 
+    /** A root command has succeeded in this process, so root is granted. */
+    @Volatile var verified = false
+        private set
+
     /** Runs [cmd] under `su -c`; returns its exit code, or -1 on timeout or failure. */
     fun run(cmd: String, timeoutMs: Long = 4000): Int = exec(cmd, timeoutMs, collect = false).first
 
@@ -60,6 +64,7 @@ object Root {
                 return -1 to null
             }
             drainer.join(500)
+            if (p.exitValue() == 0) verified = true
             return p.exitValue() to out?.toString(Charsets.UTF_8.name())
         } catch (e: Throwable) {
             Log.w(TAG, "su failed: $cmd", e)

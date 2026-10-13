@@ -200,8 +200,8 @@ and factory reset must advertise their actual availability. Unsupported operatio
 Location requires a working provider, precise location permission and Android's “Allow all the
 time” background permission, granted on the R1. Enable system location if provisioning disabled
 it. A fix includes its timestamp and
-accuracy; a missing fix is not the device's current position. Secure lock requires a PIN/password
-and active device-admin support. Factory reset requires supported device-owner enrollment and
+accuracy; a missing fix is not the device's current position. Secure lock requires an Android screen lock
+and either device admin or root, which uses Android's lockdown. Factory reset requires supported device-owner enrollment and
 separate local authorization. Provisioning preserves the existing lock screen and device-admin
 state; it does not create a credential or grant admin access. Older provisioning disabled the
 keyguard, so configure and verify a secure credential locally before relying on remote locking.
@@ -209,8 +209,8 @@ keyguard, so configure and verify a secure credential locally before relying on 
 Protection adapts to the security features actually enabled on the R1. Without a secure Android
 credential, robotOS restricts its own screens and action entry points; this does not lock Android
 or prevent access through other apps, debugging or a modified operating system. With a secure
-credential, active device admin and locally enabled management, lost mode can also request an
-Android lock. A secure credential is the recommended setup ([INSTALL.md](INSTALL.md#lock-it-with-a-screen-lock)):
+credential, device admin or root, and locally enabled management, lost mode also locks Android at
+once and shows the lost-device page, with the owner's return message, over the lock screen. A secure credential is the recommended setup ([INSTALL.md](INSTALL.md#lock-it-with-a-screen-lock)):
 an Android PIN, pattern or password encrypts the R1's data and limits guessing, which robotOS's own
 screens cannot do. While Android is locked the button only wakes the lock screen. When the host
 can't confirm a wake, the recovery screen can open robotOS with Android's own confirmation of the

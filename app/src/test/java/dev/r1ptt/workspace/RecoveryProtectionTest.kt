@@ -185,6 +185,21 @@ class RecoveryProtectionTest {
         app.workspace.management.refreshProtection()
         assertFalse(app.workspace.management.security().getBoolean("secure_lock_applied"))
     }
+    /** On an R1 whose Android has no device admin, lost mode locks Android through root's lockdown. */
+    @Test fun aLostR1LocksAndroidThroughRootWithoutDeviceAdmin() {
+        enrolled()
+        shadowOf(app.getSystemService(KeyguardManager::class.java)).setIsDeviceSecure(true)
+        val commands = CopyOnWriteArrayList<String>()
+        app.workspace.management.deviceLock = dev.r1ptt.sys.DeviceLock(app, rootAvailable = { true }, root = { cmd, _ -> commands += cmd; 0 })
+        app.workspace.identity.permission("secure_lock", true)
+        assertTrue(app.workspace.management.security().getBoolean("secure_lock_available"))
+        app.workspace.identity.update { it.put("lost", true) }
+        app.workspace.management.refreshProtection()
+        val until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+        while (!app.workspace.identity.value.optBoolean("secure_lock_applied") && System.nanoTime() < until) Thread.sleep(5)
+        assertTrue(app.workspace.management.security().getBoolean("secure_lock_applied"))
+        assertEquals(1, commands.count { it.contains("STRONG_AUTH_REQUIRED_AFTER_USER_LOCKDOWN") })
+    }
     @Test fun clearingWorkspaceDoesNotPermitReEnrollmentWhileLostOrWithoutFreshRecovery() {
         enrolled()
         app.workspace.identity.update { it.put("local_workspace_cleared", true) }
@@ -602,6 +617,12 @@ class RecoveryProtectionTest {
         shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(DeviceActivity.COVER_MS + 50))
         assertEquals(View.GONE, logo.visibility)
         assertTrue(activity.window.decorView.find(TextView::class.java).single { it.text == "Please return this R1" }.isShown)
+        // Lost mode locks Android too; the finder still sees the return message over the lock screen.
+        assertTrue(shadowOf(activity).showWhenLocked)
+        app.workspace.identity.update { it.put("lost", false) }
+        dev.r1ptt.ui.DeviceActivity.refreshRecovery(app)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertFalse(shadowOf(activity).showWhenLocked)
         controller.pause().stop().destroy()
     }
 

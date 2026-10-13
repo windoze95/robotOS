@@ -204,12 +204,16 @@ mode or other Android screens.
    - **Power button instantly locks:** off. The R1's button is its power button, and robotOS's
      tap-to-sleep counts as a press, so leaving this on locks the R1 on every tap.
 3. Back in **Host & devices**, turn on **Allow remote management** and **Allow secure remote
-   lock**, then tap **Enable Android device admin** and choose **Activate**. Marking the R1 lost on
-   your host then locks Android too. robotOS uses device admin only to lock the screen; you can turn
-   it off in Android's **Settings → Security → Device admin apps**.
+   lock**. Marking the R1 lost on your host then locks Android too, at once, and the lost-device
+   page with your return message shows on top of the lock screen. Most R1 builds have no Android
+   device-admin support, so robotOS locks through Android's lockdown (the power menu's "Lockdown")
+   using root. If your build does support device admin, an **Enable Android device admin** button
+   appears; tap it and choose **Activate**. robotOS uses it only to lock the screen, and you can
+   turn it off in Android's **Settings → Security → Device admin apps**.
 
 **Check it worked:** **Host & devices** shows "Protection: robotOS restriction and Android secure
-lock". If it shows only "robotOS restriction", one of the three steps is missing.
+lock". If it shows only "robotOS restriction", one of the three steps is missing, or robotOS
+hasn't confirmed root yet (it does on its next start).
 
 What changes:
 - Android's lock screen shows robotOS's glowing mark on black, like the recovery cover, so swiping
