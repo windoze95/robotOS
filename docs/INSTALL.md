@@ -129,6 +129,8 @@ The script makes these changes:
 - Sets a 15 s screen timeout and low brightness.
 - Turns on Android's dark theme, colored from the R1's orange, so Android's own screens and the
   keyboard match robotOS.
+- Switches the lock screen to a one-line clock, so it doesn't cover the robotOS mark robotOS puts
+  on the lock screen.
 - Disables the bloat in `tools/debloat.txt`.
 - Pushes your local speech settings and device preferences from the supplied config.
 - Reboots.

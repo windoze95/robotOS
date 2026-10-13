@@ -99,6 +99,8 @@ adb shell settings put system screen_brightness 60
 # go dark, colored from the R1's orange, so they match robotOS instead of flashing white.
 THEME='{"android.theme.customization.system_palette":"FF4F12","android.theme.customization.accent_color":"FF4F12","android.theme.customization.color_source":"preset","android.theme.customization.theme_style":"VIBRANT"}'
 adb shell cmd uimode night yes >/dev/null
+# A one-line clock up top, so the lock screen's robotOS mark (set by the app) isn't covered.
+adb shell settings put secure lockscreen_use_double_line_clock 0
 adb shell "settings put secure theme_customization_overlay_packages '$THEME'"
 
 if [ "$DEBLOAT" = 1 ]; then
