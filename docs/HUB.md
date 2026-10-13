@@ -210,12 +210,13 @@ Protection adapts to the security features actually enabled on the R1. Without a
 credential, robotOS restricts its own screens and action entry points; this does not lock Android
 or prevent access through other apps, debugging or a modified operating system. With a secure
 credential, active device admin and locally enabled management, lost mode can also request an
-Android lock. A secure credential is the recommended setup ([INSTALL.md](INSTALL.md#lock-it-with-a-pin)):
-Android's PIN encrypts the R1's data and limits guessing, which robotOS's own screens cannot do.
-While Android is locked the button only wakes the lock screen. When the host can't confirm a wake,
-the recovery screen can open robotOS with Android's own PIN confirmation; robotOS never stores the
-PIN, and a lost, revoked or cleared R1 stays restricted. robotOS turns the screen off with the
-sleep key, not device admin's immediate lock, so Android's "lock after screen timeout" applies. Capability checks refresh when robotOS resumes and reports its state, so enabling
+Android lock. A secure credential is the recommended setup ([INSTALL.md](INSTALL.md#lock-it-with-a-screen-lock)):
+an Android PIN, pattern or password encrypts the R1's data and limits guessing, which robotOS's own
+screens cannot do. While Android is locked the button only wakes the lock screen. When the host
+can't confirm a wake, the recovery screen can open robotOS with Android's own confirmation of the
+screen lock; robotOS never stores it, and a lost, revoked or cleared R1 stays restricted. robotOS
+turns the screen off with the sleep key, not device admin's immediate lock, so Android's "lock after
+screen timeout" applies. Capability checks refresh when robotOS resumes and reports its state, so enabling
 those protections locally does not require re-enrollment. No local permission is silently granted.
 The console reports app restrictions, secure credential availability, remote-lock support and
 device-reported lock application separately, together with the last connection time. A lock

@@ -69,10 +69,10 @@ class HubSettingsActivity : DeviceActivity() {
             })
         }
         body.addView(ui.button("Android location settings") { startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) })
-        permission("secure_lock", "Allow secure remote lock", "With your permission, lost or revoked status automatically requests Android secure lock whenever a PIN/password and active device admin are available. Enabling Android security later automatically strengthens recovery protection. Without them robotOS restricts its own screens and actions; other Android apps remain accessible.")
+        permission("secure_lock", "Allow secure remote lock", "With your permission, lost or revoked status automatically requests Android secure lock whenever an Android screen lock and active device admin are available. Enabling Android security later automatically strengthens recovery protection. Without them robotOS restricts its own screens and actions; other Android apps remain accessible.")
         val security = hub.management.security()
         body.addView(ui.note(if (security.optBoolean("secure_lock_available")) "Protection: robotOS restriction and Android secure lock."
-            else "Protection: robotOS restriction. Android secure lock requires the permission above, remote management, an Android PIN/password and device admin."))
+            else "Protection: robotOS restriction. Android secure lock requires the permission above, remote management, an Android screen lock (PIN, pattern or password) and device admin."))
         body.addView(ui.button("Enable Android device admin") {
             startActivity(Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN,
                 android.content.ComponentName(this, dev.r1ptt.sys.AdminReceiver::class.java)))
