@@ -125,7 +125,7 @@ The script makes these changes:
 - Grants the app root.
 - Makes the app the home screen.
 - Preserves the existing lock screen and device-admin state; provisioning grants neither. See
-  [Lock it with a PIN](#lock-it-with-a-pin) below.
+  [Lock it with a screen lock](#lock-it-with-a-screen-lock) below.
 - Sets a 15 s screen timeout and low brightness.
 - Turns on Android's dark theme, colored from the R1's orange, so Android's own screens and the
   keyboard match robotOS.
@@ -186,25 +186,46 @@ Work through these with the R1 on USB:
 8. **Battery.** Unplug the R1 overnight, then plug it in and run `tools/battery-report.sh`. See
    [BATTERY.md](BATTERY.md).
 
-## Lock it with a PIN
+## Lock it with a screen lock
 
-Recommended. Only Android's own lock protects the R1's data: with a PIN, its storage is encrypted
-with a key tied to the PIN, and Android limits how fast anyone can guess. robotOS's recovery cover
-is not a lock; it can be bypassed through debugging, safe mode or other Android screens.
+Recommended. Only Android's own screen lock protects the R1's data: with a PIN, pattern or
+password, the R1's storage is encrypted with a key tied to it, and Android limits how fast anyone
+can guess. robotOS's recovery cover is not a lock; it can be bypassed through USB debugging, safe
+mode or other Android screens.
 
 1. In robotOS, open **Settings → Host & devices**, tap **Configure Android screen lock**, and choose
-   **PIN**.
-2. On the same Android screen, open the screen lock's settings (the gear). Set **Lock after screen
-   timeout** to **15 minutes**, which matches robotOS's recovery grace, and turn **Power button
-   instantly locks** off. A wake within 15 minutes then opens at once; a longer one asks for the PIN.
+   **PIN**, **Pattern** or **Password**. A PIN of six or more digits is the strongest choice that's
+   comfortable on the R1's small screen. A pattern is quicker but easier to guess from smudges or
+   over your shoulder.
+2. On the same Android screen, open the screen lock's settings (the gear):
+   - **Lock after screen timeout:** **5 minutes**. A wake within 5 minutes opens at once; a later
+     one asks for your screen lock. A longer delay is more convenient but gives someone who picks
+     up the R1 longer to get in. There's no point going past 15 minutes, robotOS's recovery grace.
+   - **Power button instantly locks:** off. The R1's button is its power button, and robotOS's
+     tap-to-sleep counts as a press, so leaving this on locks the R1 on every tap.
 3. Back in **Host & devices**, turn on **Allow remote management** and **Allow secure remote
-   lock**, then tap **Enable Android device admin** and activate it. Marking the R1 lost on your host
-   now locks Android too.
+   lock**, then tap **Enable Android device admin** and choose **Activate**. Marking the R1 lost on
+   your host then locks Android too. robotOS uses device admin only to lock the screen; you can turn
+   it off in Android's **Settings → Security → Device admin apps**.
 
-While Android is locked, the button does nothing but wake the lock screen (it still silences a
-ringing R1), so nobody can talk to Hermes without the PIN. If your host can't be reached, the
-recovery screen offers **Open with this R1's PIN**, which uses Android's own PIN screen; robotOS
-never sees or stores the PIN. It never opens an R1 the host has marked lost or revoked.
+**Check it worked:** **Host & devices** shows "Protection: robotOS restriction and Android secure
+lock". If it shows only "robotOS restriction", one of the three steps is missing.
+
+What changes:
+- Android's lock screen shows robotOS's glowing mark on black, like the recovery cover, so swiping
+  up to unlock looks like swiping the cover away. robotOS sets this wallpaper once. If you pick
+  another in Android's settings, robotOS leaves it alone.
+- A wake within the lock delay opens at once. A later one asks for your screen lock first.
+- While Android is locked, the button only wakes the lock screen; it still silences a ringing R1.
+  Nobody can talk to Hermes, which can send texts, without your screen lock.
+- If your host can't be reached, the recovery screen offers **Open with your screen lock**. It uses
+  Android's own confirmation, so robotOS never sees or stores your PIN, pattern or password. It
+  never opens an R1 your host has marked lost, revoked or cleared.
+
+**Limits:** robotOS runs on an R1 with an unlocked bootloader and root. A screen lock keeps the data
+encrypted from someone who finds or reboots the R1. A determined attacker with the device and time
+could still modify the system to capture your screen lock the next time you use it. If an R1 goes
+missing, mark it lost or revoke it on your host.
 
 ## Troubleshooting
 

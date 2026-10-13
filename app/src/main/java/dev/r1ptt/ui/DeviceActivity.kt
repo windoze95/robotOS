@@ -135,7 +135,7 @@ open class DeviceActivity : Activity() {
         // A restricted R1 can be rung by its owner at any time; otherwise offer this only while
         // ringing. The side button also stops ringing.
         val ringing = hub.quarantined || hub.management.ringing
-        // With an Android PIN the owner can open robotOS while the host can't be reached; never when restricted.
+        // With an Android screen lock the owner can open robotOS while the host can't be reached; never when restricted.
         val ownerPin = !hub.quarantined && getSystemService(android.app.KeyguardManager::class.java).isDeviceSecure
         val key = listOf(label, detail, identity.optString("return_message"), identity.optBoolean("secure_lock_applied"),
             hub.canReenroll, ringing, ownerPin).joinToString("\u0000")
@@ -175,7 +175,7 @@ open class DeviceActivity : Activity() {
                     else "robotOS is restricted. A secure Android screen lock is not active through robotOS; this does not lock other Android apps or protect against physical system access."))
             }
             page.body.addView(ui.button("Check recovery status", primary = true) { hub.recoverNow() })
-            if (ownerPin) page.body.addView(ui.button("Open with this R1's PIN") { launchOwnerPin() })
+            if (ownerPin) page.body.addView(ui.button("Open with your screen lock") { launchOwnerPin() })
             page.body.addView(ui.button("Connect to a network") {
                 startActivity(android.content.Intent(android.provider.Settings.Panel.ACTION_INTERNET_CONNECTIVITY))
             })
@@ -193,11 +193,11 @@ open class DeviceActivity : Activity() {
         gatePage?.fade(!covering, smooth)
     }
 
-    /** Android's own PIN screen, with its guess limits; robotOS never sees or stores the PIN. */
+    /** Android's own screen-lock confirmation, with its guess limits; robotOS never sees or stores it. */
     @Suppress("DEPRECATION")
     private fun launchOwnerPin() {
         val intent = getSystemService(android.app.KeyguardManager::class.java).createConfirmDeviceCredentialIntent(
-            "Open robotOS", "Enter this R1's PIN. robotOS checks with your host as soon as it can.") ?: return
+            "Open robotOS", "Confirm your screen lock. robotOS checks with your host as soon as it can.") ?: return
         startActivityForResult(intent, OWNER_PIN)
     }
 

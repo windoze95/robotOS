@@ -606,7 +606,7 @@ class RecoveryProtectionTest {
     }
 
     private fun pinButton(activity: DeviceActivity) =
-        activity.window.decorView.find(TextView::class.java).firstOrNull { it.text == "Open with this R1's PIN" }
+        activity.window.decorView.find(TextView::class.java).firstOrNull { it.text == "Open with your screen lock" }
 
     /** With an Android PIN, the owner can open an R1 whose host can't be reached (#45), using Android's own PIN screen. */
     @Test fun theOwnersAndroidPinOpensAnUnverifiedR1() {
@@ -629,7 +629,7 @@ class RecoveryProtectionTest {
         assertFalse(app.workspace.blocked)
         assertTrue(app.workspace.networkAllowed)
         assertEquals(View.VISIBLE, activity.findViewById<View>(android.R.id.content).visibility)
-        assertTrue(dev.r1ptt.data.EventLog.lines().any { it.endsWith("recovery: opened with the owner's Android PIN") })
+        assertTrue(dev.r1ptt.data.EventLog.lines().any { it.endsWith("recovery: opened with the owner's screen lock") })
         controller.pause().stop().destroy()
     }
 

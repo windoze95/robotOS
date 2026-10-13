@@ -122,6 +122,7 @@ class PttService : Service() {
         app.radio.applyBaseline()
         DeviceSettings.apply(app.store.value)
         app.battery.record(this, "service_start")
+        kotlin.concurrent.thread(name = "lock-look") { runCatching { dev.r1ptt.ui.LockScreenLook.applyOnce(app) } }
         TurnMetrics.event("service_started")
     }
 

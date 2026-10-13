@@ -171,6 +171,16 @@ class ScreensSnapshotTest {
         File(out, "app-icon.png").outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
     }
 
+    /** Android's lock screen wears the recovery cover at full glow, black at the edges like the cover. */
+    @Test fun lockScreenWearsTheCover() {
+        val still = LogoGlow.still(app, 480, 640)
+        File(out, "lock-screen.png").outputStream().use { assertTrue(still.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+        assertEquals(app.getColor(R.color.bg), still.getPixel(5, 5))
+        val markTop = (640 - (480 * .42f).toInt()) / 2
+        val glow = still.getPixel(240, markTop - 6)
+        assertTrue("orange glow just above the mark", Color.red(glow) > Color.blue(glow) + 40)
+    }
+
     @Test fun recoveryOpensOnTheGlowingLogo() {
         // Robolectric runs an endless animation's frames back to back, which would race the clock
         // past the logo; a paused choreographer draws frames only as the test advances time.

@@ -153,7 +153,10 @@ class LogoGlow(context: Context) : View(context) {
     override fun onDraw(canvas: Canvas) {
         val t = if (animator.isRunning) animator.animatedValue as Float else 0f
         // Starts dim and swells, so the glow rises as the cover appears.
-        val glow = (sin(2 * PI * (t - .25f)) * .5 + .5).toFloat()
+        drawLogo(canvas, (sin(2 * PI * (t - .25f)) * .5 + .5).toFloat())
+    }
+
+    private fun drawLogo(canvas: Canvas, glow: Float) {
         val cx = width / 2f
         val cy = height / 2f
         halo.alpha = (70 + 185 * glow).toInt()
@@ -218,6 +221,20 @@ class LogoGlow(context: Context) : View(context) {
         val far = hypot(width.toFloat(), height.toFloat()) / hypot(dx, dy)
         animate().translationX(dx * far).translationY(dy * far).alpha(0f).setDuration(200)
             .withEndAction { onSwiped?.invoke() }.start()
+    }
+
+    companion object {
+        /** The cover at full glow as a picture, for Android's lock screen ([LockScreenLook]). */
+        fun still(context: Context, width: Int, height: Int): Bitmap {
+            val logo = LogoGlow(context)
+            logo.measure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY))
+            logo.layout(0, 0, width, height)
+            return Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also { picture ->
+                val canvas = Canvas(picture)
+                canvas.drawColor(context.getColor(R.color.bg))
+                logo.drawLogo(canvas, 1f)
+            }
+        }
     }
 }
 
