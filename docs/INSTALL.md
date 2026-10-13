@@ -212,6 +212,9 @@ mode or other Android screens.
 lock". If it shows only "robotOS restriction", one of the three steps is missing.
 
 What changes:
+- Android's lock screen shows robotOS's glowing mark on black, like the recovery cover, so swiping
+  up to unlock looks like swiping the cover away. robotOS sets this wallpaper once. If you pick
+  another in Android's settings, robotOS leaves it alone.
 - A wake within the lock delay opens at once. A later one asks for your screen lock first.
 - While Android is locked, the button only wakes the lock screen; it still silences a ringing R1.
   Nobody can talk to Hermes, which can send texts, without your screen lock.
