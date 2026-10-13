@@ -98,7 +98,7 @@ class ConfigReceiverTest {
         pair()
         val previous = app.store.value
         listOf("token" to "imported-token".repeat(4), "deviceApi" to true, "port" to 9999,
-            "passthrough" to true, "owner" to "+14055550123", "smsSession" to "imported-session", "dailySendLimit" to 0,
+            "passthrough" to true, "owner" to "+14055550123", "passphrase" to "otter-42", "smsSession" to "imported-session", "dailySendLimit" to 0,
             "allowSpeak" to true, "allowShow" to true, "allowVolume" to true, "allowSaveRecipient" to true).forEach { (key, value) ->
             val result = deliver(JSONObject().put("hermes", JSONObject().put(key, value)).toString())
             assertTrue("$key requires local consent", result.contains("device permissions in Hermes on the R1"))

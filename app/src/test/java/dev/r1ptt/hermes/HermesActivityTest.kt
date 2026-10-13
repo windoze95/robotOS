@@ -153,6 +153,25 @@ class HermesActivityTest {
         assertEquals("Hermes", app.store.value.agent.displayName)
     }
 
+    @Test fun aPassphraseSavesOnlyWhenTypeableAndEmptyClearsIt() {
+        fun passphrase(root: ViewGroup) = views<EditText>(root).single { it.contentDescription == "Passphrase for your texts to Hermes" }
+        val (activity, root) = screen()
+        passphrase(root).setText("otter")
+        views<Button>(root).first { it.text == "Save" }.performClick()
+        assertFalse(activity.isFinishing)
+        assertEquals("", app.store.value.hermes.passphrase)
+        passphrase(root).setText("  otter-42 ")
+        views<Button>(root).first { it.text == "Save" }.performClick()
+        assertTrue(activity.isFinishing)
+        assertEquals("otter-42", app.store.value.hermes.passphrase)
+        val (again, cleared) = screen()
+        assertEquals("otter-42", passphrase(cleared).text.toString())
+        passphrase(cleared).setText("")
+        views<Button>(cleared).first { it.text == "Save" }.performClick()
+        assertTrue(again.isFinishing)
+        assertEquals("", app.store.value.hermes.passphrase)
+    }
+
     @Test fun badNumbersAndMissingTokensChangeNothing() {
         configure { it.copy(hermes = HermesLink()) }
         val (activity, root) = screen()

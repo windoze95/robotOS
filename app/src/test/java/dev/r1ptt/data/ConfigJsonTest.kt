@@ -31,6 +31,19 @@ class ConfigJsonTest {
         assertEquals(7, ConfigJson.merge(reachable, JSONObject("""{"power":{"stayReachable":false}}""")).power.wifiIdleMinutes)
     }
 
+    @Test fun aRelayPassphraseRoundTripsAndMustBeTypeable() {
+        val token = "x".repeat(32)
+        val gated = ConfigJson.merge(Config(), JSONObject("""{"hermes":{"deviceApi":true,"token":"$token","passphrase":"otter-42"}}"""))
+        assertEquals("otter-42", gated.hermes.passphrase)
+        assertEquals(gated, ConfigJson.merge(Config(), ConfigJson.toJson(gated)))
+        assertEquals("otter-42", ConfigJson.merge(gated, JSONObject("""{"hermes":{"dailySendLimit":5}}""")).hermes.passphrase)
+        assertEquals("", ConfigJson.merge(gated, JSONObject("""{"hermes":{"passphrase":""}}""")).hermes.passphrase)
+        listOf("short", " otter-42", "otter\n42", "x".repeat(HermesLink.PASSPHRASE_MAX + 1)).forEach { bad ->
+            assertFalse(bad, HermesLink.validPassphrase(bad))
+            assertTrue(bad, runCatching { ConfigJson.merge(gated, JSONObject().put("hermes", JSONObject().put("passphrase", bad))) }.isFailure)
+        }
+    }
+
     @Test fun theAgentsNameIsTidiedAndAnInvalidOneIsIgnored() {
         assertEquals("Robot", Agent.cleanName("  Robot "))
         assertEquals("Mr. Robot", Agent.cleanName("Mr.   Robot"))

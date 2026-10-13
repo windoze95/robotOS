@@ -89,6 +89,11 @@ data class HermesLink(
     val passthrough: Boolean = false,
     /** The owner's own phone number; only its texts reach Hermes. */
     val owner: String = "",
+    /**
+     * SMS sender numbers can be spoofed, so when set, [owner]'s texts reach Hermes only if they start
+     * with this, and Hermes gets them without it. Blank relays every text from [owner].
+     */
+    val passphrase: String = "",
     /** The Hermes session that holds the SMS conversation. */
     val smsSession: String = "robotos-sms",
     /** Texts Hermes may send through this R1 per day (0 = no limit). */
@@ -100,7 +105,17 @@ data class HermesLink(
     val allowOpenApps: Boolean = false,
 ) {
     fun valid(): Boolean = (!deviceApi || (token.length in 32..256 && port in 1024..65535)) &&
-        (!passthrough || dev.r1ptt.messages.SmsAddress.normalize(owner) == owner) && smsSession.length in 1..128
+        (!passthrough || dev.r1ptt.messages.SmsAddress.normalize(owner) == owner) && smsSession.length in 1..128 &&
+        (passphrase.isEmpty() || validPassphrase(passphrase))
+
+    companion object {
+        const val PASSPHRASE_MIN = 6
+        const val PASSPHRASE_MAX = 64
+
+        /** Something the owner can type at the start of a text: one line, no spaces around it. */
+        fun validPassphrase(value: String) = value.length in PASSPHRASE_MIN..PASSPHRASE_MAX && value == value.trim() &&
+            value.none { it == '\n' || it == '\r' }
+    }
 }
 
 data class Config(

@@ -46,7 +46,8 @@ Messages → **Options** has separate opt-ins:
 
 Drafts, recipients, and conversations live in the private `messages.db`, separate from AI history.
 Received texts are not forwarded to AI, spoken aloud automatically, or included in notifications,
-except texts from your own number when Hermes passthrough is on ([HERMES.md](HERMES.md)).
+except texts from your own number when Hermes passthrough is on, and when a passphrase is set,
+only those that start with it ([HERMES.md](HERMES.md)).
 Notifications contain generic text only; message bodies and recipients are never previewed. The recent view shows the newest 100 conversations
 and 100 texts per conversation; older records remain stored. There is no export or backup UI yet.
 

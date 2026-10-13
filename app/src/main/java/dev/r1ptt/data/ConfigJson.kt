@@ -36,7 +36,7 @@ object ConfigJson {
         })
         put("hermes", JSONObject().apply {
             put("deviceApi", c.hermes.deviceApi); put("token", c.hermes.token); put("port", c.hermes.port)
-            put("passthrough", c.hermes.passthrough); put("owner", c.hermes.owner)
+            put("passthrough", c.hermes.passthrough); put("owner", c.hermes.owner); put("passphrase", c.hermes.passphrase)
             put("smsSession", c.hermes.smsSession); put("dailySendLimit", c.hermes.dailySendLimit)
             put("allowSpeak", c.hermes.allowSpeak); put("allowShow", c.hermes.allowShow)
             put("allowVolume", c.hermes.allowVolume); put("allowSaveRecipient", c.hermes.allowSaveRecipient)
@@ -99,13 +99,14 @@ object ConfigJson {
                 deviceApi = h.bool("deviceApi", base.hermes.deviceApi), token = h.str("token", base.hermes.token),
                 port = h.int("port", base.hermes.port), passthrough = h.bool("passthrough", base.hermes.passthrough),
                 owner = h.str("owner", base.hermes.owner).let { dev.r1ptt.messages.SmsAddress.normalize(it) ?: it },
+                passphrase = h.str("passphrase", base.hermes.passphrase),
                 smsSession = h.str("smsSession", base.hermes.smsSession),
                 dailySendLimit = h.int("dailySendLimit", base.hermes.dailySendLimit),
                 allowSpeak = h.bool("allowSpeak", base.hermes.allowSpeak), allowShow = h.bool("allowShow", base.hermes.allowShow),
                 allowVolume = h.bool("allowVolume", base.hermes.allowVolume),
                 allowSaveRecipient = h.bool("allowSaveRecipient", base.hermes.allowSaveRecipient),
                 allowOpenApps = h.bool("allowOpenApps", base.hermes.allowOpenApps),
-            ).also { require(it.valid()) { "Hermes needs a 32+ character device token and the owner's full phone number." } } } ?: base.hermes,
+            ).also { require(it.valid()) { "Hermes needs a 32+ character device token, the owner's full phone number and, if set, a 6–64 character passphrase." } } } ?: base.hermes,
             earcons = j.bool("earcons", base.earcons),
             quiet = j.bool("quiet", base.quiet),
             textSizeSp = j.int("textSizeSp", base.textSizeSp),

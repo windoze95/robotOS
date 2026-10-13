@@ -48,6 +48,7 @@ class HermesActivity : DeviceActivity() {
     private lateinit var tasks: LinearLayout
     private lateinit var act: Switch
     private lateinit var passthrough: Switch
+    private lateinit var passphrase: EditText
     private lateinit var owner: EditText
     private lateinit var name: EditText
     private var initialName = ""
@@ -113,6 +114,15 @@ class HermesActivity : DeviceActivity() {
         body.addView(ui.section("Your texts to $agent"))
         passthrough = ui.toggle("Relay my texts to $agent", cfg.hermes.passthrough); body.addView(passthrough)
         body.addView(ui.note("Only texts from your number are relayed. $agent replies by SMS."))
+        passphrase = ui.field("Passphrase · ${HermesLink.PASSPHRASE_MIN} or more characters", cfg.hermes.passphrase,
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD).apply {
+            contentDescription = "Passphrase for your texts to $agent"
+            filters = arrayOf(InputFilter.LengthFilter(HermesLink.PASSPHRASE_MAX))
+        }
+        body.addView(passphrase)
+        body.addView(ui.note("A text can fake your number. With a passphrase, only your texts that start with it are relayed, " +
+            "and $agent never sees it. Without one, a faked text could use $agent and its tools. " +
+            "${HermesTexts.MISS_LIMIT} texts without it in an hour pause the relay."))
         body.addView(ui.section("Text limit"))
         limit = ui.field("Texts per day · 0 for unlimited", cfg.hermes.dailySendLimit.toString(), InputType.TYPE_CLASS_NUMBER)
         body.addView(limit)
@@ -327,6 +337,10 @@ class HermesActivity : DeviceActivity() {
         if (number == null || (passthrough.isChecked && number.isEmpty())) { toast("Enter your phone number with its country code"); return }
         val perDay = limit.text.toString().trim().toIntOrNull()
         if (perDay == null || perDay !in 0..10_000) { toast("Enter a daily limit from 0 to 10000"); return }
+        val phrase = passphrase.text.toString().trim()
+        if (phrase.isNotEmpty() && !HermesLink.validPassphrase(phrase)) {
+            toast("Use a passphrase of ${HermesLink.PASSPHRASE_MIN} to ${HermesLink.PASSPHRASE_MAX} characters, or leave it empty"); return
+        }
         val typed = name.text.toString().trim()
         val newName = if (typed.isEmpty()) "" else Agent.cleanName(typed)
             ?: run { toast("Use letters or numbers for the name, with spaces, apostrophes, hyphens or periods"); return }
@@ -339,6 +353,7 @@ class HermesActivity : DeviceActivity() {
                     deviceApi = if (act.isChecked != initialLink.deviceApi) act.isChecked && act.isEnabled else current.deviceApi,
                     passthrough = if (passthrough.isChecked != initialLink.passthrough) passthrough.isChecked else current.passthrough,
                     owner = if (owner.text.toString() != initialLink.owner) number else current.owner,
+                    passphrase = if (phrase != initialLink.passphrase) phrase else current.passphrase,
                     dailySendLimit = if (perDay != initialLink.dailySendLimit) perDay else current.dailySendLimit,
                     allowSpeak = if (speak.isChecked != initialLink.allowSpeak) speak.isChecked else current.allowSpeak,
                     allowShow = if (show.isChecked != initialLink.allowShow) show.isChecked else current.allowShow,
