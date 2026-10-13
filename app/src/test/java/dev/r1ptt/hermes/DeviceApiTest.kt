@@ -374,6 +374,20 @@ class DeviceApiTest {
         assertTrue(app.workspace.store.items("requests").isEmpty())
     }
 
+    @Test fun hermesReadsTheOwnersTextsWithoutThePassphrase() {
+        val owner = "+14055550123"
+        configure { it.copy(hermes = it.hermes.copy(passthrough = true, owner = owner, passphrase = "otter-42")) }
+        SmsStore(app).use {
+            it.insert(SmsRecord("owner-text", owner, "Otter-42: what's on today?", 1_000L, 1, true))
+            it.insert(SmsRecord("sam-text", "+15551234567", "otter-42 is not a secret to Sam", 2_000L, 1, true))
+        }
+        assertEquals("what's on today?", get("/v1/texts?with=%2B14055550123").second.getJSONArray("messages").getJSONObject(0).getString("body"))
+        val threads = get("/v1/texts").second.getJSONArray("conversations")
+        val mine = (0 until threads.length()).map(threads::getJSONObject).single { it.getString("with") == owner }
+        assertEquals("what's on today?", mine.getJSONObject("last").getString("body"))
+        assertEquals("otter-42 is not a secret to Sam", get("/v1/texts?with=sam").second.getJSONArray("messages").getJSONObject(0).getString("body"))
+    }
+
     @Test fun statusTextsAndRecipientsDescribeTheDevice() {
         val status = get("/v1/status").second
         for (key in listOf("battery_percent", "charging", "online", "airplane_mode", "can_text", "texts_sent_today", "daily_text_limit"))

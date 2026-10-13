@@ -159,6 +159,71 @@ class HermesTextsTest {
         assertFalse(HermesTexts.replyAllowed(app, owner, HermesTexts.connectionId(app.store.value)))
     }
 
+    @Test fun aPassphraseKeepsTextsWithoutItInMessagesAndHermesNeverSeesIt() {
+        configure { it.copy(hermes = it.hermes.copy(passphrase = "otter-42")) }
+        val texts = texts()
+        assertFalse(texts.received(incoming(owner, "What's on today?")))
+        assertFalse(texts.received(incoming(owner, "otter-420 What's on today?")))
+        assertTrue(texts.last.contains("didn't start with the passphrase"))
+        assertFalse(texts.received(incoming(owner, "otter-42")))
+        assertTrue(texts.received(incoming(owner, "Otter-42: What's on today?")))
+        await { replies.isNotEmpty() }
+        assertEquals(listOf("What's on today?"), asked)
+        assertEquals(listOf(owner to "Sure."), replies)
+    }
+
+    @Test fun textsWithoutThePassphrasePauseTheRelayForAnHour() {
+        configure { it.copy(hermes = it.hermes.copy(passphrase = "otter-42")) }
+        val texts = texts()
+        repeat(HermesTexts.MISS_LIMIT - 1) { assertFalse(texts.received(incoming(owner, "guess $it"))) }
+        assertFalse(texts.received(incoming(owner, "otter-42")))
+        assertTrue(texts.received(incoming(owner, "otter-42 Not paused yet?")))
+        await { replies.isNotEmpty() }
+        asked.clear(); replies.clear()
+        now.addAndGet(HermesTexts.MISS_WINDOW_MS)
+        repeat(HermesTexts.MISS_LIMIT) { assertFalse(texts.received(incoming(owner, "guess $it"))) }
+        assertFalse(texts.received(incoming(owner, "otter-42 Am I locked out?")))
+        assertTrue(texts.last.startsWith("Relay paused"))
+        Thread.sleep(200)
+        assertTrue(asked.isEmpty())
+        now.addAndGet(HermesTexts.MISS_WINDOW_MS)
+        assertTrue(texts.received(incoming(owner, "otter-42 And now?")))
+        await { replies.isNotEmpty() }
+        assertEquals(listOf("And now?"), asked)
+    }
+
+    @Test fun changingThePassphraseRevokesQueuedReplies() {
+        for ((before, after) in listOf("otter-42" to "heron-77", "otter-42" to "", "" to "otter-42")) {
+            asked.clear(); replies.clear(); replyWorks = false
+            configure { it.copy(hermes = it.hermes.copy(passphrase = before)) }
+            val texts = texts()
+            assertTrue(texts.received(incoming(owner, "otter-42 Turn on the light")))
+            await { asked.size == 1 }
+            Thread.sleep(200)
+            configure { it.copy(hermes = it.hermes.copy(passphrase = after)) }
+            replyWorks = true
+            texts.resume()
+            Thread.sleep(200)
+            assertTrue("$before -> $after", replies.isEmpty())
+            assertEquals(1, asked.size)
+        }
+    }
+
+    @Test fun theRequestFollowsThePassphraseAndRedactionRemovesIt() {
+        assertEquals("hi", HermesTexts.request("otter-42 hi", "otter-42"))
+        assertEquals("hi there", HermesTexts.request("  OTTER-42,hi there", "otter-42"))
+        assertEquals("hi", HermesTexts.request("Otter-42: hi", "otter-42"))
+        listOf("otter-42hi", "otter-420 hi", "hi otter-42", "otter-42", "otter-42 : ", "otter").forEach {
+            assertNull(it, HermesTexts.request(it, "otter-42"))
+        }
+        assertEquals(" hi ", HermesTexts.request(" hi ", ""))
+        assertNull(HermesTexts.request("  ", ""))
+        assertEquals("hi", HermesTexts.redact("Otter-42: hi", "otter-42"))
+        assertEquals("", HermesTexts.redact("otter-42", "otter-42"))
+        assertEquals("hello", HermesTexts.redact("hello", "otter-42"))
+        assertEquals("otter-42 hi", HermesTexts.redact("otter-42 hi", ""))
+    }
+
     @Test fun longAnswersAreCutToAFewTexts() {
         assertEquals("ok", HermesTexts.fit("ok"))
         val cut = HermesTexts.fit("x".repeat(5000))

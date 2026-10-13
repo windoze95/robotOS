@@ -58,7 +58,9 @@ Its configuration, task controls and direct Device API are documented in
 - **Hermes device permissions** control access to the R1, speech, notices, volume, saved
   recipients and SMS. Pairing preserves existing permissions and never silently enables them.
 - **Texting Hermes:** when owner passthrough is enabled locally, texts from the configured owner
-  go through the hub and completed replies return by SMS. Other senders remain in Messages.
+  go through the hub and completed replies return by SMS. Other senders remain in Messages. Set a
+  passphrase under **Hermes → Your texts to Hermes** so a faked sender number can't reach Hermes
+  (see [Device tools and permissions](#device-tools-and-permissions)).
   Queued owner texts retain their original owner/connection and expire after 30 minutes; an
   ambiguous submission or SMS handoff is never automatically repeated.
 - **Agent name:** set it under **Hermes → Name**. An empty name displays “Hermes”; Hermes may set
@@ -105,8 +107,16 @@ commands remain, subject to local permissions. Work already admitted to Hermes m
 
 SMS tools and owner-relay replies share `hermes.dailySendLimit` (default 100; zero means unlimited).
 `to` is a phone number or an exact saved recipient name; ten-digit numbers receive `+1` on a US
-SIM. The quota bounds volume, not recipients or message content. Owner passthrough trusts SMS
-sender numbers, which can be spoofed; enable it only with that limitation understood.
+SIM. The quota bounds volume, not recipients or message content.
+
+SMS sender numbers can be spoofed, so owner passthrough can require a passphrase (6–64 characters,
+`hermes.passphrase`). With one set, only texts from the owner's number that start with it are relayed,
+for example `otter-42 what's on today?`. Case is ignored, and a space, colon or comma must follow it.
+Hermes gets the text without the passphrase, and `recent_texts` leaves it out of the owner's texts.
+Texts without it stay in Messages. Five of them from the owner's number within an hour pause the
+relay until fewer than five fall within the past hour, so a short passphrase can't be guessed by
+texting. Changing or clearing the passphrase cancels queued owner texts. Without a passphrase,
+anyone who spoofs the owner's number can use Hermes and its tools.
 
 Incoming texts from other people are never automatically forwarded. When Hermes reads them
 through a permitted tool, the bundled skill treats their content as information, not instructions.

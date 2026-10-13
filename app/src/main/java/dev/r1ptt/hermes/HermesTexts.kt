@@ -7,6 +7,8 @@ import android.util.Log
 import dev.r1ptt.App
 import dev.r1ptt.data.Msg
 import dev.r1ptt.data.Config
+import dev.r1ptt.data.EventLog
+import dev.r1ptt.data.HermesLink
 import dev.r1ptt.messages.SmsDraft
 import dev.r1ptt.messages.SmsRecipientText
 import dev.r1ptt.messages.SmsRecord
@@ -20,11 +22,16 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.security.MessageDigest
+import kotlin.math.abs
 
 /**
  * The owner texting this R1's number is texting Hermes: each text goes to Hermes in its own SMS
  * session and the reply is texted back. Texts from anyone else stay in Messages. Hermes can act on
  * the R1 meanwhile (for example, text someone else) through its robotos tools.
+ *
+ * Sender numbers can be spoofed, so with a passphrase set only the owner's texts that start with it
+ * are relayed, without it. [MISS_LIMIT] texts from the owner's number without it in an hour pause
+ * the relay, which keeps a short passphrase from being guessed.
  *
  * Pending texts survive a restart and are retried with backoff for [GIVE_UP_MS]; after that the owner
  * gets one short notice instead of silence. A reply is never sent twice for one text.
@@ -50,8 +57,10 @@ class HermesTexts(
         if (!SmsRecipientText.sameNumber(record.peer, link.owner, SmsRecipientText.region(app))) return false
         synchronized(prefs) {
             if (prefs.contains("pending.${record.id}") || prefs.getBoolean("done.${record.id}", false)) return true
+            if (link.passphrase.isNotEmpty() && !unlocked(record, link)) return false
+            if (request(record.body, link.passphrase) == null) return false // the passphrase alone asks nothing
             prefs.edit().putLong("pending.${record.id}", clock()).putString("owner.${record.id}", link.owner)
-                .putString("connection.${record.id}", connection(app)).commit()
+                .putString("connection.${record.id}", connection(app)).putBoolean("gated.${record.id}", link.passphrase.isNotEmpty()).commit()
         }
         Log.i(TAG, "hermes text: received from owner")
         worker.execute(::drain)
@@ -67,17 +76,44 @@ class HermesTexts(
 
     private fun done(id: String) = synchronized(prefs) {
         val edit = prefs.edit().remove("pending.$id").remove("tries.$id").remove("answer.$id")
-            .remove("owner.$id").remove("connection.$id").remove("asking.$id").remove("replying.$id").remove("recovery_wait.$id")
+            .remove("owner.$id").remove("connection.$id").remove("gated.$id").remove("asking.$id").remove("replying.$id").remove("recovery_wait.$id")
             .putBoolean("done.$id", true)
         // Incoming SMS records are the durable source; bound this additional deduplication cache.
         prefs.all.keys.filter { it.startsWith("done.") }.dropLast(511).forEach { edit.remove(it) }
         edit.commit()
     }
 
-    private fun authorityAllowed(record: SmsRecord, owner: String, connection: String): Boolean {
+    /**
+     * Checks an owner text against the passphrase, with prefs locked. A text without it is a miss, and
+     * while the last hour holds [MISS_LIMIT] misses even a correct one stays in Messages.
+     */
+    private fun unlocked(record: SmsRecord, link: HermesLink): Boolean {
+        val now = clock()
+        val opened = after(record.body, link.passphrase) != null
+        val recent = prefs.getString("misses", "").orEmpty().split(',').mapNotNull { it.toLongOrNull() }
+            .filter { abs(now - it) < MISS_WINDOW_MS }
+        val misses = if (opened) recent else (recent + now).takeLast(MISS_LIMIT)
+        if (!opened) prefs.edit().putString("misses", misses.joinToString(",")).commit()
+        val paused = misses.size >= MISS_LIMIT
+        when {
+            paused -> {
+                last = "Relay paused: $MISS_LIMIT texts from your number in the last hour didn't start with the passphrase"
+                EventLog.record("hermes text: relay paused after texts from the owner's number without the passphrase")
+            }
+            !opened -> {
+                last = "A text from your number didn't start with the passphrase, so it stayed in Messages"
+                EventLog.record("hermes text: owner's number without the passphrase, kept in Messages")
+            }
+        }
+        return opened && !paused
+    }
+
+    /** Passthrough, owner, connection and passphrase are all as they were when the text arrived. */
+    private fun authorityAllowed(record: SmsRecord, owner: String, connection: String, gated: Boolean): Boolean {
         val link = app.store.value.hermes
         return !app.workspace.quarantined && link.passthrough && link.owner == owner && connection(app) == connection &&
-            SmsRecipientText.sameNumber(record.peer, owner, SmsRecipientText.region(app))
+            SmsRecipientText.sameNumber(record.peer, owner, SmsRecipientText.region(app)) &&
+            link.passphrase.isNotEmpty() == gated && request(record.body, link.passphrase) != null
     }
 
     private fun drain() {
@@ -99,8 +135,9 @@ class HermesTexts(
     private fun process(record: SmsRecord, since: Long): Boolean {
         val owner = prefs.getString("owner.${record.id}", null)
         val connection = prefs.getString("connection.${record.id}", null)
+        val gated = prefs.getBoolean("gated.${record.id}", false)
         // Old unbound queued work cannot safely acquire a different owner's authority on upgrade.
-        if (owner == null || connection == null || !authorityAllowed(record, owner, connection)) {
+        if (owner == null || connection == null || !authorityAllowed(record, owner, connection, gated)) {
             last = "A queued text was kept in Messages because relay access changed"
             return true
         }
@@ -132,14 +169,16 @@ class HermesTexts(
                         "robotOS couldn't reach Hermes. Your text is saved in Messages; no request was submitted."
                     } else {
                         val config = app.store.value
-                        if (!authorityAllowed(record, owner, connection)) return true
+                        if (!authorityAllowed(record, owner, connection, gated)) return true
+                        // Hermes never sees the passphrase.
+                        val text = request(record.body, config.hermes.passphrase) ?: return true
                         if (!app.workspace.networkAllowed) { app.workspace.recoverNow(); return false }
                         check(prefs.edit().putBoolean("asking.${record.id}", true).commit())
-                        try { (ask?.invoke(record.body) ?: if (app.workspace.identity.paired) runBlocking {
+                        try { (ask?.invoke(text) ?: if (app.workspace.identity.paired) runBlocking {
                             val deviceId = app.workspace.identity.value.getString("device_id")
-                            SharedChat.ask(app, "shared-sms-$deviceId", record.body,
+                            SharedChat.ask(app, "shared-sms-$deviceId", text,
                                 STYLE + " This request came through robotOS device_id=$deviceId. Target that exact device_id for device tools unless the user explicitly chooses another device.")
-                        } else askHermes(config, record.body)).trim() }
+                        } else askHermes(config, text)).trim() }
                         catch (e: Exception) {
                             Log.w(TAG, "hermes text: ${e.javaClass.simpleName}")
                             // Legacy chat has no durable idempotency contract. Never replay possible actions.
@@ -150,7 +189,7 @@ class HermesTexts(
                 check(prefs.edit().putString("answer.${record.id}", answer).commit())
                 answer
             }
-            if (!authorityAllowed(record, owner, connection)) {
+            if (!authorityAllowed(record, owner, connection, gated)) {
                 last = "Reply cancelled because relay access changed"
                 return true
             }
@@ -184,6 +223,9 @@ class HermesTexts(
     companion object {
         private const val TAG = "r1ptt"
         const val GIVE_UP_MS = 30 * 60_000L
+        /** Texts from the owner's number without the passphrase that pause the relay, per [MISS_WINDOW_MS]. */
+        const val MISS_LIMIT = 5
+        const val MISS_WINDOW_MS = 60 * 60_000L
         /** Long agent answers become several SMS parts; past this, the text says it was cut. */
         const val MAX_REPLY_CHARS = 1200
         private const val UNKNOWN = "Hermes's response was interrupted and the outcome is unknown. Your request may have run. Check Hermes before asking it to perform the action again."
@@ -203,6 +245,26 @@ class HermesTexts(
             "(a few sentences) unless they ask for more. You can act on the R1, including texting other people, with your robotos tools."
 
         fun fit(text: String): String = if (text.length <= MAX_REPLY_CHARS) text else text.take(MAX_REPLY_CHARS - 1).trimEnd() + "…"
+
+        /**
+         * What an owner text asks Hermes: [body] after [passphrase], or null when it doesn't start with it
+         * or asks nothing. Case is ignored (keyboards capitalize the first word), and the passphrase must
+         * be followed by a space, a colon or a comma, or end the text. Blank [passphrase]: the body as is.
+         */
+        fun request(body: String, passphrase: String): String? =
+            (if (passphrase.isEmpty()) body else after(body, passphrase))?.takeIf { it.isNotBlank() }
+
+        /** [body] without a leading [passphrase], so Hermes reading the owner's texts never sees it. */
+        fun redact(body: String, passphrase: String): String = if (passphrase.isEmpty()) body else after(body, passphrase) ?: body
+
+        private fun after(body: String, passphrase: String): String? {
+            val text = body.trimStart()
+            if (!text.startsWith(passphrase, ignoreCase = true)) return null
+            val rest = text.substring(passphrase.length)
+            if (rest.isNotEmpty() && !rest[0].isWhitespace() && rest[0] !in SEPARATORS) return null
+            return rest.trimStart { it.isWhitespace() || it in SEPARATORS }
+        }
+        private const val SEPARATORS = ":,"
 
         private fun askHermes(cfg: Config, text: String): String {
             val req = ChatRequest.build(cfg.copy(systemPrompt = STYLE), listOf(Msg(Msg.USER, text)), "", session = cfg.hermes.smsSession)

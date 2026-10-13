@@ -20,7 +20,8 @@ In this legacy arrangement, Hermes is the R1's direct backend; the R1 relays and
   Hermes → Name; empty shows "Hermes"). While the name is empty, Hermes may set it once with
   `set_name`; setup asks it to (below). After that only you can change it.
 - **Texting Hermes:** texts from your own number to the R1 go to Hermes (session `robotos-sms`), and
-  Hermes's reply is texted back. Texts from anyone else stay in Messages.
+  Hermes's reply is texted back. Texts from anyone else stay in Messages. With a passphrase set, only
+  your texts that start with it go to Hermes, which gets them without it (see Security notes).
 - **Reachability:** external power skips the Wi-Fi/airplane idle cut. **Stay reachable** does the
   same on battery; otherwise the saved pocket-mode delay applies, three minutes by default.
   Cellular service still requires its own setting and a SIM. Connectivity and Tailscale must be
@@ -28,7 +29,7 @@ In this legacy arrangement, Hermes is the R1's direct backend; the R1 relays and
 
 **Settings → Hermes** on the R1 (also Messages → Options → Hermes) shows whether Hermes can reach the
 R1, when it last did, how many texts it sent today and what happened to your last text. It turns
-Hermes's access and the passthrough on or off and sets your number and the daily text limit. The
+Hermes's access and the passthrough on or off and sets your passphrase, your number and the daily text limit. The
 device token and Hermes's address are provisioned from a computer (below).
 
 ```
@@ -67,7 +68,7 @@ See [DAILY_DRIVER.md](DAILY_DRIVER.md) for navigation and controls.
 
 | Where | What |
 |---|---|
-| R1 | `HermesLink` config (`hermes.*`): device API on port 8765, token, passthrough owner. |
+| R1 | `HermesLink` config (`hermes.*`): device API on port 8765, token, passthrough owner and passphrase. |
 | R1 | `DeviceApi`: JSON over HTTP; serves only Tailscale (100.64.0.0/10, fd7a:115c:a1e0::/48) and loopback peers presenting the token. |
 | R1 | `HermesTexts`: owner texts → Hermes → reply text. Retries before submission or confirmed SMS rejection use a 30-minute window. An ambiguous submission or SMS handoff is never automatically repeated. |
 | Hermes host | Default profile gateway (`hermes gateway install`) with the API server on 127.0.0.1:8642. |
@@ -93,8 +94,9 @@ Device API endpoints all require `Authorization: Bearer <token>`:
 
 `to` is a phone number (spoken digits are fine) or an exact saved recipient name; ten-digit numbers
 get `+1` on a US SIM. SMS tool sends and owner-relay replies share `hermes.dailySendLimit`
-(default 100, zero means unlimited). Queued owner texts retain their original owner and connection;
-permission and identity changes are checked before forwarding and before SMS delivery.
+(default 100, zero means unlimited). Queued owner texts retain their original owner, connection and
+passphrase requirement; permission, identity and passphrase changes are checked before forwarding
+and before SMS delivery. `GET /v1/texts` returns the owner's texts without the passphrase.
 
 The additional controls require `hermes.allowSpeak`, `allowShow`, `allowVolume`,
 `allowSaveRecipient` and `allowOpenApps` respectively. Each defaults off and also requires `hermes.deviceApi`.
@@ -197,7 +199,10 @@ measurement is established by these tests.
   encrypted config and is used over tailnet-only HTTPS; protected host setup files also contain it.
 - Hermes can text anyone from your number. `dailySendLimit` bounds a runaway loop; it is not a
   policy filter.
-- Passthrough trusts the sender number. SMS caller ID can be spoofed, so anyone spoofing your number
-  could talk to your agent. Turn off `hermes.passthrough` if that matters for your Hermes's tools.
+- SMS caller ID can be spoofed. Without a passphrase, passthrough trusts the sender number, so anyone
+  spoofing your number could talk to your agent. Set one under **Settings → Hermes** (or
+  `hermes.passphrase`, 6–64 characters) and start your texts to Hermes with it: other texts from your
+  number stay in Messages, and five of those within an hour pause the relay until fewer than five
+  fall within the past hour.
 - Incoming texts from other people are never forwarded. When Hermes reads them with
   `recent_texts`, the skill tells it to treat them as information, not instructions.

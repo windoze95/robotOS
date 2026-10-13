@@ -409,8 +409,15 @@ class DeviceApi(
     }
 
     private fun message(r: SmsRecord) = JSONObject().put("id", r.id).put("direction", if (r.incoming) "in" else "out")
-        .put("at", Instant.ofEpochMilli(r.createdAt).toString()).put("body", r.body)
+        .put("at", Instant.ofEpochMilli(r.createdAt).toString()).put("body", visible(r))
         .put("status", if (r.incoming) "received" else r.status(clock()).name.lowercase())
+
+    /** The owner's texts as Hermes got them through the relay: without the passphrase. */
+    private fun visible(r: SmsRecord): String {
+        val link = app.store.value.hermes
+        return if (r.incoming && link.passphrase.isNotEmpty() && SmsRecipientText.sameNumber(r.peer, link.owner, SmsRecipientText.region(app)))
+            HermesTexts.redact(r.body, link.passphrase) else r.body
+    }
 
     private fun describe(r: SmsRecord) = JSONObject().put("id", r.id).put("to", r.peer).put("parts", r.parts.size)
         .put("status", r.status(clock()).name.lowercase())
