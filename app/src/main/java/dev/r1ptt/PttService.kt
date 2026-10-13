@@ -35,6 +35,14 @@ import kotlinx.coroutines.launch
  * the foreground, the launcher starts it. Idle, it costs nothing: the button reader is blocked in
  * a read and nothing polls.
  */
+/** What the button may do right now. Hermes can send texts, so nothing runs past Android's lock. */
+internal enum class PressGate { LOCKED, RECOVERY, OPEN }
+internal fun pressGate(app: App): PressGate = when {
+    app.screen.deviceLocked() -> PressGate.LOCKED
+    app.workspace.blocked -> PressGate.RECOVERY
+    else -> PressGate.OPEN
+}
+
 class PttService : Service() {
     private val main = Handler(Looper.getMainLooper())
     private lateinit var gestures: Gestures
@@ -136,12 +144,18 @@ class PttService : Service() {
     }
     private fun routeButton(down: Boolean) {
         val app = application as App
-        if (app.workspace.blocked) {
-            cancelPressForRecovery()
-            if (down) { app.workspace.recoverNow(); app.workspace.management.stopRinging() }
-            return
+        when (pressGate(app)) {
+            PressGate.LOCKED -> {
+                // Android's lock screen is up: the press only wakes it. A ringing R1 can still be silenced.
+                cancelPressForRecovery()
+                if (down) { app.workspace.management.stopRinging(); EventLog.record("button ignored: Android is locked") }
+            }
+            PressGate.RECOVERY -> {
+                cancelPressForRecovery()
+                if (down) { app.workspace.recoverNow(); app.workspace.management.stopRinging() }
+            }
+            PressGate.OPEN -> pressRouter.edge(down)
         }
-        pressRouter.edge(down)
     }
 
     // Not sticky: Android 14 won't let a microphone service restart from the background. If the
