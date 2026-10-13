@@ -72,8 +72,9 @@ class HubSettingsActivity : DeviceActivity() {
         permission("secure_lock", "Allow secure remote lock", "With your permission, lost or revoked status automatically requests Android secure lock whenever an Android screen lock and active device admin are available. Enabling Android security later automatically strengthens recovery protection. Without them robotOS restricts its own screens and actions; other Android apps remain accessible.")
         val security = hub.management.security()
         body.addView(ui.note(if (security.optBoolean("secure_lock_available")) "Protection: robotOS restriction and Android secure lock."
-            else "Protection: robotOS restriction. Android secure lock requires the permission above, remote management, an Android screen lock (PIN, pattern or password) and device admin."))
-        body.addView(ui.button("Enable Android device admin") {
+            else "Protection: robotOS restriction. Android secure lock requires the permission above, remote management, an Android screen lock (PIN, pattern or password), and device admin or root."))
+        // Many R1 builds have no device admin; robotOS then locks through Android's lockdown with root.
+        if (packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_DEVICE_ADMIN)) body.addView(ui.button("Enable Android device admin") {
             startActivity(Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN,
                 android.content.ComponentName(this, dev.r1ptt.sys.AdminReceiver::class.java)))
         })

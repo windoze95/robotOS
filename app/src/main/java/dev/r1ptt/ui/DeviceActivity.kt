@@ -117,6 +117,10 @@ open class DeviceActivity : Activity() {
         val content = findViewById<View>(android.R.id.content) ?: return
         val blocked = recoveryBlocksScreen()
         noteGate(blocked)
+        // A lost R1 locks Android too. Its page, with the owner's return message, shows over the lock
+        // screen; robotOS's content stays hidden behind the cover. Changed only when it changes,
+        // because this runs on every layout pass.
+        if (showsOverLock != hub.quarantined) { showsOverLock = hub.quarantined; setShowWhenLocked(hub.quarantined) }
         if (!blocked) { liftGate(content); return }
         // This runs on every layout pass. Hiding content is idempotent; window flags and keyboard
         // requests are not (each one relayouts and calls back here), so they run only when the
@@ -206,6 +210,8 @@ open class DeviceActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == OWNER_PIN && resultCode == RESULT_OK) recoveryApp?.workspace?.confirmedByOwner()
     }
+
+    private var showsOverLock = false
 
     private fun liftGate(content: View) {
         val root = gate
