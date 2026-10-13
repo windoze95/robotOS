@@ -135,8 +135,10 @@ open class DeviceActivity : Activity() {
         // A restricted R1 can be rung by its owner at any time; otherwise offer this only while
         // ringing. The side button also stops ringing.
         val ringing = hub.quarantined || hub.management.ringing
+        // With an Android PIN the owner can open robotOS while the host can't be reached; never when restricted.
+        val ownerPin = !hub.quarantined && getSystemService(android.app.KeyguardManager::class.java).isDeviceSecure
         val key = listOf(label, detail, identity.optString("return_message"), identity.optBoolean("secure_lock_applied"),
-            hub.canReenroll, ringing).joinToString("\u0000")
+            hub.canReenroll, ringing, ownerPin).joinToString("\u0000")
         // A restricted R1 shows its page (and the owner's return message) after a short beat.
         val covering = if (hub.quarantined) coverBeat() else !revealed
         val shell = gate
@@ -173,6 +175,7 @@ open class DeviceActivity : Activity() {
                     else "robotOS is restricted. A secure Android screen lock is not active through robotOS; this does not lock other Android apps or protect against physical system access."))
             }
             page.body.addView(ui.button("Check recovery status", primary = true) { hub.recoverNow() })
+            if (ownerPin) page.body.addView(ui.button("Open with this R1's PIN") { launchOwnerPin() })
             page.body.addView(ui.button("Connect to a network") {
                 startActivity(android.content.Intent(android.provider.Settings.Panel.ACTION_INTERNET_CONNECTIVITY))
             })
@@ -188,6 +191,20 @@ open class DeviceActivity : Activity() {
         gateCovering = covering
         gateCover?.fade(covering, smooth)
         gatePage?.fade(!covering, smooth)
+    }
+
+    /** Android's own PIN screen, with its guess limits; robotOS never sees or stores the PIN. */
+    @Suppress("DEPRECATION")
+    private fun launchOwnerPin() {
+        val intent = getSystemService(android.app.KeyguardManager::class.java).createConfirmDeviceCredentialIntent(
+            "Open robotOS", "Enter this R1's PIN. robotOS checks with your host as soon as it can.") ?: return
+        startActivityForResult(intent, OWNER_PIN)
+    }
+
+    @Deprecated("Uses platform activity result for Android's PIN confirmation")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == OWNER_PIN && resultCode == RESULT_OK) recoveryApp?.workspace?.confirmedByOwner()
     }
 
     private fun liftGate(content: View) {
@@ -354,6 +371,7 @@ open class DeviceActivity : Activity() {
         internal const val COVER_MS = 3_500L
         /** The shortest logo beat once shown, so a check that passes at once never flickers. */
         private const val MIN_COVER_MS = 900L
+        private const val OWNER_PIN = 4517
         private const val FADE_MS = 220L
         private var coverFrom = 0L
         private var gateUp = false
@@ -382,6 +400,12 @@ open class DeviceActivity : Activity() {
             showPage.run()
         }
         private fun coverHold() = coverFrom + MIN_COVER_MS - SystemClock.uptimeMillis()
+        /** Unit tests share these statics across cases; each case starts with no cover and no screens. */
+        internal fun resetForTest() {
+            phases.removeCallbacksAndMessages(null)
+            coverFrom = 0L; gateUp = false; revealed = false; startedActivities = 0
+            activities.clear()
+        }
         private var startedActivities = 0
         private val activities = java.util.Collections.newSetFromMap(java.util.WeakHashMap<DeviceActivity, Boolean>())
         /** Main-thread navigation may only originate from the currently resumed robotOS screen. */

@@ -77,6 +77,18 @@ class WorkspaceClient(private val app: App) {
         }
         recoverNow()
     }
+    /**
+     * The owner confirmed this R1's Android PIN on the recovery screen. It opens like a passing check,
+     * grace included. A restricted R1 stays restricted, and the host's next answer still applies:
+     * a lost reply takes the screen back at once.
+     */
+    fun confirmedByOwner() {
+        if (!identity.paired || quarantined || !recoveryPending) return
+        recoveryConfirmed(recoveryTicket())
+        mutable.value = "Opened with this R1's PIN · checking with your host when it can"
+        EventLog.record("recovery: opened with the owner's Android PIN")
+        dev.r1ptt.ui.DeviceActivity.refreshRecovery(app)
+    }
     /** Screen off or network lost: a fresh R1 stays open for its next wake; otherwise fence now. */
     fun fenceUnlessFresh() {
         if (!identity.paired) return

@@ -124,8 +124,8 @@ The script makes these changes:
 - Installs the app with its permissions.
 - Grants the app root.
 - Makes the app the home screen.
-- Preserves the existing lock screen and device-admin state. Configure a PIN/password and grant
-  device-admin access locally if you want Android secure locking; provisioning does not grant it.
+- Preserves the existing lock screen and device-admin state; provisioning grants neither. See
+  [Lock it with a PIN](#lock-it-with-a-pin) below.
 - Sets a 15 s screen timeout and low brightness.
 - Turns on Android's dark theme, colored from the R1's orange, so Android's own screens and the
   keyboard match robotOS.
@@ -185,6 +185,26 @@ Work through these with the R1 on USB:
    recovery verification or acceptance of a spoken turn.
 8. **Battery.** Unplug the R1 overnight, then plug it in and run `tools/battery-report.sh`. See
    [BATTERY.md](BATTERY.md).
+
+## Lock it with a PIN
+
+Recommended. Only Android's own lock protects the R1's data: with a PIN, its storage is encrypted
+with a key tied to the PIN, and Android limits how fast anyone can guess. robotOS's recovery cover
+is not a lock; it can be bypassed through debugging, safe mode or other Android screens.
+
+1. In robotOS, open **Settings → Host & devices**, tap **Configure Android screen lock**, and choose
+   **PIN**.
+2. On the same Android screen, open the screen lock's settings (the gear). Set **Lock after screen
+   timeout** to **15 minutes**, which matches robotOS's recovery grace, and turn **Power button
+   instantly locks** off. A wake within 15 minutes then opens at once; a longer one asks for the PIN.
+3. Back in **Host & devices**, turn on **Allow remote management** and **Allow secure remote
+   lock**, then tap **Enable Android device admin** and activate it. Marking the R1 lost on your host
+   now locks Android too.
+
+While Android is locked, the button does nothing but wake the lock screen (it still silences a
+ringing R1), so nobody can talk to Hermes without the PIN. If your host can't be reached, the
+recovery screen offers **Open with this R1's PIN**, which uses Android's own PIN screen; robotOS
+never sees or stores the PIN. It never opens an R1 the host has marked lost or revoked.
 
 ## Troubleshooting
 

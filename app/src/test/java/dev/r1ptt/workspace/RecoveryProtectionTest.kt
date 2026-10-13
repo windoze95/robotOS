@@ -39,6 +39,7 @@ import java.util.concurrent.TimeUnit
 @Config(sdk = [34], application = App::class)
 class RecoveryProtectionTest {
     private val app get() = RuntimeEnvironment.getApplication() as App
+    @org.junit.Before fun freshCover() = DeviceActivity.resetForTest()
     @After fun close() { app.deviceApi.stop(); app.history.close() }
     private fun enrolled(url: String = "http://127.0.0.1:9") {
         val data = JSONObject().put("device_id", "r1-a").put("base_url", url)
@@ -604,12 +605,67 @@ class RecoveryProtectionTest {
         controller.pause().stop().destroy()
     }
 
-    @Test fun aCheckThatPassesAtOnceStillHoldsTheLogoForABeat() {
+    private fun pinButton(activity: DeviceActivity) =
+        activity.window.decorView.find(TextView::class.java).firstOrNull { it.text == "Open with this R1's PIN" }
+
+    /** With an Android PIN, the owner can open an R1 whose host can't be reached (#45), using Android's own PIN screen. */
+    @Test fun theOwnersAndroidPinOpensAnUnverifiedR1() {
+        enrolled()
+        val keyguard = shadowOf(app.getSystemService(android.app.KeyguardManager::class.java))
+        keyguard.setIsDeviceSecure(true); keyguard.setIsDeviceSecure(android.os.Process.myUserHandle().hashCode(), true)
+        val controller = Robolectric.buildActivity(DeviceActivity::class.java).create().start().resume().visible()
+        val activity = controller.get()
+        activity.setContentView(TextView(activity).apply { text = "Private cached history" })
+        app.workspace.requireRecovery(checkNow = false)
+        shadowOf(Looper.getMainLooper()).idle()
+        activity.window.decorView.find(dev.r1ptt.ui.LogoGlow::class.java).single().performClick()
+        shadowOf(Looper.getMainLooper()).idle()
+        requireNotNull(pinButton(activity)).performClick()
+        val asked = requireNotNull(shadowOf(activity).nextStartedActivityForResult)
+        assertTrue(asked.intent.action.orEmpty().contains("CONFIRM_DEVICE_CREDENTIAL"))
+        assertTrue(app.workspace.blocked) // Cancelling Android's PIN screen opens nothing.
+        shadowOf(activity).receiveResult(asked.intent, android.app.Activity.RESULT_OK, null)
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(1_000))
+        assertFalse(app.workspace.blocked)
+        assertTrue(app.workspace.networkAllowed)
+        assertEquals(View.VISIBLE, activity.findViewById<View>(android.R.id.content).visibility)
+        assertTrue(dev.r1ptt.data.EventLog.lines().any { it.endsWith("recovery: opened with the owner's Android PIN") })
+        controller.pause().stop().destroy()
+    }
+
+    @Test fun noPinOpensARestrictedR1OrOneWithoutAnAndroidPin() {
         enrolled()
         val controller = Robolectric.buildActivity(DeviceActivity::class.java).create().start().resume().visible()
         val activity = controller.get()
         activity.setContentView(TextView(activity).apply { text = "Private cached history" })
+        app.workspace.requireRecovery(checkNow = false)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertNull(pinButton(activity)) // No Android PIN: nothing to confirm.
+        shadowOf(app.getSystemService(android.app.KeyguardManager::class.java)).setIsDeviceSecure(true)
+        app.workspace.identity.update { it.put("lost", true).put("lost_message", "Please return this R1") }
+        dev.r1ptt.ui.DeviceActivity.refreshRecovery(app)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertNull(pinButton(activity))
+        app.workspace.confirmedByOwner()
+        assertTrue(app.workspace.blocked)
+        controller.pause().stop().destroy()
+    }
+
+    @Test fun theButtonOnlyWakesALockedR1() {
+        assertEquals(dev.r1ptt.PressGate.OPEN, dev.r1ptt.pressGate(app))
+        enrolled()
+        app.workspace.requireRecovery(checkNow = false)
+        assertEquals(dev.r1ptt.PressGate.RECOVERY, dev.r1ptt.pressGate(app))
+        shadowOf(app.getSystemService(android.app.KeyguardManager::class.java)).setIsDeviceLocked(true)
+        assertEquals(dev.r1ptt.PressGate.LOCKED, dev.r1ptt.pressGate(app))
+    }
+
+    @Test fun aCheckThatPassesAtOnceStillHoldsTheLogoForABeat() {
         val before = dev.r1ptt.data.EventLog.lines().size
+        enrolled()
+        val controller = Robolectric.buildActivity(DeviceActivity::class.java).create().start().resume().visible()
+        val activity = controller.get()
+        activity.setContentView(TextView(activity).apply { text = "Private cached history" })
         app.workspace.requireRecovery(checkNow = false)
         shadowOf(Looper.getMainLooper()).idle()
         app.workspace.recoveryConfirmed(app.workspace.recoveryTicket())

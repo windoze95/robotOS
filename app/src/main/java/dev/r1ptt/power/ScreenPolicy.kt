@@ -1,5 +1,6 @@
 package dev.r1ptt.power
 
+import android.app.KeyguardManager
 import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
@@ -12,10 +13,15 @@ import dev.r1ptt.sys.Root
  * Screen and CPU-wake decisions. The screen itself is kept on by the launcher window while a turn
  * is active (FLAG_KEEP_SCREEN_ON) and otherwise left to the short system timeout.
  */
-class ScreenPolicy(ctx: Context) {
+class ScreenPolicy(
+    ctx: Context,
+    private val sleepKey: ((Boolean) -> Unit) -> Unit = { slept -> Root.async("input keyevent 223") { slept(it == 0) } },
+) {
     private val pm = ctx.getSystemService(PowerManager::class.java)
     private val dpm = ctx.getSystemService(DevicePolicyManager::class.java)
+    private val keyguard = ctx.getSystemService(KeyguardManager::class.java)
     private val admin = ComponentName(ctx, AdminReceiver::class.java)
+    internal var lockNow: () -> Unit = { dpm.lockNow() }
     private var wakeLock: PowerManager.WakeLock? = null
 
     @Volatile private var screenOn = pm.isInteractive
@@ -47,10 +53,15 @@ class ScreenPolicy(ctx: Context) {
      */
     fun tapWasWake(): Boolean = offAtPress || SystemClock.elapsedRealtime() - lastOnAt < 1000
 
-    /** Screen off now: device admin's lockNow() if provisioned, else the SLEEP key via root. */
+    /** Android's lock screen is up and needs the PIN, password or pattern. */
+    fun deviceLocked(): Boolean = keyguard.isDeviceLocked
+
+    /**
+     * Screen off now, as the power button would, so Android's "lock after screen timeout" still
+     * applies. Device admin's lockNow() locks at once, so it is only the fallback without root.
+     */
     fun sleepNow() {
-        val viaAdmin = dpm.isAdminActive(admin) && runCatching { dpm.lockNow() }.isSuccess
-        if (!viaAdmin) Root.async("input keyevent 223")
+        sleepKey { slept -> if (!slept && dpm.isAdminActive(admin)) runCatching { lockNow() } }
     }
 
     /** Keeps the CPU up for one turn even if the screen goes off; bounded so a bug can't drain the battery. */
